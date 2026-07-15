@@ -60,9 +60,17 @@ def run_oauth_flow() -> Credentials:
 
 def build_web_flow(redirect_uri: str) -> Flow:
     """OAuth flow for the web app: we redirect the user to Google, Google
-    redirects back to `redirect_uri` with a code, we exchange it for tokens."""
+    redirects back to `redirect_uri` with a code, we exchange it for tokens.
+
+    autogenerate_code_verifier=False disables PKCE. We build a fresh Flow in
+    the login step and another in the callback, so a PKCE verifier generated
+    in the first can't reach the second — Google would then reject the token
+    exchange with "Missing code verifier". This is a confidential (web) client
+    authenticated by its client_secret, so PKCE isn't required; turning it off
+    keeps login and callback independent."""
     flow = Flow.from_client_config(_client_config(), scopes=OAUTH_SCOPES)
     flow.redirect_uri = redirect_uri
+    flow.autogenerate_code_verifier = False
     return flow
 
 
