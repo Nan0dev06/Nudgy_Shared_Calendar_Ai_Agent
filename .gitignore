@@ -1,0 +1,14 @@
+# Secrets — never commit
+.env
+backend/.tokens/
+
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+venv/
+
+# SQLite (Phase 2+)
+*.db
+*.sqlite3

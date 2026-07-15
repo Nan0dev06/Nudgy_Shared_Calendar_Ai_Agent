@@ -1,0 +1,11 @@
+google-auth
+google-auth-oauthlib
+google-api-python-client
+python-dotenv
+tzdata
+pytest
+fastapi
+uvicorn[standard]
+openai
+sqlalchemy
+itsdangerous
