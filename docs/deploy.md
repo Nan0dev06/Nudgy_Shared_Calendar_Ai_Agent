@@ -1,8 +1,7 @@
 # Deploying Orbi to Render (free)
 
 This puts the backend on a public, always-reachable URL with a persistent
-Postgres database — so the Calendar add-on works without a tunnel, and
-connected accounts survive restarts.
+Postgres database, so connected accounts survive restarts.
 
 Free-tier note: the web service sleeps after 15 minutes of no traffic and
 takes ~1 minute to wake on the next request. Before a demo, open the URL once
@@ -20,7 +19,6 @@ hackathon).
    - `GROQ_API_KEY`
    - `GOOGLE_CLIENT_ID`
    - `GOOGLE_CLIENT_SECRET`
-   - `ADDON_SHARED_SECRET`
    - `GOOGLE_REDIRECT_URI` — you don't know the final URL yet, so put a
      placeholder for now (e.g. `https://orbi.onrender.com/auth/google/callback`)
      and fix it in step 3.
@@ -53,18 +51,6 @@ The deployed database starts empty. Open `BACKEND` in a browser, click
 stored in Postgres. (Their calendars already hold the seeded Beirut events;
 re-run `python backend/scripts/seed_demo.py` locally anytime to refresh them —
 it writes to the real Google calendars, independent of which database.)
-
-## 5. Point the Calendar add-on at Render (no more tunnel)
-
-Now that the backend has a stable public URL, the add-on doesn't need the
-localhost tunnel at all. In `addon/`:
-
-- `Code.gs`: `var BACKEND_URL = 'BACKEND';` (no trailing slash)
-- `appsscript.json`: `"urlFetchWhitelist": ["BACKEND"]`
-- Make sure the add-on's Script Property `ADDON_SHARED_SECRET` equals the
-  value you set on Render.
-
-Then follow `addon/README.md` from step 6 (test deployment) onward.
 
 ## Redeploys
 

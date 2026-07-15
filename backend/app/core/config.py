@@ -63,11 +63,3 @@ OAUTH_SCOPES = [
 # Where Phase 1 CLI scripts store per-account OAuth tokens (gitignored).
 # Phase 2 moves these into SQLite.
 TOKENS_DIR = ROOT_DIR / "backend" / ".tokens"
-
-# Shared secret for the Google Calendar Add-on (backend/addon/). The Add-on
-# runs server-side inside Apps Script (never in a user's browser), so a
-# static shared secret in a header is enough to keep /addon/chat from being
-# called by randoms — it is NOT a substitute for real per-user auth, which is
-# why the endpoint still requires the caller to already be a connected Orbi
-# user looked up by email.
-ADDON_SHARED_SECRET = os.getenv("ADDON_SHARED_SECRET", "")

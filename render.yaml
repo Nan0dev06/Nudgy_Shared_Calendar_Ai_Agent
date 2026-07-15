@@ -36,5 +36,3 @@ services:
         sync: false
       - key: GOOGLE_REDIRECT_URI
         sync: false
-      - key: ADDON_SHARED_SECRET
-        sync: false

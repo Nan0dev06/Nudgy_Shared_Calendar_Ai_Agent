@@ -18,8 +18,6 @@ Orbi cross-references everyone's live availability, proposes a time and venue wi
 >
 > - **Live deployment:** <https://orbi-1jgh.onrender.com> (Render free tier — the
 >   first request after it's been idle can take ~50s to wake up).
-> - **Google Calendar add-on:** talk to Orbi from *inside* Google Calendar, not
->   just the web app — see [`addon/`](addon/).
 > - **Model:** Llama 3.3 70B on Groq's free tier (no paid APIs anywhere).
 > - **Remaining:** Phase 4 (venue suggestions) is the only optional piece left.
 
@@ -119,15 +117,6 @@ This is a design principle, not a feature:
 
 Orbi does group scheduling and meetup planning. Nothing else. Asked to write an essay or discuss the weather, it politely declines and restates what it can do. Enforced in the system prompt and verified against injection-style prompts.
 
-## Google Calendar Add-on
-
-Beyond the web app, Orbi ships as a **Google Workspace Add-on** so you can talk
-to it from a side panel *inside* Google Calendar — no context-switching. The
-add-on is a thin client: all reasoning, tools, and data stay in the backend.
-It calls a dedicated `POST /addon/chat` endpoint secured by a shared secret,
-looks the user up by email, and runs the exact same agent loop as the web app.
-Setup lives in [`addon/README.md`](addon/README.md).
-
 ## Tech Stack
 
 | Layer | Choice |
@@ -139,7 +128,6 @@ Setup lives in [`addon/README.md`](addon/README.md).
 | Frontend | React (teammate's branch). Backend exposes a documented REST API with example request/response bodies for every endpoint. A minimal scaffold UI ships in `backend/app/static/` for testing |
 | Storage | **SQLite** locally, **Postgres** in production — auto-selected by the `DATABASE_URL` env var (Render injects it). Same code, no migrations |
 | Hosting | Render (free tier) via a one-click `render.yaml` blueprint that also provisions the Postgres database |
-| Add-on | Google Workspace Add-on (Apps Script + CardService) that calls the same backend — Orbi inside Google Calendar |
 | Timezones | Everything stored in UTC; converted to each user's local timezone at display time. Unit-tested |
 
 ### Repository layout
@@ -153,7 +141,7 @@ backend/
     agent/             # agent loop, system prompt, tool definitions
     tools/             # freebusy, slot intersection, poll rules, booking
     db/                # SQLAlchemy models + repo + session (users, groups, polls, votes)
-    api/               # REST endpoints (auth, groups, polls, chat, addon)
+    api/               # REST endpoints (auth, groups, polls, chat)
     static/            # minimal scaffold UI (Orbi orb + chat)
   scripts/
     check_freebusy.py  # Phase 1 CLI proof: OAuth + freebusy + intersection
@@ -161,7 +149,6 @@ backend/
     seed_demo.py       # Populate test calendars with realistic Beirut events
     connect_account.py # One-time OAuth connect per test account (CLI)
   tests/               # slot math + poll rule unit tests
-addon/                 # Google Calendar add-on (Apps Script + manifest)
 docs/
   api.md               # Endpoint reference with example bodies
   deploy.md            # Render deployment walkthrough
@@ -185,11 +172,11 @@ render.yaml            # One-click blueprint: web service + free Postgres
 
 ### Deploy (optional)
 
-The backend runs anywhere; for a public, always-on URL (used by the Google
-Calendar add-on) there's a one-click Render blueprint (`render.yaml`) that
-provisions a free Postgres database alongside the web service. Locally it uses
-SQLite; set `DATABASE_URL` (Render does this automatically) to use Postgres.
-Full walkthrough in [docs/deploy.md](docs/deploy.md).
+The backend runs anywhere; for a public, always-on URL there's a one-click
+Render blueprint (`render.yaml`) that provisions a free Postgres database
+alongside the web service. Locally it uses SQLite; set `DATABASE_URL` (Render
+does this automatically) to use Postgres. Full walkthrough in
+[docs/deploy.md](docs/deploy.md).
 
 ## Build Order
 
@@ -199,7 +186,7 @@ Full walkthrough in [docs/deploy.md](docs/deploy.md).
 | 2 | Conversational agent + Orbi orb UI: open-ended prompt → candidate slots → reasoning in natural language | ✅ (agent chat needs the free `GROQ_API_KEY`) |
 | 3 | Poll → vote collection → threshold rule → commit to shared calendar or re-plan | ✅ (verified end-to-end incl. a real booking) |
 | 4 | Venue suggestion via Places API (only if time permits) | ⬜ |
-| + | **Deployed** to Render with Postgres, plus a **Google Calendar add-on** | ✅ (bonus, beyond the original plan) |
+| + | **Deployed** to Render with Postgres | ✅ (bonus, beyond the original plan) |
 
 Each phase must work before the next begins.
 

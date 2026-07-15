@@ -14,7 +14,6 @@ from fastapi import FastAPI
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from app.api.addon_routes import router as addon_router
 from app.api.auth_routes import router as auth_router
 from app.api.chat_routes import router as chat_router
 from app.api.group_routes import router as group_router
@@ -30,7 +29,6 @@ app.include_router(auth_router)
 app.include_router(group_router)
 app.include_router(poll_router)
 app.include_router(chat_router)
-app.include_router(addon_router)
 
 # Minimal scaffold frontend (teammate replaces this with the real React app).
 STATIC_DIR = Path(__file__).resolve().parent / "static"
