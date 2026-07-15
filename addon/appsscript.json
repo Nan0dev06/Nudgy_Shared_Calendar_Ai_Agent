@@ -7,7 +7,7 @@
     "https://www.googleapis.com/auth/script.external_request"
   ],
   "urlFetchWhitelist": [
-    "https://REPLACE-WITH-YOUR-PUBLIC-URL"
+    "https://orbi-1jgh.onrender.com"
   ],
   "addOns": {
     "common": {

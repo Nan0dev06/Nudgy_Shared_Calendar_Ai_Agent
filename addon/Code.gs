@@ -16,7 +16,7 @@
  * expires — it's a convenience, not a source of truth.
  */
 
-var BACKEND_URL = 'https://REPLACE-WITH-YOUR-PUBLIC-URL'; // no trailing slash
+var BACKEND_URL = 'https://orbi-1jgh.onrender.com'; // no trailing slash
 var EMAIL_PROP_KEY = 'orbi_email';
 var HISTORY_CACHE_KEY = 'orbi_history';
 var HISTORY_TTL_SECONDS = 6 * 60 * 60;
