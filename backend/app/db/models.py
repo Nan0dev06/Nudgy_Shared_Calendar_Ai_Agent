@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from sqlalchemy import ForeignKey, String, UniqueConstraint, func
+from sqlalchemy import DateTime, ForeignKey, String, UniqueConstraint
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
@@ -36,7 +36,7 @@ class User(Base):
     # raw Google Credentials JSON; None until the user connects a calendar
     token_json: Mapped[str | None] = mapped_column(String, default=None)
     timezone: Mapped[str] = mapped_column(String, default="Asia/Beirut")
-    created_at: Mapped[datetime] = mapped_column(default=_utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
 
     memberships: Mapped[list["Membership"]] = relationship(
         back_populates="user", cascade="all, delete-orphan"
@@ -54,7 +54,7 @@ class Group(Base):
     name: Mapped[str] = mapped_column(String)
     invite_code: Mapped[str] = mapped_column(String, unique=True, index=True)
     created_by: Mapped[int] = mapped_column(ForeignKey("users.id"))
-    created_at: Mapped[datetime] = mapped_column(default=_utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
 
     memberships: Mapped[list["Membership"]] = relationship(
         back_populates="group", cascade="all, delete-orphan"
@@ -78,13 +78,13 @@ class Poll(Base):
     created_by: Mapped[int] = mapped_column(ForeignKey("users.id"))
     title: Mapped[str] = mapped_column(String, default="Group meetup")
     location: Mapped[str | None] = mapped_column(String, default=None)
-    slot_start_utc: Mapped[datetime] = mapped_column()
-    slot_end_utc: Mapped[datetime] = mapped_column()
+    slot_start_utc: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    slot_end_utc: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     min_yes: Mapped[int] = mapped_column(default=1)
     status: Mapped[str] = mapped_column(String, default="open")
     booked: Mapped[bool] = mapped_column(default=False)
     event_link: Mapped[str | None] = mapped_column(String, default=None)
-    created_at: Mapped[datetime] = mapped_column(default=_utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
 
     votes: Mapped[list["Vote"]] = relationship(
         back_populates="poll", cascade="all, delete-orphan"
@@ -112,7 +112,7 @@ class Vote(Base):
     poll_id: Mapped[int] = mapped_column(ForeignKey("polls.id"))
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"))
     yes: Mapped[bool] = mapped_column()
-    voted_at: Mapped[datetime] = mapped_column(default=_utcnow)
+    voted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
 
     poll: Mapped["Poll"] = relationship(back_populates="votes")
     user: Mapped["User"] = relationship()
@@ -125,7 +125,7 @@ class Membership(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"))
     group_id: Mapped[int] = mapped_column(ForeignKey("groups.id"))
-    joined_at: Mapped[datetime] = mapped_column(default=_utcnow)
+    joined_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
 
     user: Mapped["User"] = relationship(back_populates="memberships")
     group: Mapped["Group"] = relationship(back_populates="memberships")

@@ -1,0 +1,40 @@
+# Render Blueprint — provisions the backend + a free Postgres in one step.
+# In the Render dashboard: New -> Blueprint -> connect this repo -> Apply.
+# See docs/deploy.md for the full walkthrough (env vars, Google redirect URI).
+databases:
+  - name: orbi-db
+    plan: free
+    databaseName: orbi
+    user: orbi
+
+services:
+  - type: web
+    name: orbi
+    runtime: python
+    plan: free
+    buildCommand: "pip install -r requirements.txt"
+    startCommand: "uvicorn app.main:app --app-dir backend --host 0.0.0.0 --port $PORT"
+    envVars:
+      # Injected automatically from the Postgres instance above.
+      - key: DATABASE_URL
+        fromDatabase:
+          name: orbi-db
+          property: connectionString
+      - key: PYTHON_VERSION
+        value: "3.12.7"
+      - key: LLM_PROVIDER
+        value: groq
+      # Render generates a strong value once and keeps it stable.
+      - key: SECRET_KEY
+        generateValue: true
+      # sync:false -> you paste these in the dashboard; never stored in git.
+      - key: GROQ_API_KEY
+        sync: false
+      - key: GOOGLE_CLIENT_ID
+        sync: false
+      - key: GOOGLE_CLIENT_SECRET
+        sync: false
+      - key: GOOGLE_REDIRECT_URI
+        sync: false
+      - key: ADDON_SHARED_SECRET
+        sync: false

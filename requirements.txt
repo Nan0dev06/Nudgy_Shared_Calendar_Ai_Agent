@@ -8,4 +8,5 @@ fastapi
 uvicorn[standard]
 openai
 sqlalchemy
+psycopg2-binary
 itsdangerous

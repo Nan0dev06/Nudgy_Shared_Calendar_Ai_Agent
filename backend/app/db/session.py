@@ -1,19 +1,32 @@
-"""Engine + session factory + schema creation for the SQLite DB.
+"""Engine + session factory + schema creation.
 
-The DB is a single file at repo-root/orbi.db (gitignored). For a hackathon we
-create tables on startup with Base.metadata.create_all — no migrations.
+Two backends, chosen by whether DATABASE_URL is set:
+- set  -> Postgres (Render deployment; survives restarts)
+- unset-> a local SQLite file at repo-root/orbi.db (gitignored), for dev
+
+For a hackathon we create tables on startup with create_all — no migrations.
 """
 from collections.abc import Iterator
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 
-from app.core.config import ROOT_DIR
+from app.core.config import DATABASE_URL, ROOT_DIR
 from app.db.models import Base
 
-DB_PATH = ROOT_DIR / "orbi.db"
-# check_same_thread=False so FastAPI's threadpool can share the engine
-engine = create_engine(f"sqlite:///{DB_PATH}", connect_args={"check_same_thread": False})
+if DATABASE_URL:
+    # Render's Postgres URL sometimes uses the legacy "postgres://" scheme,
+    # which SQLAlchemy rejects — normalize it. pool_pre_ping avoids errors
+    # from connections the free DB has idled out.
+    url = DATABASE_URL.replace("postgres://", "postgresql://", 1)
+    engine = create_engine(url, pool_pre_ping=True)
+else:
+    DB_PATH = ROOT_DIR / "orbi.db"
+    # check_same_thread=False so FastAPI's threadpool can share the engine
+    engine = create_engine(
+        f"sqlite:///{DB_PATH}", connect_args={"check_same_thread": False}
+    )
+
 SessionLocal = sessionmaker(bind=engine, expire_on_commit=False)
 
 

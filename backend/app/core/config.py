@@ -15,6 +15,11 @@ load_dotenv(ROOT_DIR / ".env")
 GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID", "")
 GOOGLE_CLIENT_SECRET = os.getenv("GOOGLE_CLIENT_SECRET", "")
 
+# Database: Postgres when DATABASE_URL is set (Render injects it), else a local
+# SQLite file. Set on the server so connected accounts survive restarts — the
+# free tier wipes the local filesystem, so SQLite would lose data there.
+DATABASE_URL = os.getenv("DATABASE_URL", "")
+
 # Signs the session cookie. Any random string; regenerating it just logs
 # everyone out. Set SECRET_KEY in .env for stable sessions across restarts.
 SECRET_KEY = os.getenv("SECRET_KEY", "dev-secret-change-me")

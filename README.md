@@ -144,6 +144,14 @@ docs/
 
 `scripts/seed_demo.py` populates the test calendars with realistic events (with locations, in Beirut) so the full flow demos reliably without depending on live third-party state.
 
+### Deploy (optional)
+
+The backend runs anywhere; for a public, always-on URL (used by the Google
+Calendar add-on) there's a one-click Render blueprint (`render.yaml`) that
+provisions a free Postgres database alongside the web service. Locally it uses
+SQLite; set `DATABASE_URL` (Render does this automatically) to use Postgres.
+Full walkthrough in [docs/deploy.md](docs/deploy.md).
+
 ## Build Order
 
 | Phase | Deliverable | Status |
