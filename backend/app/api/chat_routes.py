@@ -10,6 +10,7 @@ the reasoning steps.
 """
 from __future__ import annotations
 
+import logging
 from dataclasses import asdict
 from datetime import datetime, timezone
 
@@ -22,6 +23,20 @@ from app.agent.tools import ToolContext
 from app.api.deps import get_current_user
 from app.db.models import User
 from app.db import repo
+
+log = logging.getLogger("orbi.api")
+
+
+def _friendly_error(exc: Exception) -> str:
+    """Turn an unexpected agent/LLM/DB failure into a readable orb reply so the
+    frontend never chokes on a raw 500. Names the error type so we can tell
+    a rate limit from a DB error from a bug when debugging."""
+    name = type(exc).__name__
+    text = str(exc).lower()
+    if "ratelimit" in name.lower() or "429" in text or "rate limit" in text:
+        return ("I'm being rate-limited by the model service right now "
+                "(free tier). Give it a minute and try again.")
+    return f"Sorry — I hit a problem finishing that ({name}). Please try again."
 from app.db.session import get_session
 
 router = APIRouter(tags=["chat"])
@@ -58,9 +73,13 @@ def chat(
         now_utc=datetime.now(timezone.utc),  # fresh "now" injected every turn
         tz_name=user.timezone,
     )
-    result = run_agent(
-        ctx,
-        history=[h.model_dump() for h in body.history],
-        user_message=body.message,
-    )
+    try:
+        result = run_agent(
+            ctx,
+            history=[h.model_dump() for h in body.history],
+            user_message=body.message,
+        )
+    except Exception as exc:  # LLM API error, DB error, anything unexpected
+        log.exception("chat turn failed for %s", user.email)
+        return {"reply": _friendly_error(exc), "trace": []}
     return {"reply": result.reply, "trace": [asdict(s) for s in result.trace]}
