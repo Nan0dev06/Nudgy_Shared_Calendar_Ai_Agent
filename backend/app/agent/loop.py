@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
@@ -59,13 +60,16 @@ def _openai_tools() -> list[dict]:
 
 
 def _create_with_retry(client: OpenAI, messages: list[dict], attempts: int = 3):
-    """One chat-completion call, retried on Groq's stochastic tool-call
-    failures. Llama occasionally emits malformed function-call syntax; Groq
-    then 400s with code 'tool_use_failed'. A fresh sample almost always
-    succeeds, so retrying beats failing the whole turn."""
-    from openai import BadRequestError
+    """One chat-completion call, retried on Groq's two stochastic failures:
 
-    last_exc: Exception | None = None
+      tool_use_failed — Llama occasionally emits malformed function-call syntax
+        and Groq 400s. The next sample is independent, so retry immediately.
+      429 rate limit — free-tier bursts. Needs a wait, not a fresh sample.
+
+    Anything else propagates; the caller turns it into a friendly reply."""
+    from openai import BadRequestError, RateLimitError
+
+    last_exc: Exception = RuntimeError("no attempts made")
     for attempt in range(attempts):
         try:
             return client.chat.completions.create(
@@ -80,6 +84,13 @@ def _create_with_retry(client: OpenAI, messages: list[dict], attempts: int = 3):
             last_exc = exc
             log.warning("[loop] malformed tool call from model (attempt %d/%d) — retrying",
                         attempt + 1, attempts)
+        except RateLimitError as exc:
+            last_exc = exc
+            if attempt + 1 < attempts:
+                delay = 2 ** attempt  # 1s, 2s — bounded; the caller still has a fallback
+                log.warning("[loop] rate-limited (attempt %d/%d) — waiting %ds",
+                            attempt + 1, attempts, delay)
+                time.sleep(delay)
     raise last_exc
 
 
@@ -134,7 +145,23 @@ def run_agent(ctx: ToolContext, history: list[dict], user_message: str) -> Agent
             ],
         })
         for tc in msg.tool_calls:
-            args = json.loads(tc.function.arguments or "{}")
+            try:
+                args = json.loads(tc.function.arguments or "{}")
+            except json.JSONDecodeError:
+                # Same root cause as tool_use_failed, but Groq let this one
+                # through. Hand the error back as the tool result so the model
+                # can re-issue the call, instead of killing the whole turn.
+                log.warning("[loop] unparseable arguments for %s: %r",
+                            tc.function.name, tc.function.arguments)
+                err = {"error": "Your arguments were not valid JSON. "
+                                "Call the tool again with a valid JSON object."}
+                trace.append(TraceStep(kind="tool_result", name=tc.function.name, detail=err))
+                messages.append({
+                    "role": "tool",
+                    "tool_call_id": tc.id,
+                    "content": json.dumps(err),
+                })
+                continue
             trace.append(TraceStep(kind="tool_call", name=tc.function.name, detail=args))
             result = run_tool(ctx, tc.function.name, args)
             trace.append(TraceStep(kind="tool_result", name=tc.function.name, detail=result))
