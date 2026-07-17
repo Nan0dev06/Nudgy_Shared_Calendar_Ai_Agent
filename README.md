@@ -19,7 +19,9 @@ Orbi cross-references everyone's live availability, proposes a time and venue wi
 >
 > - **Live deployment:** <https://orbi-1jgh.onrender.com> (Render free tier — the
 >   first request after it's been idle can take ~50s to wake up).
-> - **Model:** Llama 3.3 70B on Groq's free tier.
+> - **Model:** Llama 4 Scout 17B on Groq's free tier. Groq's limits are
+>   per-model, and Scout's (500K tokens/day, 30K/min) are the ones that
+>   comfortably fit an agent loop — see [Staying inside the free tier](#staying-inside-the-free-tier).
 > - **No paid APIs anywhere**, including venues: OpenStreetMap needs no key.
 
 ---
@@ -36,17 +38,18 @@ Existing tools (Calendly, Doodle) solve slices of this with forms and links. Orb
 
 ## What Orbi Does
 
-1. You talk to Orbi in natural language.
+1. You talk to Orbi in natural language — including vaguely. "I wanna go out today with my friends" tells it the day and nothing else.
 2. Orbi fetches **live** free/busy data for every group member at the moment you ask.
 3. It intersects busy blocks to find common free windows, filtered to sensible hours and durations.
-4. It anchors a location using only the locations members **explicitly typed** into their own calendar events near the candidate slot, and searches for a real venue nearby.
-5. It proposes a slot + venue **with its reasoning spelled out**.
-6. On your confirmation, it puts the plan to the group as a two-stage cascade (see below): who's in at all, then — for those people only — does this time work.
-7. You (the host) read the tally and decide: lock the time in, or try the next one. Locking in writes the event to a shared Google Calendar for the people who said that time works.
+4. It **asks for what it doesn't know instead of guessing** — the times it works out itself, but whether you have a place in mind, whether to search near where you'll all already be or somewhere you name, and what kind of outing, it asks. All in one message, then it waits. A plan built on a guess costs the whole group another round of questions.
+5. It anchors a location — on the locations members **explicitly typed** into their own calendar events near the slot, or on an area you named — and searches for a real venue nearby.
+6. It proposes a slot + venue **with its reasoning spelled out**.
+7. On your confirmation, it puts the plan to the group as a two-stage cascade (see below): who's in at all, then — for those people only — does this time work.
+8. You (the host) read the tally and decide: lock the time in, or try the next one. Locking in writes the event to a shared Google Calendar for the people who said that time works.
 
 ## Agent Architecture
 
-This is the core of the project: a **real multi-step agentic loop**, not a single LLM call. Orbi is an LLM (Llama 3.3 70B via Groq's free tier by default; Ollama/OpenAI supported via the same OpenAI-compatible code path) driving a set of backend tools via native tool/function calling.
+This is the core of the project: a **real multi-step agentic loop**, not a single LLM call. Orbi is an LLM (Llama 4 Scout 17B via Groq's free tier by default; Ollama/OpenAI supported via the same OpenAI-compatible code path) driving a set of backend tools via native tool/function calling.
 
 ### Context injection
 
@@ -63,7 +66,7 @@ All seven are built and wired into the agent:
 |---|---|
 | `get_group_members` | Resolve the user's group → member list + calendar connection status |
 | `find_meeting_slots` | Live `freebusy.query` for all members, then intersect busy blocks → common free windows, filtered to reasonable local hours and the requested duration. Returns **only busy time ranges** — never titles or details. The intersection math is a pure, unit-tested function |
-| `suggest_venues` | Reads the locations members typed into their *own* events near the slot → geocodes them → anchors on the centroid → searches for **real** named places nearby. Venues come only from this call; if it returns nothing, Orbi says so. **It never invents a venue** |
+| `suggest_venues` | Searches for **real** named places, anchored the way the user chose: on the group itself (read the locations members typed into their *own* events near the slot → geocode → centroid), or on an area they named (`near`, which reads no calendar at all). Venues come only from this call; if it returns nothing, Orbi says so, and if the map service itself fails Orbi says *that* instead — an unreachable API is not an empty neighbourhood. **It never invents a venue** |
 | `create_plan` | Put a plan — place, day, and an ordered queue of candidate times — to the group, starting the cascade |
 | `get_plan_status` | The host's decision box: who's in, who's out, who's silent, and for the time being asked, who can and can't make it |
 | `use_next_time` | **Host move.** Drop the current time and ask the next candidate — to everyone who's in, including those who liked the old one |
@@ -168,7 +171,7 @@ Orbi does group scheduling and meetup planning. Nothing else. Asked to write an 
 | Layer | Choice |
 |---|---|
 | Backend | Python 3.11+, FastAPI |
-| Agent | Llama 3.3 70B via Groq (free tier) with native tool calling; Ollama/OpenAI swappable via `LLM_PROVIDER` |
+| Agent | Llama 4 Scout 17B via Groq (free tier) with native tool calling; model overridable via `ORBI_MODEL`, provider via `LLM_PROVIDER` (Ollama/OpenAI use the same code path) |
 | Calendar | Google Calendar API — OAuth 2.0, `calendar.readonly` + `calendar.events` scopes, `freebusy.query` |
 | Venues | OpenStreetMap — Nominatim (geocoding) + Overpass (venue search). Free, **no API key**, no account |
 | Frontend | React (teammate's branch). Backend exposes a documented REST API with example request/response bodies for every endpoint. A minimal scaffold UI ships in `backend/app/static/` for testing |
@@ -214,6 +217,31 @@ render.yaml            # One-click blueprint: web service + free Postgres
 5. Phase 1 check: `python scripts/check_freebusy.py` — proves OAuth + freebusy + intersection across the test accounts before any UI exists.
 6. `uvicorn app.main:app --reload` and open the app.
 
+### Staying inside the free tier
+
+Nothing here costs money, but the agent loop is token-hungry and the free
+limits are easy to hit by accident. **Groq's rate limits are per model and per
+organization** — so a second API key changes nothing, and picking the right
+model is the whole game:
+
+| Model | Tokens/day | Tokens/min |
+|---|---|---|
+| `llama-4-scout-17b-16e-instruct` (default here) | 500K | 30K |
+| `llama-3.1-8b-instant` | 500K | 6K |
+| `llama-3.3-70b-versatile` | 100K | 12K |
+
+One turn costs roughly **4K tokens per LLM call** — a ~2.4K system prompt plus
+~1.6K of tool schemas, re-sent on every step of the loop — and a turn takes 3-4
+calls. So a two-message conversation runs ~18K tokens. On the 70B that is about
+five conversations before the day's quota is gone, and its 12K/min ceiling
+throttles a *single* conversation in progress. Scout's budget fits ~27.
+
+Because the budgets are per-model, developing on Scout leaves the 70B's quota
+untouched — set `ORBI_MODEL=llama-3.3-70b-versatile` for a demo if you want its
+quality, and it will be full. `LLM_PROVIDER=ollama` runs a local model for
+unlimited free iteration (weaker at tool calling; good for plumbing, not for
+verifying final behaviour).
+
 ### Demo safety
 
 `scripts/seed_demo.py` populates the test calendars with realistic events (with locations, in Beirut) so the full flow demos reliably without depending on live third-party state.
@@ -248,6 +276,7 @@ Each phase must work before the next begins.
 - **A flaky LLM doesn't kill the turn**: Groq rate limits are retried with backoff, and a malformed tool call is handed back to the model as an error it can correct rather than crashing the request.
 - **No raw 500s in chat**: agent, LLM, and DB errors are caught and answered in words.
 - **A failed booking doesn't strand a plan**: if Google refuses or throws, the time reverts to active so the host can retry or move on, instead of sticking in a state that is neither bookable nor skippable.
+- **A failed venue search is not an empty neighbourhood**: Overpass is a free public API and 504s under load. Transient failures are retried, and a search that still fails is reported as *"the venue lookup is temporarily down"* — never as "there are no cafes there", which would be Orbi stating something false about a real place.
 
 ## Roadmap / Not Yet Built
 

@@ -25,6 +25,20 @@ hackathon).
    `SECRET_KEY` and `DATABASE_URL` are handled automatically — leave them.
 5. **Apply**. First build takes a few minutes.
 
+> **Already deployed before ORBI_MODEL was added to `render.yaml`?** Editing the
+> blueprint does not always push a new env var onto a running service. Check
+> the `orbi` service → **Environment** for `ORBI_MODEL`. If it's missing, add
+> it by hand:
+>
+> ```
+> ORBI_MODEL=meta-llama/llama-4-scout-17b-16e-instruct
+> ```
+>
+> Without it the service falls back to `llama-3.3-70b-versatile`, whose free
+> limit is 100K tokens/day and 12K/minute — roughly five conversations before
+> the agent starts returning rate-limit errors mid-demo. See
+> [Staying inside the free tier](../README.md#staying-inside-the-free-tier).
+
 ## 2. Grab your URL
 
 When the web service goes live, Render shows its URL near the top, like
