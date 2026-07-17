@@ -2,13 +2,17 @@
 
 GET  /auth/google/login     -> 302 to Google's consent screen
 GET  /auth/google/callback  -> exchanges code, upserts user + token, sets cookie
-GET  /auth/me               -> who am I (or 401)
-POST /auth/logout           -> clears the cookie
+GET   /auth/me              -> who am I (or 401)
+PATCH /auth/me              -> update display name / timezone
+POST  /auth/logout          -> clears the cookie
 """
 from __future__ import annotations
 
+from zoneinfo import ZoneInfo
+
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse, RedirectResponse
+from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from app.api.deps import COOKIE_NAME, get_current_user, make_session_cookie
@@ -45,13 +49,41 @@ def google_callback(request: Request, session: Session = Depends(get_session)):
     return response
 
 
-@router.get("/me")
-def me(user: User = Depends(get_current_user)):
+def _me_json(user: User) -> dict:
     return {
         "email": user.email,
         "timezone": user.timezone,
+        "display_name": user.display_name,
         "calendar_connected": user.calendar_connected,
     }
+
+
+@router.get("/me")
+def me(user: User = Depends(get_current_user)):
+    return _me_json(user)
+
+
+class PatchMeBody(BaseModel):
+    display_name: str | None = Field(default=None, max_length=80)
+    timezone: str | None = Field(default=None, max_length=60)
+
+
+@router.patch("/me")
+def patch_me(
+    body: PatchMeBody,
+    user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+):
+    if body.display_name is not None:
+        user.display_name = body.display_name.strip() or None
+    if body.timezone is not None:
+        try:
+            ZoneInfo(body.timezone)  # validate it's a real IANA name
+        except Exception:
+            raise HTTPException(status_code=400, detail="Unknown timezone (use an IANA name like Asia/Beirut).")
+        user.timezone = body.timezone
+    session.commit()
+    return _me_json(user)
 
 
 @router.post("/logout")

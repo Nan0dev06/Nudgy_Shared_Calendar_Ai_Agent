@@ -1,12 +1,14 @@
 import { useApp } from "../ctx.js";
 import {
-  glass, gpill, dpill, evBlock, catChip, avatar, popover, dot, kicker,
+  glass, gpill, dpill, evBlock, catChip, avatar, popover, dot, kicker, sagePill,
 } from "../theme.js";
 import { ChevronLeft, ChevronRight } from "../Icons.jsx";
 import {
-  DAY_MS, mondayOf, sameDay, startOfDay, fmtDayShort, fmtDayLong,
+  DAY_MS, mondayOf, sameDay, fmtDayShort, fmtDayLong,
   fmtMonth, fmtWeekLabel, fmtRange, monthCells,
 } from "../dates.js";
+import { dayClusters, dayFreeWindows } from "../availability.js";
+import { nameFromEmail } from "../people.js";
 
 const CAT_COLORS = { Event: "#D95D39", Meet: "#2A9D8F", Call: "#DCA744", Task: "#DCA744" };
 const seg = (on) => ({
@@ -15,14 +17,36 @@ const seg = (on) => ({
   background: on ? "#2D2D2D" : "transparent", transition: "all .18s", userSelect: "none",
 });
 
+// Neutral gray glass — reserved for unresolved multi-person busy blocks
+const ovStyle = (hovered) => ({
+  borderRadius: 14, padding: "12px 14px", display: "flex", flexDirection: "column",
+  gap: 3, cursor: "default", position: "relative",
+  background: "rgba(150,142,128,.24)",
+  backdropFilter: "blur(10px)", WebkitBackdropFilter: "blur(10px)",
+  border: "1px solid rgba(255,253,247,.5)",
+  transition: "all .22s cubic-bezier(.34,1.56,.64,1)",
+  ...(hovered
+    ? { transform: "translateY(-3px) scale(1.02)", boxShadow: "0 16px 34px rgba(96,78,54,.2)", zIndex: 5 }
+    : {}),
+});
+
+const freeStyle = {
+  borderRadius: 16, padding: "13px 14px", display: "flex", flexDirection: "column",
+  gap: 7, cursor: "pointer", background: "rgba(255,253,247,.42)",
+  border: "1.6px solid #2A9D8F", transition: "all .25s",
+};
+
 export default function CalendarPage() {
   const {
-    view, setView, calAnchor, setCalAnchor, events, members, activeGroup,
+    view, setView, calAnchor, setCalAnchor, events, members, activeGroup, avail,
     setModal, focusId, hoverKey, setHoverKey, doSend,
   } = useApp();
 
   const today = new Date();
   const monday = mondayOf(calAnchor);
+  const memberByEmail = Object.fromEntries(members.map((m) => [m.email, m]));
+  const colorOf = (email) => memberByEmail[email]?.color || "#8A8A8A";
+  const nameOf = (email) => memberByEmail[email]?.name || nameFromEmail(email);
 
   const label =
     view === "day" ? fmtDayLong(calAnchor)
@@ -46,10 +70,7 @@ export default function CalendarPage() {
       : { opacity: 0.25, filter: "blur(1.6px)", transform: "translateY(5px)" };
   };
 
-  const memberByEmail = Object.fromEntries(members.map((m) => [m.email, m]));
-  const tintFor = (e) =>
-    (e.emails && e.emails[0] && memberByEmail[e.emails[0]]?.color) || "#2A9D8F";
-
+  const tintFor = (e) => colorOf(e.emails && e.emails[0]);
   const openEvent = (e) => setModal({ type: "event", event: e });
 
   const eventCard = (e, r) => (
@@ -64,6 +85,62 @@ export default function CalendarPage() {
       <div style={{ display: "flex", alignItems: "center", gap: 7, marginTop: 2, fontSize: 11.5, color: "#a09889" }}>
         <div style={avatar(tintFor(e))} />
         {fmtRange(e.start, e.end)}
+      </div>
+    </div>
+  );
+
+  // Gray overlap cluster block with the "who's busy" hover popover.
+  const clusterBlock = (c, key, popRight, extraStyle = {}) => {
+    const single = c.count === 1;
+    const label = single
+      ? `${nameOf(c.emails[0])} busy`
+      : `${c.count} busy`;
+    return (
+      <div key={key} style={{ position: "relative", ...focusAdj(c.emails) }}>
+        <div
+          style={{ ...ovStyle(hoverKey === key), ...extraStyle }}
+          onMouseEnter={() => setHoverKey(key)}
+          onMouseLeave={() => setHoverKey(null)}
+        >
+          <div style={{ fontSize: 12.5, fontWeight: 600, color: "#5c564b" }}>{label}</div>
+          <div style={{ fontSize: 11, color: "#7c7568" }}>
+            {fmtRange(c.start, c.end)}{single ? "" : " · hover to see"}
+          </div>
+        </div>
+        {hoverKey === key && (
+          <div style={popover(popRight)}>
+            <div style={{ fontSize: 12, fontWeight: 600 }}>
+              Who's busy · {fmtRange(c.start, c.end)}
+            </div>
+            {c.rows.map((r, i) => (
+              <div key={i} style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <div style={dot(colorOf(r.email))} />
+                <span style={{ fontSize: 12, fontWeight: 600, color: colorOf(r.email) }}>
+                  {nameOf(r.email)}
+                </span>
+                <span style={{ marginLeft: "auto", fontSize: 11.5, color: "#8c8577" }}>
+                  {fmtRange(r.start, r.end)}
+                </span>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    );
+  };
+
+  const freeBlock = (w, key) => (
+    <div
+      key={key}
+      className="hov-lift"
+      style={{ ...freeStyle, ...focusAdj(members.map((m) => m.email)) }}
+      onClick={() => setModal({ type: "free", slot: w })}
+    >
+      <div style={{ alignSelf: "flex-start", fontSize: 9, fontWeight: 600, letterSpacing: ".04em", textTransform: "uppercase", padding: "3px 10px", borderRadius: 999, background: "rgba(42,157,143,.14)", color: "#2A9D8F" }}>
+        Free
+      </div>
+      <div style={{ fontSize: 13, fontWeight: 600, color: "#2A9D8F", lineHeight: 1.3 }}>
+        Everyone free {fmtRange(w.start, w.end)}
       </div>
     </div>
   );
@@ -116,10 +193,15 @@ export default function CalendarPage() {
   const weekView = () => {
     const cols = Array.from({ length: 7 }, (_, i) => {
       const d = new Date(monday.getTime() + i * DAY_MS);
-      return { date: d, evs: events.filter((e) => sameDay(e.start, d)) };
+      return {
+        date: d,
+        evs: events.filter((e) => sameDay(e.start, d)),
+        clusters: dayClusters(avail.members_busy, d),
+        free: dayFreeWindows(avail.common_slots, d),
+      };
     });
-    const anyEvents = cols.some((c) => c.evs.length > 0);
-    if (!anyEvents)
+    const anything = cols.some((c) => c.evs.length + c.clusters.length + c.free.length > 0);
+    if (!anything)
       return (
         <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center" }}>
           <div style={{ textAlign: "center" }}>
@@ -127,21 +209,34 @@ export default function CalendarPage() {
               A quiet week for {activeGroup?.name || "your group"}
             </div>
             <div style={{ fontSize: 13, color: "#8c8577", marginTop: 5 }}>
-              Nothing booked — ask the orb to find a time, or add an event.
+              No busy blocks shared yet — invite people or connect calendars.
             </div>
           </div>
         </div>
       );
     return (
       <div style={{ flex: 1, display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: 12, minHeight: 0 }}>
-        {cols.map((col) => (
-          <div key={col.date.toISOString()} style={{ display: "flex", flexDirection: "column", gap: 10, minHeight: 0 }}>
-            <div style={{ ...kicker, color: sameDay(col.date, today) ? "#2A9D8F" : "#a49c8c", padding: "0 4px" }}>
-              {fmtDayShort(col.date)}
+        {cols.map((col, ci) => {
+          // one chronological stack per day: events, busy clusters, free windows
+          const items = [
+            ...col.evs.map((e) => ({ t: "ev", at: e.start, e })),
+            ...col.clusters.map((c, i) => ({ t: "ov", at: c.start, c, i })),
+            ...col.free.map((w, i) => ({ t: "free", at: w.start, w, i })),
+          ].sort((a, b) => a.at - b.at);
+          return (
+            <div key={col.date.toISOString()} style={{ display: "flex", flexDirection: "column", gap: 10, minHeight: 0, overflow: "visible" }}>
+              <div style={{ ...kicker, color: sameDay(col.date, today) ? "#2A9D8F" : "#a49c8c", padding: "0 4px" }}>
+                {fmtDayShort(col.date)}
+              </div>
+              {items.map((it, idx) => {
+                if (it.t === "ev") return eventCard(it.e, [16, 20, 18][idx % 3]);
+                if (it.t === "ov")
+                  return clusterBlock(it.c, `w${ci}ov${it.i}`, ci >= 4);
+                return freeBlock(it.w, `w${ci}fr${it.i}`);
+              })}
             </div>
-            {col.evs.map((e) => eventCard(e, [16, 20, 18][col.evs.indexOf(e) % 3]))}
-          </div>
-        ))}
+          );
+        })}
       </div>
     );
   };
@@ -149,9 +244,14 @@ export default function CalendarPage() {
   // ---------------- day ----------------
   const dayView = () => {
     const dayStart = 9, daySpan = 12; // 9am–9pm rail
+    const frac = (d) =>
+      Math.max(0, Math.min(1, (d.getHours() + d.getMinutes() / 60 - dayStart) / daySpan));
     const dayEvs = events.filter((e) => sameDay(e.start, calAnchor));
+    const clusters = dayClusters(avail.members_busy, calAnchor);
+    const free = dayFreeWindows(avail.common_slots, calAnchor);
     const nowFrac = (today.getHours() + today.getMinutes() / 60 - dayStart) / daySpan;
     const showNow = sameDay(calAnchor, today) && nowFrac >= 0 && nowFrac <= 1;
+    const empty = dayEvs.length + clusters.length + free.length === 0;
     return (
       <div style={{ flex: 1, display: "flex", gap: 12, minHeight: 0 }}>
         <div style={{ width: 44, flex: "none", display: "flex", flexDirection: "column", justifyContent: "space-between", padding: "4px 0", fontSize: 11, color: "#a09889", textAlign: "right" }}>
@@ -159,27 +259,66 @@ export default function CalendarPage() {
           <span>5pm</span><span>7pm</span><span>9pm</span>
         </div>
         <div style={{ flex: 1, position: "relative", borderLeft: "1.5px solid rgba(150,142,128,.3)", minHeight: 0 }}>
-          {dayEvs.map((e) => {
-            const s = (e.start.getHours() + e.start.getMinutes() / 60 - dayStart) / daySpan;
-            const len = Math.max(0.05, (e.end - e.start) / 3600000 / daySpan);
-            return (
-              <div
-                key={e.id}
-                className="hov-lift"
-                onClick={() => openEvent(e)}
-                style={{
-                  ...evBlock(tintFor(e), 14), ...focusAdj(e.emails),
-                  position: "absolute", left: 14, right: "30%",
-                  top: `${Math.max(0, s) * 100}%`, height: `${len * 100}%`,
-                  justifyContent: "center", gap: 2, padding: "8px 14px",
-                }}
-              >
-                <span style={{ fontSize: 13, fontWeight: 600 }}>{e.title}</span>
-                <span style={{ fontSize: 11, color: "#8c8577" }}>{fmtRange(e.start, e.end)}</span>
+          {dayEvs.map((e) => (
+            <div
+              key={e.id}
+              className="hov-lift"
+              onClick={() => openEvent(e)}
+              style={{
+                ...evBlock(tintFor(e), 14), ...focusAdj(e.emails),
+                position: "absolute", left: 14, right: "34%",
+                top: `${frac(e.start) * 100}%`,
+                height: `${Math.max(0.05, frac(e.end) - frac(e.start)) * 100}%`,
+                justifyContent: "center", gap: 2, padding: "8px 14px",
+              }}
+            >
+              <span style={{ fontSize: 13, fontWeight: 600 }}>{e.title}</span>
+              <span style={{ fontSize: 11, color: "#8c8577" }}>{fmtRange(e.start, e.end)}</span>
+            </div>
+          ))}
+          {clusters.map((c, i) =>
+            clusterBlock(c, `dov${i}`, false, {
+              position: "absolute", left: 14, right: 14,
+              top: `${frac(c.start) * 100}%`,
+              height: `${Math.max(0.06, frac(c.end) - frac(c.start)) * 100}%`,
+              justifyContent: "center",
+            })
+          )}
+          {free.map((w, i) => (
+            <div
+              key={"dfr" + i}
+              style={{
+                position: "absolute", left: 14, right: 14,
+                top: `${frac(w.start) * 100}%`,
+                height: `${Math.max(0.08, frac(w.end) - frac(w.start)) * 100}%`,
+                border: "2px solid #2A9D8F", borderRadius: 16,
+                background: "rgba(42,157,143,.07)",
+                display: "flex", flexDirection: "column", justifyContent: "center",
+                gap: 8, padding: "0 16px",
+              }}
+            >
+              <div style={{ fontSize: 13.5, fontWeight: 600, color: "#2A9D8F" }}>
+                Everyone free · {fmtRange(w.start, w.end)}
               </div>
-            );
-          })}
-          {dayEvs.length === 0 && (
+              <div style={{ display: "flex", gap: 8 }}>
+                <div
+                  className="hov-lift-sm"
+                  style={sagePill(true)}
+                  onClick={() => setModal({ type: "free", slot: w })}
+                >
+                  Book it
+                </div>
+                <div
+                  className="hov-sage"
+                  style={{ ...gpill(true), border: "1.4px solid #2A9D8F", color: "#2A9D8F", background: "rgba(255,253,247,.4)" }}
+                  onClick={() => setModal({ type: "newPoll", prefill: { start: w.start, end: w.end } })}
+                >
+                  Start poll
+                </div>
+              </div>
+            </div>
+          ))}
+          {empty && (
             <div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 13, color: "#8c8577" }}>
               Nothing on this day.
             </div>
@@ -207,16 +346,23 @@ export default function CalendarPage() {
           {cells.map(({ date, dim }, i) => {
             const key = "mc" + i;
             const dayEvs = events.filter((e) => sameDay(e.start, date));
+            const clusters = dim ? [] : dayClusters(avail.members_busy, date);
+            const busyCount = clusters.reduce((a, c) => a + c.count, 0);
             const isToday = sameDay(date, today);
-            const load = Math.min(0.55, dayEvs.length * 0.22);
-            const accent = dayEvs.length === 1 ? tintFor(dayEvs[0]) : null;
+            const load = Math.min(0.55, busyCount * 0.14 + (dayEvs.length > 1 ? 0.2 : 0));
+            const accent = dayEvs.length >= 1 ? tintFor(dayEvs[0]) : null;
             let bg = dim ? "rgba(255,253,247,.28)" : "rgba(255,253,247,.4)";
-            if (!dim && dayEvs.length > 1)
+            if (!dim && load > 0)
               bg = `color-mix(in srgb, #8A8A8A ${Math.round(load * 100)}%, rgba(255,253,247,.6))`;
             if (!dim && accent)
               bg = `color-mix(in srgb, ${accent} 18%, rgba(255,253,247,.6))`;
             const hov = hoverKey === key;
             const pr = i % 7 >= 5, pu = i >= 21;
+            const popText = dayEvs.length
+              ? dayEvs.map((e) => e.title).join(" · ")
+              : busyCount
+                ? `${busyCount} busy block${busyCount > 1 ? "s" : ""} — ask the orb for a window`
+                : "Nothing planned — ask the orb to find a window";
             return (
               <div
                 key={key}
@@ -234,22 +380,18 @@ export default function CalendarPage() {
                 <span style={{ fontSize: 12.5, fontWeight: 600, color: dim ? "#c9c2b4" : isToday ? "#2A9D8F" : "#2D2D2D" }}>
                   {date.getDate()}
                 </span>
-                {dayEvs.length > 0 && !dim && (
-                  <div style={{ height: 5, borderRadius: 3, background: accent || "#8A8A8A", width: `${Math.min(90, 30 + dayEvs.length * 25)}%`, marginTop: "auto" }} />
+                {(dayEvs.length > 0 || busyCount > 0) && !dim && (
+                  <div style={{ height: 5, borderRadius: 3, background: accent || "#8A8A8A", width: `${Math.min(90, 30 + (dayEvs.length + busyCount) * 18)}%`, marginTop: "auto" }} />
                 )}
                 {hov && !dim && (
                   <div style={popover(pr, pu)}>
                     <div style={{ fontSize: 12, fontWeight: 600 }}>
                       {fmtDayLong(date)}{isToday ? " · Today" : ""}
                     </div>
-                    <div style={{ fontSize: 11.5, lineHeight: 1.45, color: "#8c8577" }}>
-                      {dayEvs.length
-                        ? dayEvs.map((e) => e.title).join(" · ")
-                        : "Nothing planned — ask the orb to find a window"}
-                    </div>
+                    <div style={{ fontSize: 11.5, lineHeight: 1.45, color: "#8c8577" }}>{popText}</div>
                     <div
                       className="hov-lift-sm"
-                      style={{ ...dpill(true), background: "linear-gradient(160deg, #2A9D8F, #237c72)", alignSelf: "flex-start", padding: "5px 12px", fontSize: 11.5 }}
+                      style={{ ...sagePill(true), alignSelf: "flex-start", padding: "5px 12px", fontSize: 11.5 }}
                       onClick={(ev) => {
                         ev.stopPropagation();
                         setHoverKey(null);

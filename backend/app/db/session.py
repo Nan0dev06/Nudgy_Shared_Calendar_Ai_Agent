@@ -8,7 +8,7 @@ For a hackathon we create tables on startup with create_all — no migrations.
 """
 from collections.abc import Iterator
 
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.core.config import DATABASE_URL, ROOT_DIR
@@ -32,6 +32,12 @@ SessionLocal = sessionmaker(bind=engine, expire_on_commit=False)
 
 def init_db() -> None:
     Base.metadata.create_all(engine)
+    # create_all never ALTERs existing tables, so columns added after a DB was
+    # first created need this tiny in-place migration (works on SQLite + PG).
+    cols = {c["name"] for c in inspect(engine).get_columns("users")}
+    if "display_name" not in cols:
+        with engine.begin() as conn:
+            conn.execute(text("ALTER TABLE users ADD COLUMN display_name VARCHAR"))
 
 
 def get_session() -> Iterator[Session]:

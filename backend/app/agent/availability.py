@@ -92,6 +92,7 @@ def compute_availability(
     tz_name: str,
     earliest_hour: int = 9,
     latest_hour: int = 22,
+    include_member_busy: bool = False,
 ) -> dict:
     """Full availability picture for the agent: common slots + partial windows.
 
@@ -136,6 +137,24 @@ def compute_availability(
             for s, e in slots
         ],
     }
+
+    # For the calendar UI: raw busy ranges per member (still only ranges —
+    # freebusy never exposes titles/details, so neither can this).
+    if include_member_busy:
+        result["members_busy"] = [
+            {
+                "email": m.email,
+                "connected": m.connected,
+                "busy": [
+                    {
+                        "start_iso": s.astimezone(tz).isoformat(),
+                        "end_iso": e.astimezone(tz).isoformat(),
+                    }
+                    for s, e in m.busy
+                ],
+            }
+            for m in members
+        ]
 
     # Graceful degradation: if nobody-can-all-meet, compute windows where the
     # MOST members overlap, so the model can offer the closest alternatives.

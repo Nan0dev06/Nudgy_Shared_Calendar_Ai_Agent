@@ -66,11 +66,13 @@ export default function App() {
   const [chatMsgs, setChatMsgs] = useState([]);
   const [chatTyping, setChatTyping] = useState(false);
 
+  // group events/tasks + live availability (both from the backend)
+  const [groupEvents, setGroupEvents] = useState([]);
+  const [avail, setAvail] = useState({ members_busy: [], common_slots: [] });
+
   // persisted user-local state
   const gk = activeGroupId ? `.g${activeGroupId}` : "";
   const [activity, setActivity] = useStored(`ov.activity${gk}`, []);
-  const [localEvents, setLocalEvents] = useStored(`ov.events${gk}`, []);
-  const [tasks, setTasks] = useStored(`ov.tasks${gk}`, []);
   const [rsvp, setRsvp] = useStored("ov.rsvp", {});
   const [prefs, setPrefs] = useStored("ov.prefs", {
     push: true,
@@ -118,20 +120,31 @@ export default function App() {
     if (!activeGroupId) {
       setMembers([]);
       setPolls([]);
+      setGroupEvents([]);
+      setAvail({ members_busy: [], common_slots: [] });
       return;
     }
     try {
-      const [ms, ps] = await Promise.all([
+      const [ms, ps, evs] = await Promise.all([
         api.members(activeGroupId),
         api.polls(activeGroupId),
+        api.events(activeGroupId),
       ]);
       setMembers(decorateMembers(ms, meRef.current?.email));
       setPolls(ps);
+      setGroupEvents(evs);
     } catch {
       // group may have been left/removed — fall back gracefully
       setMembers([]);
       setPolls([]);
+      setGroupEvents([]);
     }
+    // availability hits Google live for every member — slow, so don't block
+    // the rest of the data on it
+    api
+      .availability(activeGroupId)
+      .then((a) => setAvail(a))
+      .catch(() => setAvail({ members_busy: [], common_slots: [] }));
   }, [activeGroupId]);
 
   const meRef = useRef(null);
@@ -195,6 +208,55 @@ export default function App() {
     },
     [loadGroups, pushActivity, setActiveGroupId]
   );
+
+  const createEvent = useCallback(
+    async (body) => {
+      const out = await api.createEvent(activeGroupId, body);
+      await refreshGroupData();
+      pushActivity({
+        dot: body.kind === "task" ? "#DCA744" : "#2A9D8F",
+        pre: body.kind === "task" ? "You created task " : "You added ",
+        bold: body.title,
+        post: out.synced ? " (synced to Google Calendar)" : "",
+      });
+      return out;
+    },
+    [activeGroupId, refreshGroupData, pushActivity]
+  );
+
+  const setTaskDone = useCallback(
+    async (eventId, done) => {
+      await api.patchEvent(eventId, { done });
+      setGroupEvents((evs) =>
+        evs.map((e) => (e.id === eventId ? { ...e, done } : e))
+      );
+    },
+    []
+  );
+
+  const removeEvent = useCallback(
+    async (eventId) => {
+      await api.deleteEvent(eventId);
+      setGroupEvents((evs) => evs.filter((e) => e.id !== eventId));
+    },
+    []
+  );
+
+  const createPollDirect = useCallback(
+    async (body) => {
+      const poll = await api.createPoll(activeGroupId, body);
+      setPolls((ps) => [poll, ...ps]);
+      pushActivity({ dot: "#D95D39", pre: "You started poll ", bold: poll.title, post: "" });
+      return poll;
+    },
+    [activeGroupId, pushActivity]
+  );
+
+  const saveProfile = useCallback(async (patch) => {
+    const updated = await api.patchMe(patch);
+    setMe(updated);
+    return updated;
+  }, []);
 
   const logout = useCallback(async () => {
     try {
@@ -287,13 +349,37 @@ export default function App() {
         emails: members.map((m) => m.email),
         booked: p.booked,
       }));
-    const local = localEvents.map((e) => ({
-      ...e,
-      start: new Date(e.start),
-      end: new Date(e.end),
-    }));
-    return [...fromPolls, ...local].sort((a, b) => a.start - b.start);
-  }, [polls, localEvents, members]);
+    const fromBackend = groupEvents
+      .filter((e) => e.kind === "event" && e.start_iso)
+      .map((e) => ({
+        id: "ev" + e.id,
+        backendId: e.id,
+        title: e.title,
+        cat: e.category || "Event",
+        start: new Date(e.start_iso),
+        end: new Date(e.end_iso),
+        where: e.location || "—",
+        link: e.gcal_link,
+        synced: e.synced,
+        emails: members.map((m) => m.email),
+      }));
+    return [...fromPolls, ...fromBackend].sort((a, b) => a.start - b.start);
+  }, [polls, groupEvents, members]);
+
+  const tasks = useMemo(
+    () =>
+      groupEvents
+        .filter((e) => e.kind === "task")
+        .map((t) => ({
+          id: t.id,
+          title: t.title,
+          cat: t.category || "Task",
+          due: t.start_iso ? t.start_iso.slice(0, 10) : "anytime",
+          where: t.location,
+          done: t.done,
+        })),
+    [groupEvents]
+  );
 
   const openPolls = useMemo(
     () => polls.filter((p) => p.status === "open"),
@@ -330,7 +416,7 @@ export default function App() {
 
   const ctx = {
     me, groups, activeGroup, activeGroupId, setActiveGroupId, members, polls,
-    openPolls, events, tasks, setTasks, localEvents, setLocalEvents,
+    openPolls, events, tasks, avail,
     page, setPage, view, setView, calAnchor, setCalAnchor,
     collapsed, setCollapsed, focusId, setFocusId, hoverKey, setHoverKey,
     modal, setModal, groupOpen, setGroupOpen, notifOpen, setNotifOpen,
@@ -340,8 +426,9 @@ export default function App() {
     memory, setMemory, profile, setProfile,
     notifs, unread, readNotifs, setReadNotifs,
     vote, createGroup, joinGroup, logout, refreshGroupData,
+    createEvent, setTaskDone, removeEvent, createPollDirect, saveProfile,
     displayName:
-      profile.name || (me ? nameFromEmail(me.email) : ""),
+      me?.display_name || profile.name || (me ? nameFromEmail(me.email) : ""),
   };
 
   // ---- screens -------------------------------------------------------------

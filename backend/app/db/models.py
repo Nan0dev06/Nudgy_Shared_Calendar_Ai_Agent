@@ -36,6 +36,8 @@ class User(Base):
     # raw Google Credentials JSON; None until the user connects a calendar
     token_json: Mapped[str | None] = mapped_column(String, default=None)
     timezone: Mapped[str] = mapped_column(String, default="Asia/Beirut")
+    # optional user-chosen name; UI falls back to deriving one from the email
+    display_name: Mapped[str | None] = mapped_column(String, default=None)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
 
     memberships: Mapped[list["Membership"]] = relationship(
@@ -116,6 +118,44 @@ class Vote(Base):
 
     poll: Mapped["Poll"] = relationship(back_populates="votes")
     user: Mapped["User"] = relationship()
+
+
+class GroupEvent(Base):
+    """An event or task a member created in-app (distinct from poll bookings,
+    which live on Poll). kind: 'event' has start/end; 'task' uses start_utc as
+    its due date (end_utc mirrors it) and can be checked off via `done`.
+
+    If the creator opted into Google sync, gcal_event_id/gcal_link map to the
+    Google Calendar event on the creator's primary calendar (members get it
+    via invites, same pattern as booking.py) so deletes can propagate.
+    """
+    __tablename__ = "events"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    group_id: Mapped[int] = mapped_column(ForeignKey("groups.id"))
+    created_by: Mapped[int] = mapped_column(ForeignKey("users.id"))
+    kind: Mapped[str] = mapped_column(String, default="event")  # event | task
+    title: Mapped[str] = mapped_column(String)
+    category: Mapped[str] = mapped_column(String, default="Event")
+    location: Mapped[str | None] = mapped_column(String, default=None)
+    start_utc: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
+    end_utc: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
+    done: Mapped[bool] = mapped_column(default=False)
+    synced: Mapped[bool] = mapped_column(default=False)
+    gcal_event_id: Mapped[str | None] = mapped_column(String, default=None)
+    gcal_link: Mapped[str | None] = mapped_column(String, default=None)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+
+    # same SQLite-drops-tzinfo guard as Poll — always read via these
+    @property
+    def start(self) -> datetime | None:
+        dt = self.start_utc
+        return dt if dt is None or dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+
+    @property
+    def end(self) -> datetime | None:
+        dt = self.end_utc
+        return dt if dt is None or dt.tzinfo else dt.replace(tzinfo=timezone.utc)
 
 
 class Membership(Base):

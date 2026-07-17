@@ -36,6 +36,7 @@ export default function Modals() {
       {modal.type === "newEvent" && <NewEventModal />}
       {modal.type === "newTask" && <NewTaskModal />}
       {modal.type === "newPoll" && <NewPollModal />}
+      {modal.type === "free" && <FreeModal />}
       {modal.type === "invite" && <InviteModal />}
       {modal.type === "newGroup" && <NewGroupModal />}
     </div>
@@ -111,7 +112,7 @@ function EventModal() {
 }
 
 function TaskModal() {
-  const { modal, setModal, tasks, setTasks, pushActivity } = useApp();
+  const { modal, setModal, setTaskDone, removeEvent, pushActivity } = useApp();
   const t = modal.task;
   return (
     <div style={card} onClick={stop}>
@@ -129,8 +130,8 @@ function TaskModal() {
         <div
           className="hov-lift-sm"
           style={{ ...dpill(true), flex: 1, justifyContent: "center" }}
-          onClick={() => {
-            setTasks((ts) => ts.map((x) => (x.id === t.id ? { ...x, done: true } : x)));
+          onClick={async () => {
+            await setTaskDone(t.id, true);
             pushActivity({ dot: "#DCA744", pre: "You completed ", bold: t.title, post: "" });
             setModal(null);
           }}
@@ -140,8 +141,8 @@ function TaskModal() {
         <div
           className="hov-glass"
           style={{ ...gpill(true), flex: 1, justifyContent: "center", color: "#b08a80" }}
-          onClick={() => {
-            setTasks((ts) => ts.filter((x) => x.id !== t.id));
+          onClick={async () => {
+            await removeEvent(t.id);
             setModal(null);
           }}
         >
@@ -204,7 +205,7 @@ function catPills(list, cur, setCur) {
 }
 
 function NewEventModal() {
-  const { setModal, setLocalEvents, pushActivity, members, me, setPage, setView } = useApp();
+  const { setModal, createEvent, members, me, setPage, setView } = useApp();
   const [title, setTitle] = useState("");
   const [date, setDate] = useState(() => new Date().toISOString().slice(0, 10));
   const [start, setStart] = useState("19:00");
@@ -212,23 +213,33 @@ function NewEventModal() {
   const [where, setWhere] = useState("");
   const [cat, setCat] = useState("Event");
   const [inv, setInv] = useState(members.filter((m) => m.email !== me?.email).map((m) => m.email));
-  const [sync, setSync] = useState(true);
+  const [sync, setSync] = useState(!!me?.calendar_connected);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
 
-  const create = () => {
-    const t = title.trim() || "New event";
-    const s = new Date(`${date}T${start}`);
-    const e = new Date(`${date}T${end}`);
-    setLocalEvents((evs) => [
-      ...evs,
-      {
-        id: "loc" + Date.now(), title: t, cat, start: s.toISOString(), end: e.toISOString(),
-        where: where.trim() || "—", emails: [me?.email, ...inv].filter(Boolean), sync,
-      },
-    ]);
-    pushActivity({ dot: "#2A9D8F", pre: "You added ", bold: t, post: ` to ${fmtDayLong(s)}` });
-    setModal(null);
-    setPage("calendar");
-    setView("week");
+  const create = async () => {
+    if (busy) return;
+    setBusy(true);
+    setErr("");
+    try {
+      await createEvent({
+        kind: "event",
+        title: title.trim() || "New event",
+        category: cat,
+        location: where.trim() || null,
+        start_iso: new Date(`${date}T${start}`).toISOString(),
+        end_iso: new Date(`${date}T${end}`).toISOString(),
+        invite_emails: inv,
+        sync_google: sync,
+      });
+      setModal(null);
+      setPage("calendar");
+      setView("week");
+    } catch (e) {
+      setErr(e.message || "That didn't work — try again.");
+    } finally {
+      setBusy(false);
+    }
   };
 
   return (
@@ -250,35 +261,46 @@ function NewEventModal() {
         <div style={{ flex: 1 }}>
           <div style={{ fontSize: 13.5, fontWeight: 600 }}>Sync with Google Calendar</div>
           <div style={{ fontSize: 11.5, color: "#8c8577", marginTop: 2 }}>
-            Two-way sync — needs the backend events endpoint (coming soon), saved locally for now.
+            {me?.calendar_connected
+              ? "Creates the event on Google Calendar and invites everyone — their calendars update automatically."
+              : "Connect your Google Calendar to sync events."}
           </div>
         </div>
-        <div style={toggleStyle(sync)} onClick={() => setSync((v) => !v)}>
+        <div style={toggleStyle(sync)} onClick={() => me?.calendar_connected && setSync((v) => !v)}>
           <div style={knobStyle(sync)} />
         </div>
       </div>
-      <div className="hov-lift-sm" style={{ ...dpill(false), justifyContent: "center" }} onClick={create}>
-        Create event
+      {err && <div style={{ fontSize: 12, color: "#D95D39" }}>{err}</div>}
+      <div className="hov-lift-sm" style={{ ...dpill(false), justifyContent: "center", opacity: busy ? 0.6 : 1 }} onClick={create}>
+        {busy ? "Creating…" : "Create event"}
       </div>
     </div>
   );
 }
 
 function NewTaskModal() {
-  const { setModal, setTasks, pushActivity } = useApp();
+  const { setModal, createEvent } = useApp();
   const [title, setTitle] = useState("");
   const [cat, setCat] = useState("Task");
   const [due, setDue] = useState("");
   const [where, setWhere] = useState("");
+  const [busy, setBusy] = useState(false);
 
-  const create = () => {
-    const t = title.trim() || "New task";
-    setTasks((ts) => [
-      ...ts,
-      { id: "task" + Date.now(), title: t, cat, due: due || "anytime", where: where.trim() },
-    ]);
-    pushActivity({ dot: "#DCA744", pre: "You created task ", bold: t, post: "" });
-    setModal(null);
+  const create = async () => {
+    if (busy) return;
+    setBusy(true);
+    try {
+      await createEvent({
+        kind: "task",
+        title: title.trim() || "New task",
+        category: cat,
+        location: where.trim() || null,
+        start_iso: due ? new Date(`${due}T12:00`).toISOString() : null,
+      });
+      setModal(null);
+    } finally {
+      setBusy(false);
+    }
   };
 
   return (
@@ -294,32 +316,49 @@ function NewTaskModal() {
           Once you add a place, the agent flags who it's most convenient for.
         </span>
       </div>
-      <div className="hov-lift-sm" style={{ ...dpill(false), justifyContent: "center" }} onClick={create}>
-        Create task
+      <div className="hov-lift-sm" style={{ ...dpill(false), justifyContent: "center", opacity: busy ? 0.6 : 1 }} onClick={create}>
+        {busy ? "Creating…" : "Create task"}
       </div>
     </div>
   );
 }
 
-// Creating a poll goes through Orbi — the agent owns poll creation in the
-// backend, so we hand it a precise instruction and it calls create_poll.
+const hhmm = (d) =>
+  `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+
 function NewPollModal() {
-  const { setModal, doSend, members } = useApp();
-  const [title, setTitle] = useState("");
-  const [date, setDate] = useState(() => new Date().toISOString().slice(0, 10));
-  const [start, setStart] = useState("19:00");
-  const [end, setEnd] = useState("21:00");
+  const { modal, setModal, createPollDirect, members, setPage } = useApp();
+  const pre = modal.prefill || {};
+  const [title, setTitle] = useState(pre.title || "");
+  const [date, setDate] = useState(() =>
+    (pre.start ? new Date(pre.start) : new Date()).toISOString().slice(0, 10)
+  );
+  const [start, setStart] = useState(pre.start ? hhmm(new Date(pre.start)) : "19:00");
+  const [end, setEnd] = useState(pre.end ? hhmm(new Date(pre.end)) : "21:00");
   const [where, setWhere] = useState("");
   const [minYes, setMinYes] = useState(Math.max(1, members.length));
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
 
-  const create = () => {
-    const t = title.trim() || "Group meetup";
-    const msg =
-      `Create a poll titled "${t}" for ${date} from ${start} to ${end}` +
-      (where.trim() ? ` at ${where.trim()}` : "") +
-      `, requiring at least ${minYes} yes votes.`;
-    setModal(null);
-    doSend(msg);
+  const create = async () => {
+    if (busy) return;
+    setBusy(true);
+    setErr("");
+    try {
+      await createPollDirect({
+        title: title.trim() || "Group meetup",
+        start_iso: new Date(`${date}T${start}`).toISOString(),
+        end_iso: new Date(`${date}T${end}`).toISOString(),
+        location: where.trim() || null,
+        min_yes: minYes,
+      });
+      setModal(null);
+      setPage("polls");
+    } catch (e) {
+      setErr(e.message || "That didn't work — try again.");
+    } finally {
+      setBusy(false);
+    }
   };
 
   return (
@@ -355,8 +394,63 @@ function NewPollModal() {
           ))}
         </div>
       </div>
-      <div className="hov-lift-sm" style={{ ...dpill(false), justifyContent: "center" }} onClick={create}>
-        Ask Orbi to start the poll
+      {err && <div style={{ fontSize: 12, color: "#D95D39" }}>{err}</div>}
+      <div className="hov-lift-sm" style={{ ...dpill(false), justifyContent: "center", opacity: busy ? 0.6 : 1 }} onClick={create}>
+        {busy ? "Starting…" : "Start the poll"}
+      </div>
+    </div>
+  );
+}
+
+// Sage free-window modal: everyone's clear — book it outright or poll first.
+function FreeModal() {
+  const { modal, setModal, createEvent, setPage, setView } = useApp();
+  const slot = modal.slot;
+  const [busy, setBusy] = useState(false);
+
+  const range = `${fmtDayLong(slot.start)} · ${fmtRange(slot.start, slot.end)}`;
+
+  const bookIt = async () => {
+    if (busy) return;
+    setBusy(true);
+    try {
+      await createEvent({
+        kind: "event",
+        title: "Group hangout",
+        category: "Event",
+        start_iso: slot.start.toISOString(),
+        end_iso: slot.end.toISOString(),
+        sync_google: true,
+      });
+      setModal(null);
+      setPage("calendar");
+      setView("week");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div style={card} onClick={stop}>
+      <div style={{ alignSelf: "flex-start", fontSize: 9.5, fontWeight: 600, letterSpacing: ".05em", textTransform: "uppercase", padding: "4px 11px", borderRadius: 999, background: "rgba(42,157,143,.14)", color: "#2A9D8F" }}>
+        Free window
+      </div>
+      <div style={{ fontSize: 20, fontWeight: 600 }}>Everyone free · {range}</div>
+      <div style={{ fontSize: 13, color: "#8c8577", lineHeight: 1.5, marginTop: -6 }}>
+        Every connected calendar is clear here. Book it straight onto everyone's
+        calendar, or start a poll if you'd rather ask first.
+      </div>
+      <div style={{ display: "flex", gap: 9 }}>
+        <div className="hov-lift-sm" style={{ ...dpill(true), opacity: busy ? 0.6 : 1 }} onClick={bookIt}>
+          {busy ? "Booking…" : "Book it"}
+        </div>
+        <div
+          className="hov-glass"
+          style={gpill(true)}
+          onClick={() => setModal({ type: "newPoll", prefill: { start: slot.start, end: slot.end } })}
+        >
+          Start poll
+        </div>
       </div>
     </div>
   );

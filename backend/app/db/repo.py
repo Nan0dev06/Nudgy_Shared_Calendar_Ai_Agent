@@ -11,7 +11,7 @@ import secrets
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.db.models import Group, Membership, Poll, User, Vote
+from app.db.models import Group, GroupEvent, Membership, Poll, User, Vote
 
 
 # ----------------------------------------------------------------- users
@@ -163,4 +163,42 @@ def set_poll_status(session: Session, poll: Poll, status: str) -> None:
 def mark_poll_booked(session: Session, poll: Poll, event_link: str | None) -> None:
     poll.booked = True
     poll.event_link = event_link
+    session.commit()
+
+
+# ----------------------------------------------------------------- events
+
+def create_event(session: Session, **kwargs) -> GroupEvent:
+    event = GroupEvent(**kwargs)
+    session.add(event)
+    session.commit()
+    return event
+
+
+def get_event(session: Session, event_id: int) -> GroupEvent | None:
+    return session.get(GroupEvent, event_id)
+
+
+def get_group_events(session: Session, group_id: int) -> list[GroupEvent]:
+    """All events + tasks for a group, chronological (undated tasks last)."""
+    rows = session.scalars(
+        select(GroupEvent).where(GroupEvent.group_id == group_id)
+    )
+    return sorted(rows, key=lambda e: (e.start is None, e.start or e.created_at))
+
+
+def set_event_done(session: Session, event: GroupEvent, done: bool) -> None:
+    event.done = done
+    session.commit()
+
+
+def delete_event(session: Session, event: GroupEvent) -> None:
+    session.delete(event)
+    session.commit()
+
+
+def set_event_gcal(session: Session, event: GroupEvent, gcal_id: str | None, link: str | None) -> None:
+    event.synced = gcal_id is not None
+    event.gcal_event_id = gcal_id
+    event.gcal_link = link
     session.commit()

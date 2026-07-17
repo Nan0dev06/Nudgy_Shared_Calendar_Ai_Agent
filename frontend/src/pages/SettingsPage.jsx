@@ -9,15 +9,38 @@ const TABS = ["Account", "Preferences", "Memory", "Groups", "Notifications"];
 
 export default function SettingsPage() {
   const {
-    me, displayName, profile, setProfile, prefs, setPrefs, memory, setMemory,
+    me, displayName, saveProfile, prefs, setPrefs, memory, setMemory,
     groups, members, activeGroup, setModal, logout, setSettingsTab, settingsTab,
   } = useApp();
 
   const [memInput, setMemInput] = useState("");
   const [editingName, setEditingName] = useState(false);
   const [nameDraft, setNameDraft] = useState(displayName);
+  const [editingTz, setEditingTz] = useState(false);
+  const [tzDraft, setTzDraft] = useState(me?.timezone || "");
+  const [tzErr, setTzErr] = useState("");
   const [editIdx, setEditIdx] = useState(null);
   const [editDraft, setEditDraft] = useState("");
+
+  const saveName = async () => {
+    const name = nameDraft.trim();
+    if (name && name !== displayName) await saveProfile({ display_name: name });
+    setEditingName(false);
+  };
+
+  const saveTz = async () => {
+    const tz = tzDraft.trim();
+    setTzErr("");
+    if (tz && tz !== me?.timezone) {
+      try {
+        await saveProfile({ timezone: tz });
+      } catch (e) {
+        setTzErr(e.message || "Unknown timezone.");
+        return;
+      }
+    }
+    setEditingTz(false);
+  };
 
   const toggleRow = (key, label, sub) => (
     <div key={key} style={prefCard}>
@@ -94,22 +117,10 @@ export default function SettingsPage() {
                       autoFocus
                       value={nameDraft}
                       onChange={(e) => setNameDraft(e.target.value)}
-                      onKeyDown={(e) => {
-                        if (e.key === "Enter") {
-                          setProfile((p) => ({ ...p, name: nameDraft.trim() || displayName }));
-                          setEditingName(false);
-                        }
-                      }}
+                      onKeyDown={(e) => e.key === "Enter" && saveName()}
                       style={fieldStyle}
                     />
-                    <div
-                      className="hov-lift-sm"
-                      style={dpill(true)}
-                      onClick={() => {
-                        setProfile((p) => ({ ...p, name: nameDraft.trim() || displayName }));
-                        setEditingName(false);
-                      }}
-                    >
+                    <div className="hov-lift-sm" style={dpill(true)} onClick={saveName}>
                       Save
                     </div>
                   </div>
@@ -125,7 +136,32 @@ export default function SettingsPage() {
               </div>
               <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
                 <span style={fieldLabel}>Timezone</span>
-                <div style={fieldRead}>{me?.timezone}</div>
+                {editingTz ? (
+                  <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                    <div style={{ display: "flex", gap: 8 }}>
+                      <input
+                        autoFocus
+                        placeholder="e.g. Asia/Beirut"
+                        value={tzDraft}
+                        onChange={(e) => setTzDraft(e.target.value)}
+                        onKeyDown={(e) => e.key === "Enter" && saveTz()}
+                        style={fieldStyle}
+                      />
+                      <div className="hov-lift-sm" style={dpill(true)} onClick={saveTz}>
+                        Save
+                      </div>
+                    </div>
+                    {tzErr && <div style={{ fontSize: 12, color: "#D95D39" }}>{tzErr}</div>}
+                  </div>
+                ) : (
+                  <div
+                    style={{ ...fieldRead, cursor: "pointer" }}
+                    title="Click to edit"
+                    onClick={() => { setTzDraft(me?.timezone || ""); setEditingTz(true); }}
+                  >
+                    {me?.timezone} <span style={{ color: "#a49c8c", fontSize: 11 }}>· edit</span>
+                  </div>
+                )}
               </div>
             </div>
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1.3fr", gap: 14 }}>

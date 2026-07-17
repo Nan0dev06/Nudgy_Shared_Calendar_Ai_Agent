@@ -35,6 +35,16 @@ Response `200`:
 ```
 Response `401`: `{"detail": "Not logged in. Connect Google first."}`
 
+### `PATCH /auth/me`
+Update profile fields. Both optional; timezone must be an IANA name.
+
+Request:
+```json
+{"display_name": "Hussein", "timezone": "Asia/Beirut"}
+```
+Response `200`: same shape as `GET /auth/me` (which also includes
+`display_name`).
+
 ### `POST /auth/logout`
 Clears the cookie. Response `200`: `{"ok": true}`
 
@@ -85,6 +95,73 @@ Response `200`:
 ```
 Response `403`: `{"detail": "You are not in this group."}`
 
+### `GET /groups/{group_id}/availability?days_ahead=7&duration_minutes=60`
+Live free/busy for the calendar UI. Hits Google's freebusy endpoint for every
+connected member at call time (expect a couple of seconds). Privacy unchanged:
+busy **ranges only** — never titles or details.
+
+Response `200` (abridged):
+```json
+{
+  "timezone": "Asia/Beirut",
+  "members_connected": 2,
+  "members_busy": [
+    {"email": "a@x.com", "connected": true,
+     "busy": [{"start_iso": "2026-07-18T12:00:00+03:00", "end_iso": "2026-07-18T14:00:00+03:00"}]}
+  ],
+  "common_slots": [
+    {"start": "Sat 18 Jul 18:00", "end": "Sat 18 Jul 22:00",
+     "start_iso": "2026-07-18T18:00:00+03:00", "end_iso": "2026-07-18T22:00:00+03:00",
+     "duration_minutes": 240}
+  ]
+}
+```
+With zero connected calendars, `common_slots` is always `[]` (an empty
+intersection is not "everyone is free"). Google errors return
+`{"members_busy": [], "common_slots": [], "error": "..."}` instead of a 500.
+
+---
+
+## Events & tasks
+
+In-app events/tasks a member creates directly (poll bookings stay on polls).
+Google sync mirrors booking.py: one event on the creator's primary calendar,
+members as attendees, `sendUpdates="all"` — Google updates everyone's calendar
+and emails invites. The inbound half of "two-way" is the availability endpoint
+above: whatever people do in Google Calendar shows up as busy blocks.
+
+### `GET /groups/{group_id}/events`
+Chronological; tasks without a due date last.
+
+Response `200`:
+```json
+[
+  {"id": 1, "kind": "event", "title": "Dinner", "category": "Event",
+   "location": "Kalei", "start_iso": "2026-07-18T19:00:00+03:00",
+   "end_iso": "2026-07-18T21:00:00+03:00", "done": false,
+   "synced": true, "gcal_link": "https://...", "created_by": 1}
+]
+```
+
+### `POST /groups/{group_id}/events`
+```json
+{"kind": "event", "title": "Dinner", "category": "Event",
+ "location": "Kalei", "start_iso": "2026-07-18T19:00:00+03:00",
+ "end_iso": "2026-07-18T21:00:00+03:00",
+ "invite_emails": ["b@x.com"], "sync_google": true}
+```
+`kind: "task"` needs no times (`start_iso` doubles as the due date).
+`invite_emails` is filtered to group members; empty = everyone. A Google sync
+failure never loses the in-app event — the response carries
+`"sync": {"ok": false, "reason": "..."}`.
+
+### `PATCH /events/{event_id}`
+`{"done": true}` — check a task off. Response: the updated event.
+
+### `DELETE /events/{event_id}`
+Removes the event; if it was synced, also deletes the Google copy (best
+effort, via the creator's token). Response `200`: `{"ok": true, "gcal": {...}}`
+
 ---
 
 ## Chat (the Orbi orb)
@@ -133,10 +210,22 @@ Notes for the UI:
 
 ## Polls & voting
 
-Polls are **created by Orbi** (via chat — there is no create-poll REST endpoint);
-members then vote through these endpoints. The decision rule runs after every
-vote: any NO ⇒ `rejected`; zero NO and ≥ `min_yes` YES ⇒ `approved`; else stays
-`open`. Booking happens through Orbi too, and only for approved polls.
+Polls are created by Orbi (via chat) **or directly via REST**; members then
+vote through these endpoints. The decision rule runs after every vote: any NO
+⇒ `rejected`; zero NO and ≥ `min_yes` YES ⇒ `approved`; else stays `open`.
+An approving vote triggers the autonomous follow-through (auto-book).
+
+### `POST /groups/{group_id}/polls`
+Same rules as the agent's create_poll tool — `min_yes` defaults to unanimous
+and is clamped to the member count.
+
+Request:
+```json
+{"title": "Dinner this week", "start_iso": "2026-07-18T19:00:00+03:00",
+ "end_iso": "2026-07-18T21:00:00+03:00", "location": "Kalei", "min_yes": 2}
+```
+Response `200`: the poll object (shape below). Poll responses also include
+`start_iso` / `end_iso` so the frontend can place booked events on the calendar.
 
 ### `GET /groups/{group_id}/polls`
 Newest first, max 10.

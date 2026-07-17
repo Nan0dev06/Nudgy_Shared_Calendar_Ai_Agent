@@ -1,6 +1,7 @@
-"""Poll endpoints: members see polls and vote; Orbi (the agent) creates them.
+"""Poll endpoints: members see polls, create them, and vote.
 
 GET  /groups/{group_id}/polls      -> polls for a group (newest first)
+POST /groups/{group_id}/polls      -> create a poll directly (no agent needed)
 POST /polls/{poll_id}/vote         {"yes": true}  -> updated poll state
 
 Voting re-evaluates the decision rule immediately. THE AUTONOMOUS PART of the
@@ -20,7 +21,7 @@ from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_current_user
@@ -36,6 +37,14 @@ router = APIRouter(tags=["polls"])
 
 class VoteBody(BaseModel):
     yes: bool
+
+
+class CreatePollBody(BaseModel):
+    title: str = Field(min_length=1, max_length=200)
+    start_iso: str
+    end_iso: str
+    location: str | None = Field(default=None, max_length=200)
+    min_yes: int | None = Field(default=None, ge=1)
 
 
 def _poll_json(session: Session, poll: Poll, tz_name: str) -> dict:
@@ -74,6 +83,41 @@ def group_polls(
     _require_membership(session, user, group_id)
     polls = repo.get_group_polls(session, group_id)[:10]
     return [_poll_json(session, p, user.timezone) for p in polls]
+
+
+@router.post("/groups/{group_id}/polls")
+def create_poll(
+    group_id: int,
+    body: CreatePollBody,
+    user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+):
+    """Direct poll creation — same rules as the agent's create_poll tool
+    (min_yes defaults to unanimous, clamped to the member count)."""
+    _require_membership(session, user, group_id)
+    try:
+        start = datetime.fromisoformat(body.start_iso)
+        end = datetime.fromisoformat(body.end_iso)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=f"Bad ISO datetime: {e}")
+    if start.tzinfo is None or end.tzinfo is None:
+        raise HTTPException(status_code=400, detail="Datetimes must include a timezone offset.")
+    if end <= start:
+        raise HTTPException(status_code=400, detail="Slot end must be after start.")
+
+    group = session.get(Group, group_id)
+    members = repo.get_group_members(session, group_id)
+    min_yes = body.min_yes or len(members)
+    poll = repo.create_poll(
+        session, group, user,
+        title=body.title,
+        slot_start_utc=start.astimezone(timezone.utc),
+        slot_end_utc=end.astimezone(timezone.utc),
+        min_yes=min(min_yes, len(members)),
+        location=body.location,
+    )
+    log.info("[polls] %s created poll %d directly", user.email, poll.id)
+    return _poll_json(session, poll, user.timezone)
 
 
 @router.post("/polls/{poll_id}/vote")
