@@ -135,12 +135,19 @@ TOOL_SCHEMAS = [
             "plan gets asked the new time, including people who were fine with the "
             "old one (a different hour is a different question). Only call this "
             "when the host has explicitly said to move on. If no candidate times "
-            "are left the plan closes and you should search for fresh ones."
+            "are left the plan closes and you should search for fresh ones. This "
+            "is about the times ALREADY queued on the plan — it does not search "
+            "for new ones, so do not call find_meeting_slots for it."
         ),
         "input_schema": {
             "type": "object",
-            "properties": {"plan_id": {"type": "integer"}},
-            "required": ["plan_id"],
+            "properties": {"plan_id": {
+                "type": "integer",
+                "description": "OMIT this when the group has one open plan — it will be "
+                               "used automatically. NEVER guess a number: if you need an "
+                               "id, take the exact one from get_plan_status.",
+            }},
+            "required": [],
         },
     },
     {
@@ -155,8 +162,14 @@ TOOL_SCHEMAS = [
         ),
         "input_schema": {
             "type": "object",
-            "properties": {"plan_id": {"type": "integer"}},
-            "required": ["plan_id"],
+            "properties": {"plan_id": {
+                "type": "integer",
+                "description": "OMIT this when the group has one open plan — it will be "
+                               "used automatically. NEVER guess a number: booking the "
+                               "wrong plan puts a real event on real calendars. If you "
+                               "need an id, take the exact one from get_plan_status.",
+            }},
+            "required": [],
         },
     },
     {
@@ -352,13 +365,46 @@ def _get_plan_status(ctx: ToolContext, args: dict) -> dict:
     return {"plans": [_plan_json(ctx, p) for p in plans]}
 
 
-def _host_move(ctx: ToolContext, args: dict, fn) -> dict:
-    """Shared guard for the two host-only moves."""
+def _resolve_plan(ctx: ToolContext, args: dict):
+    """Find the plan a host move refers to. Returns a Plan or an error dict.
+
+    The model does not reliably know plan ids — it has been observed inventing
+    one ("plan 123") when the host just said "lock it in". A wrong id that
+    happens to exist would act on the WRONG plan and put it on real calendars,
+    so ids are never trusted blind:
+      - omitted    -> the group's open plan, when there is exactly one
+      - ambiguous  -> refuse and list the open plans so the model can pick
+      - unknown id -> refuse and list them, rather than failing bare (a bare
+                      error sends the model wandering into other tools)
+    """
     if ctx.group is None:
         return {"error": "The user is not in a group yet."}
-    plan = repo.get_plan(ctx.session, args["plan_id"])
+    open_plans = repo.get_group_plans(ctx.session, ctx.group.id, only_open=True)
+    choices = [{"plan_id": p.id, "title": p.title, "day": day_label(p, ctx.tz_name)}
+               for p in open_plans]
+    pid = args.get("plan_id")
+
+    if pid is None:
+        if len(open_plans) == 1:
+            return open_plans[0]
+        if not open_plans:
+            return {"error": "This group has no open plan to act on."}
+        return {"error": "Which plan? Ask the host — do not guess.", "open_plans": choices}
+
+    plan = repo.get_plan(ctx.session, pid)
     if plan is None or plan.group_id != ctx.group.id:
-        return {"error": f"No plan {args['plan_id']} in this group."}
+        return {"error": f"There is no plan {pid} in this group. Never guess a plan_id: "
+                         "omit it if there is only one open plan, or take the exact id "
+                         "from get_plan_status.",
+                "open_plans": choices}
+    return plan
+
+
+def _host_move(ctx: ToolContext, args: dict, fn) -> dict:
+    """Shared guard for the two host-only moves."""
+    plan = _resolve_plan(ctx, args)
+    if isinstance(plan, dict):
+        return plan
     return fn(ctx.session, plan, ctx.user, ctx.tz_name)
 
 
