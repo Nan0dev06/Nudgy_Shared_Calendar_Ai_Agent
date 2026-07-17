@@ -24,6 +24,12 @@ services:
         value: "3.12.7"
       - key: LLM_PROVIDER
         value: groq
+      # Groq's free limits are per-model, and llama-3.3-70b-versatile has the
+      # tightest of them: 100K tokens/day and only 12K/minute. One agent turn
+      # costs ~4K tokens per LLM call and takes 3-4 calls, so the 70b runs out
+      # mid-demo. Scout has 500K/day and 30K/min on the same free tier.
+      - key: ORBI_MODEL
+        value: meta-llama/llama-4-scout-17b-16e-instruct
       # Render generates a strong value once and keeps it stable.
       - key: SECRET_KEY
         generateValue: true
