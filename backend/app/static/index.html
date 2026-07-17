@@ -27,6 +27,19 @@
   .time.active { color: #b9c2ff; } .time.confirmed { color: #7ee787; }
   .time.skipped { text-decoration: line-through; }
 
+  /* Orbi's report to the host */
+  #report { position: fixed; inset: 0; background: #0009; display: none;
+            align-items: center; justify-content: center; padding: 16px; z-index: 10; }
+  #report.open { display: flex; }
+  #reportcard { background: #1a1e33; border: 1px solid #4633d8; border-radius: 14px;
+                padding: 18px; width: min(440px, 100%); max-height: 85vh; overflow-y: auto;
+                box-shadow: 0 0 40px #5661f055; font-size: 0.9rem; line-height: 1.5; }
+  #reportcard h3 { font-size: 0.95rem; margin-bottom: 2px; }
+  .tallyrow { padding: 3px 0; }
+  .tallyrow .who { color: #e8e8f0; }
+  .seg { margin-top: 12px; padding-top: 10px; border-top: 1px solid #333a5e; }
+  .actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 14px; }
+
   /* Orbi orb + chat panel */
   #orb { position: fixed; right: 24px; bottom: 24px; width: 64px; height: 64px; border-radius: 50%;
          background: radial-gradient(circle at 30% 30%, #8f9bff, #4633d8 70%);
@@ -66,6 +79,9 @@
   </div>
 </div>
 
+<!-- Orbi's report to the host. Pops up on its own when new votes land. -->
+<div id="report"><div id="reportcard"></div></div>
+
 <button id="orb" title="Talk to Orbi"></button>
 <div id="panel">
   <div id="log"><div class="msg orbi">Hi! Ask me to find a time for your group to meet.</div></div>
@@ -77,7 +93,7 @@
 
 <script>
 const $ = (id) => document.getElementById(id);
-let me = null, group = null, history = [];
+let me = null, group = null, history = [], shownPlans = [], planTimer = null;
 
 const api = async (path, opts = {}) => {
   const r = await fetch(path, { credentials: "include",
@@ -111,6 +127,8 @@ async function renderGroup() {
         ${m.calendar_connected ? "✓" : "no calendar"}</span></div>`).join("")}`;
   $("plancard").style.display = "";
   renderPlans();
+  // No push channel — poll so votes reach the host without a refresh.
+  if (!planTimer) planTimer = setInterval(() => renderPlans().catch(() => {}), 5000);
 }
 
 // The two-stage cascade, as the member experiences it: you're asked about the
@@ -142,9 +160,99 @@ function renderHostBox(p) {
     <div class="muted" style="margin-top:6px">Tell Orbi what to do.</div></div>`;
 }
 
+// ---- Orbi's report to the host -------------------------------------------
+// The host is the only one who decides anything, so when votes land they get
+// the full picture unprompted: every member, on both questions, and the two
+// moves they can make. The buttons don't book anything themselves — they say
+// it to Orbi in words, so the agent stays the single path to a calendar and
+// the guard rules live in one place (plan_service.py).
+
+const line = (label, who, cls = "muted") =>
+  `<div class="tallyrow"><span class="${cls}">${label}</span>
+     <span class="who">${who.length ? who.join(", ") : "—"}</span></div>`;
+
+// Identity of a tally: changes only when someone actually answers something.
+const tallySig = (p) => {
+  const h = p.host_box, a = p.times.find(t => t.status === "active");
+  return JSON.stringify([p.id, p.status, a ? a.round_id : null,
+    h.interested, h.not_interested, h.time_yes, h.time_no]);
+};
+
+const hasAnswers = (h) =>
+  h.not_interested.length || h.time_yes.length || h.time_no.length ||
+  h.interested.length > 1;  // >1 because the host's own yes is automatic
+
+// The tally we've already reported — set when shown, so "Not yet" stays shut
+// until somebody actually votes again rather than re-popping on the next tick.
+let reportedSig = null;
+
+function showReport(p) {
+  const h = p.host_box;
+  const active = p.times.find(t => t.status === "active");
+  const next = p.times.find(t => t.status === "queued");
+  $("reportcard").innerHTML = `
+    <h3>${p.title}</h3>
+    <div class="muted" style="margin-bottom:10px">${p.day}${p.location ? ` @ ${p.location}` : ""}</div>
+
+    <b class="muted">Who's in for the plan</b>
+    ${line("In:", h.interested, "ok")}
+    ${line("Not in:", h.not_interested, "warn")}
+    ${line("Hasn't answered:", h.no_answer)}
+
+    <div class="seg">
+      <b class="muted">${active ? active.label : "No time on the table"}</b>
+      ${line("Can make it:", h.time_yes, "ok")}
+      ${line("Can't make it:", h.time_no, "warn")}
+      ${line("Hasn't answered:", h.time_waiting)}
+    </div>
+
+    <div class="seg actions">
+      ${active && h.time_yes.length ? `<button onclick="hostGoAhead(${p.id})">
+        Go ahead with ${active.label.split(" ").slice(-1)[0]} (${h.time_yes.length})</button>` : ""}
+      ${next ? `<button onclick="hostNextTime(${p.id})" style="background:#7a3a4a">
+        Try ${next.label.split(" ").slice(-1)[0]} instead</button>` : ""}
+      <button onclick="dismissReport()" style="background:#333a5e">Not yet</button>
+    </div>
+    ${active && h.time_yes.length ? `<div class="muted" style="margin-top:8px">
+      Going ahead invites only the ${h.time_yes.length} who said ${active.label.split(" ").slice(-1)[0]} works.
+      ${h.time_no.length ? `${h.time_no.join(", ")} won't be invited.` : ""}</div>` : ""}
+    ${next ? `<div class="muted" style="margin-top:4px">
+      Trying ${next.label.split(" ").slice(-1)[0]} asks everyone who's in again, including
+      ${h.time_yes.length ? h.time_yes.join(", ") : "anyone who already said yes"}.</div>` : ""}`;
+  $("report").classList.add("open");
+}
+
+window.dismissReport = () => $("report").classList.remove("open");
+
+// The buttons speak to Orbi rather than calling a booking endpoint.
+window.hostGoAhead = (id) => {
+  const p = shownPlans.find(x => x.id === id);
+  const t = p.times.find(t => t.status === "active");
+  dismissReport();
+  askOrbi(`Go ahead with ${t.label} for "${p.title}" — lock it in.`);
+};
+window.hostNextTime = (id) => {
+  const p = shownPlans.find(x => x.id === id);
+  const t = p.times.find(t => t.status === "active");
+  dismissReport();
+  askOrbi(`${t.label} isn't working for "${p.title}" — move on to the next time.`);
+};
+
 async function renderPlans() {
   const plans = await api(`/groups/${group.id}/plans`);
+  shownPlans = plans;
   if (!plans.length) return;
+
+  // Push the report to the host the moment a new answer lands. Re-showing is
+  // keyed on the tally itself, so dismissing it keeps it shut until somebody
+  // actually votes again — not just until the next poll tick.
+  const decidable = plans.find(p =>
+    p.is_host && p.status === "open" && p.host_box && hasAnswers(p.host_box));
+  if (decidable && tallySig(decidable) !== reportedSig) {
+    reportedSig = tallySig(decidable);
+    showReport(decidable);
+  }
+
   $("planbody").innerHTML = plans.map(p => {
     const booked = p.times.find(t => t.booked);
     return `<div class="member" style="margin-bottom:12px">
@@ -199,11 +307,10 @@ function addMsg(cls, text) {
   return d;
 }
 
-$("chatform").onsubmit = async (e) => {
-  e.preventDefault();
-  const text = $("chatinput").value.trim();
-  if (!text) return;
-  $("chatinput").value = "";
+// One path to the agent, shared by the chat box and the host's report buttons,
+// so a decision made by clicking is the same conversation as one made by typing.
+async function askOrbi(text) {
+  $("panel").classList.add("open");   // the host must see what Orbi did
   addMsg("user", text);
   const thinking = addMsg("step", "Orbi is thinking…");
   try {
@@ -217,6 +324,15 @@ $("chatform").onsubmit = async (e) => {
                  { role: "assistant", content: res.reply });
     history = history.slice(-40);
   } catch (err) { thinking.textContent = "Error: " + err; }
+  renderPlans().catch(() => {});   // the agent may have just changed the plan
+}
+
+$("chatform").onsubmit = (e) => {
+  e.preventDefault();
+  const text = $("chatinput").value.trim();
+  if (!text) return;
+  $("chatinput").value = "";
+  askOrbi(text);
 };
 
 boot();
