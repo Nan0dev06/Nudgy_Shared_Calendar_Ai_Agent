@@ -1,0 +1,279 @@
+import { useApp } from "../ctx.js";
+import {
+  glass, gpill, dpill, evBlock, catChip, avatar, popover, dot, kicker,
+} from "../theme.js";
+import { ChevronLeft, ChevronRight } from "../Icons.jsx";
+import {
+  DAY_MS, mondayOf, sameDay, startOfDay, fmtDayShort, fmtDayLong,
+  fmtMonth, fmtWeekLabel, fmtRange, monthCells,
+} from "../dates.js";
+
+const CAT_COLORS = { Event: "#D95D39", Meet: "#2A9D8F", Call: "#DCA744", Task: "#DCA744" };
+const seg = (on) => ({
+  fontSize: 12.5, fontWeight: 600, padding: "6px 16px", borderRadius: 999,
+  cursor: "pointer", color: on ? "#F7F2EA" : "#8c8577",
+  background: on ? "#2D2D2D" : "transparent", transition: "all .18s", userSelect: "none",
+});
+
+export default function CalendarPage() {
+  const {
+    view, setView, calAnchor, setCalAnchor, events, members, activeGroup,
+    setModal, focusId, hoverKey, setHoverKey, doSend,
+  } = useApp();
+
+  const today = new Date();
+  const monday = mondayOf(calAnchor);
+
+  const label =
+    view === "day" ? fmtDayLong(calAnchor)
+    : view === "week" ? fmtWeekLabel(monday)
+    : fmtMonth(calAnchor);
+
+  const shift = (dir) => {
+    const d = new Date(calAnchor);
+    if (view === "day") d.setDate(d.getDate() + dir);
+    else if (view === "week") d.setDate(d.getDate() + 7 * dir);
+    else d.setMonth(d.getMonth() + dir);
+    setCalAnchor(d);
+  };
+
+  // hover-focus from the sidebar: lift my events, fade unrelated ones
+  const focusAdj = (emails) => {
+    if (!focusId) return {};
+    const hit = (emails || []).includes(focusId);
+    return hit
+      ? { transform: "translateY(-6px)", boxShadow: "0 2px 4px rgba(96,78,54,.08), 0 18px 38px rgba(96,78,54,.2)", zIndex: 2 }
+      : { opacity: 0.25, filter: "blur(1.6px)", transform: "translateY(5px)" };
+  };
+
+  const memberByEmail = Object.fromEntries(members.map((m) => [m.email, m]));
+  const tintFor = (e) =>
+    (e.emails && e.emails[0] && memberByEmail[e.emails[0]]?.color) || "#2A9D8F";
+
+  const openEvent = (e) => setModal({ type: "event", event: e });
+
+  const eventCard = (e, r) => (
+    <div
+      key={e.id}
+      className="hov-lift"
+      style={{ ...evBlock(tintFor(e), r), ...focusAdj(e.emails) }}
+      onClick={() => openEvent(e)}
+    >
+      <div style={catChip(CAT_COLORS[e.cat] || "#D95D39")}>{e.cat || "Event"}</div>
+      <div style={{ fontSize: 14, fontWeight: 600, lineHeight: 1.3 }}>{e.title}</div>
+      <div style={{ display: "flex", alignItems: "center", gap: 7, marginTop: 2, fontSize: 11.5, color: "#a09889" }}>
+        <div style={avatar(tintFor(e))} />
+        {fmtRange(e.start, e.end)}
+      </div>
+    </div>
+  );
+
+  // ---------------- header ----------------
+  const header = (
+    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+        <div className="hov-glass" style={{ ...gpill(true), width: 32, height: 32, padding: 0, borderRadius: 11, justifyContent: "center" }} onClick={() => shift(-1)}>
+          <ChevronLeft size={14} />
+        </div>
+        <span style={{ fontSize: 15, fontWeight: 600 }}>{label}</span>
+        <div className="hov-glass" style={{ ...gpill(true), width: 32, height: 32, padding: 0, borderRadius: 11, justifyContent: "center" }} onClick={() => shift(1)}>
+          <ChevronRight size={14} />
+        </div>
+        <div className="hov-glass" style={gpill(true)} onClick={() => setCalAnchor(new Date())}>
+          Today
+        </div>
+      </div>
+      <div
+        style={{
+          display: "inline-flex", background: "rgba(255,253,247,.55)",
+          border: "1px solid rgba(255,253,247,.7)", borderRadius: 999, padding: 3,
+          boxShadow: "0 1px 2px rgba(96,78,54,.06), 0 6px 14px rgba(96,78,54,.08)",
+        }}
+      >
+        <span style={seg(view === "day")} onClick={() => setView("day")}>Day</span>
+        <span style={seg(view === "week")} onClick={() => setView("week")}>Week</span>
+        <span style={seg(view === "month")} onClick={() => setView("month")}>Month</span>
+      </div>
+      <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+        {view === "month" && (
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <span style={kicker}>Free</span>
+            <div style={{ width: 52, height: 8, borderRadius: 4, background: "linear-gradient(90deg, rgba(255,253,247,.8), #8A8A8A)" }} />
+            <span style={kicker}>Busy</span>
+          </div>
+        )}
+        <div className="hov-lift-sm" style={dpill(true)} onClick={() => setModal({ type: "newEvent" })}>
+          + Event
+        </div>
+        <div className="hov-lift-sm" style={gpill(true)} onClick={() => setModal({ type: "newPoll" })}>
+          + Poll
+        </div>
+      </div>
+    </div>
+  );
+
+  // ---------------- week ----------------
+  const weekView = () => {
+    const cols = Array.from({ length: 7 }, (_, i) => {
+      const d = new Date(monday.getTime() + i * DAY_MS);
+      return { date: d, evs: events.filter((e) => sameDay(e.start, d)) };
+    });
+    const anyEvents = cols.some((c) => c.evs.length > 0);
+    if (!anyEvents)
+      return (
+        <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center" }}>
+          <div style={{ textAlign: "center" }}>
+            <div style={{ fontSize: 16, fontWeight: 600 }}>
+              A quiet week for {activeGroup?.name || "your group"}
+            </div>
+            <div style={{ fontSize: 13, color: "#8c8577", marginTop: 5 }}>
+              Nothing booked — ask the orb to find a time, or add an event.
+            </div>
+          </div>
+        </div>
+      );
+    return (
+      <div style={{ flex: 1, display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: 12, minHeight: 0 }}>
+        {cols.map((col) => (
+          <div key={col.date.toISOString()} style={{ display: "flex", flexDirection: "column", gap: 10, minHeight: 0 }}>
+            <div style={{ ...kicker, color: sameDay(col.date, today) ? "#2A9D8F" : "#a49c8c", padding: "0 4px" }}>
+              {fmtDayShort(col.date)}
+            </div>
+            {col.evs.map((e) => eventCard(e, [16, 20, 18][col.evs.indexOf(e) % 3]))}
+          </div>
+        ))}
+      </div>
+    );
+  };
+
+  // ---------------- day ----------------
+  const dayView = () => {
+    const dayStart = 9, daySpan = 12; // 9am–9pm rail
+    const dayEvs = events.filter((e) => sameDay(e.start, calAnchor));
+    const nowFrac = (today.getHours() + today.getMinutes() / 60 - dayStart) / daySpan;
+    const showNow = sameDay(calAnchor, today) && nowFrac >= 0 && nowFrac <= 1;
+    return (
+      <div style={{ flex: 1, display: "flex", gap: 12, minHeight: 0 }}>
+        <div style={{ width: 44, flex: "none", display: "flex", flexDirection: "column", justifyContent: "space-between", padding: "4px 0", fontSize: 11, color: "#a09889", textAlign: "right" }}>
+          <span>9am</span><span>11am</span><span>1pm</span><span>3pm</span>
+          <span>5pm</span><span>7pm</span><span>9pm</span>
+        </div>
+        <div style={{ flex: 1, position: "relative", borderLeft: "1.5px solid rgba(150,142,128,.3)", minHeight: 0 }}>
+          {dayEvs.map((e) => {
+            const s = (e.start.getHours() + e.start.getMinutes() / 60 - dayStart) / daySpan;
+            const len = Math.max(0.05, (e.end - e.start) / 3600000 / daySpan);
+            return (
+              <div
+                key={e.id}
+                className="hov-lift"
+                onClick={() => openEvent(e)}
+                style={{
+                  ...evBlock(tintFor(e), 14), ...focusAdj(e.emails),
+                  position: "absolute", left: 14, right: "30%",
+                  top: `${Math.max(0, s) * 100}%`, height: `${len * 100}%`,
+                  justifyContent: "center", gap: 2, padding: "8px 14px",
+                }}
+              >
+                <span style={{ fontSize: 13, fontWeight: 600 }}>{e.title}</span>
+                <span style={{ fontSize: 11, color: "#8c8577" }}>{fmtRange(e.start, e.end)}</span>
+              </div>
+            );
+          })}
+          {dayEvs.length === 0 && (
+            <div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 13, color: "#8c8577" }}>
+              Nothing on this day.
+            </div>
+          )}
+          {showNow && (
+            <>
+              <div style={{ position: "absolute", top: `${nowFrac * 100}%`, left: 0, right: 0, borderTop: "1.6px dashed #D95D39", zIndex: 3 }} />
+              <div style={{ position: "absolute", top: `${nowFrac * 100}%`, left: -4, width: 9, height: 9, marginTop: -4.5, borderRadius: "50%", background: "#D95D39", zIndex: 3 }} />
+            </>
+          )}
+        </div>
+      </div>
+    );
+  };
+
+  // ---------------- month ----------------
+  const monthView = () => {
+    const cells = monthCells(calAnchor);
+    return (
+      <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: 8, minHeight: 0 }}>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: 8, fontSize: 10.5, fontWeight: 600, letterSpacing: ".06em", color: "#a49c8c", textAlign: "center" }}>
+          <span>M</span><span>T</span><span>W</span><span>T</span><span>F</span><span>S</span><span>S</span>
+        </div>
+        <div style={{ flex: 1, display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gridTemplateRows: "repeat(5, 1fr)", gap: 8, minHeight: 0 }}>
+          {cells.map(({ date, dim }, i) => {
+            const key = "mc" + i;
+            const dayEvs = events.filter((e) => sameDay(e.start, date));
+            const isToday = sameDay(date, today);
+            const load = Math.min(0.55, dayEvs.length * 0.22);
+            const accent = dayEvs.length === 1 ? tintFor(dayEvs[0]) : null;
+            let bg = dim ? "rgba(255,253,247,.28)" : "rgba(255,253,247,.4)";
+            if (!dim && dayEvs.length > 1)
+              bg = `color-mix(in srgb, #8A8A8A ${Math.round(load * 100)}%, rgba(255,253,247,.6))`;
+            if (!dim && accent)
+              bg = `color-mix(in srgb, ${accent} 18%, rgba(255,253,247,.6))`;
+            const hov = hoverKey === key;
+            const pr = i % 7 >= 5, pu = i >= 21;
+            return (
+              <div
+                key={key}
+                onMouseEnter={dim ? undefined : () => setHoverKey(key)}
+                onMouseLeave={dim ? undefined : () => setHoverKey(null)}
+                onClick={dim ? undefined : () => { setCalAnchor(date); setView("day"); }}
+                style={{
+                  borderRadius: 12, padding: 10, display: "flex", flexDirection: "column",
+                  gap: 5, position: "relative", cursor: dim ? "default" : "pointer",
+                  background: bg, transition: "all .18s",
+                  ...(isToday && !dim ? { outline: "2px solid #2A9D8F", outlineOffset: -2, background: "rgba(255,253,247,.6)" } : {}),
+                  ...(hov ? { transform: "scale(1.03)", boxShadow: "0 12px 28px rgba(96,78,54,.18)", zIndex: 5 } : {}),
+                }}
+              >
+                <span style={{ fontSize: 12.5, fontWeight: 600, color: dim ? "#c9c2b4" : isToday ? "#2A9D8F" : "#2D2D2D" }}>
+                  {date.getDate()}
+                </span>
+                {dayEvs.length > 0 && !dim && (
+                  <div style={{ height: 5, borderRadius: 3, background: accent || "#8A8A8A", width: `${Math.min(90, 30 + dayEvs.length * 25)}%`, marginTop: "auto" }} />
+                )}
+                {hov && !dim && (
+                  <div style={popover(pr, pu)}>
+                    <div style={{ fontSize: 12, fontWeight: 600 }}>
+                      {fmtDayLong(date)}{isToday ? " · Today" : ""}
+                    </div>
+                    <div style={{ fontSize: 11.5, lineHeight: 1.45, color: "#8c8577" }}>
+                      {dayEvs.length
+                        ? dayEvs.map((e) => e.title).join(" · ")
+                        : "Nothing planned — ask the orb to find a window"}
+                    </div>
+                    <div
+                      className="hov-lift-sm"
+                      style={{ ...dpill(true), background: "linear-gradient(160deg, #2A9D8F, #237c72)", alignSelf: "flex-start", padding: "5px 12px", fontSize: 11.5 }}
+                      onClick={(ev) => {
+                        ev.stopPropagation();
+                        setHoverKey(null);
+                        doSend(`Find a time on ${fmtDayLong(date)} when everyone's free`);
+                      }}
+                    >
+                      Find a time
+                    </div>
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    );
+  };
+
+  return (
+    <div style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column", gap: 14, animation: "fadeUp .35s cubic-bezier(.4,0,.2,1)" }}>
+      {header}
+      {view === "week" && weekView()}
+      {view === "day" && dayView()}
+      {view === "month" && monthView()}
+    </div>
+  );
+}

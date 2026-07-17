@@ -47,6 +47,9 @@ def _poll_json(session: Session, poll: Poll, tz_name: str) -> dict:
         "location": poll.location,
         "start_local": poll.start.astimezone(tz).strftime("%a %d %b %H:%M"),
         "end_local": poll.end.astimezone(tz).strftime("%a %d %b %H:%M"),
+        # ISO forms so the frontend can place booked events on the calendar
+        "start_iso": poll.start.astimezone(tz).isoformat(),
+        "end_iso": poll.end.astimezone(tz).isoformat(),
         "status": poll.status,
         "booked": poll.booked,
         "event_link": poll.event_link,
