@@ -50,7 +50,7 @@ export default function ChatPanel() {
         <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "16px 16px 12px", borderBottom: "1px solid rgba(150,142,128,.18)" }}>
           <div style={{ width: 30, height: 30, borderRadius: "50%", background: orbGradient(18) }} />
           <div style={{ display: "flex", flexDirection: "column", minWidth: 0 }}>
-            <span style={{ fontSize: 14, fontWeight: 600 }}>Orbi</span>
+            <span style={{ fontSize: 14, fontWeight: 600 }}>Nudgy</span>
             <span style={{ fontSize: 10.5, color: "#a09889", whiteSpace: "nowrap" }}>
               Your group's planning assistant
             </span>

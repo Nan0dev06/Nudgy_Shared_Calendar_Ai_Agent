@@ -513,7 +513,7 @@ export default function App() {
           dot: "#DCA744",
           pre: "How was ",
           bold: e.where,
-          post: "? Rate it so Orbi learns your taste.",
+          post: "? Rate it so Nudgy learns your taste.",
           go: { modal: { type: "review", place: e.where } },
         });
     }

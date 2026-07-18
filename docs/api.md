@@ -1,9 +1,9 @@
-# Orbi REST API
+# Nudgy REST API
 
 Base URL (dev): `http://localhost:8000` · Interactive docs: `http://localhost:8000/docs`
 
 **Auth model:** Google OAuth *is* the login. After the OAuth callback the server
-sets an `orbi_session` cookie (signed, httponly). Every endpoint below except
+sets an `nudgy_session` cookie (signed, httponly). Every endpoint below except
 the two `/auth/google/*` ones requires that cookie — the browser sends it
 automatically; with `fetch()` use `credentials: "include"`.
 
@@ -164,12 +164,12 @@ effort, via the creator's token). Response `200`: `{"ok": true, "gcal": {...}}`
 
 ---
 
-## Chat (the Orbi orb)
+## Chat (the Nudgy orb)
 
 ### `POST /chat`
 One turn of the agent. **Stateless**: the frontend keeps the conversation and
 sends it back as `history` each time (max 40 items). `group_id` may be null if
-the user has no group yet — Orbi will tell them to create/join one.
+the user has no group yet — Nudgy will tell them to create/join one.
 
 Request:
 ```json
@@ -177,7 +177,7 @@ Request:
   "group_id": 1,
   "message": "Find a time this week when everyone's free",
   "history": [
-    {"role": "user", "content": "hey orbi"},
+    {"role": "user", "content": "hey nudgy"},
     {"role": "assistant", "content": "Hi! I can help your group find a time to meet."}
   ]
 }
@@ -198,7 +198,7 @@ Response `200`:
 ```
 
 `trace` is the agent's visible reasoning loop — render it as collapsible
-"Orbi is checking calendars…" steps if you want the agentic feel in the UI.
+"Nudgy is checking calendars…" steps if you want the agentic feel in the UI.
 All times inside `reply` are already in the user's local timezone.
 
 Notes for the UI:
@@ -211,7 +211,7 @@ Notes for the UI:
 ## Plans & voting
 
 A **plan** is one place, one day, and an ordered queue of candidate times. Plans
-are created by Orbi (via chat) **or directly via REST** (`POST
+are created by Nudgy (via chat) **or directly via REST** (`POST
 /groups/{group_id}/plans`, same shape as the agent's create_plan tool); members
 answer through the two endpoints below.
 
@@ -226,7 +226,7 @@ host moves to the next time.
 **Nothing here decides anything.** No majority, no unanimity, no threshold, no
 auto-booking, and a single no does not kill a time. Voting only advances that
 one member through their own cascade. The **host** (the member who suggested it)
-reads the tally and tells Orbi to either lock the time in — which books *only*
+reads the tally and tells Nudgy to either lock the time in — which books *only*
 the people who said that time works — or move to the next time. Both of those
 happen through chat, not REST.
 
@@ -292,7 +292,7 @@ For the host only:
 ```
 The time columns only ever cover the interested cohort — someone who said no to
 the plan is never counted as silent on a time they were never asked. Render
-`note` as-is and let the host tell Orbi what to do.
+`note` as-is and let the host tell Nudgy what to do.
 
 ### `POST /plans/{plan_id}/interest`
 Stage 1. Answering again replaces your previous answer.

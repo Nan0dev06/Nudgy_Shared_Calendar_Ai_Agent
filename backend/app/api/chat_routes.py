@@ -1,4 +1,4 @@
-"""Chat endpoint: one turn of the Orbi agent.
+"""Chat endpoint: one turn of the Nudgy agent.
 
 POST /chat  {"group_id": 1, "message": "...", "history": [...]}
   -> {"reply": "...", "trace": [...]}
@@ -24,7 +24,7 @@ from app.api.deps import get_current_user
 from app.db.models import User
 from app.db import repo
 
-log = logging.getLogger("orbi.api")
+log = logging.getLogger("nudgy.api")
 
 
 def _friendly_error(exc: Exception) -> str:

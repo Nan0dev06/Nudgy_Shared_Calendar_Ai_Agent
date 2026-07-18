@@ -1,4 +1,4 @@
-# Deploying Orbi to Render (free)
+# Deploying Nudgy to Render (free)
 
 This puts the backend on a public, always-reachable URL with a persistent
 Postgres database, so connected accounts survive restarts.
@@ -12,26 +12,26 @@ hackathon).
 
 1. Make sure `render.yaml` is pushed to GitHub (it is, in the repo root).
 2. Render dashboard → **New** → **Blueprint**.
-3. Connect the **orbi** repo. Render reads `render.yaml` and shows a plan:
-   one web service (`orbi`) + one Postgres (`orbi-db`).
+3. Connect the **nudgy** repo. Render reads `render.yaml` and shows a plan:
+   one web service (`nudgy`) + one Postgres (`nudgy-db`).
 4. It will prompt for the secret env vars (the `sync: false` ones). Paste in
    the values from your local `.env`:
    - `GROQ_API_KEY`
    - `GOOGLE_CLIENT_ID`
    - `GOOGLE_CLIENT_SECRET`
    - `GOOGLE_REDIRECT_URI` — you don't know the final URL yet, so put a
-     placeholder for now (e.g. `https://orbi.onrender.com/auth/google/callback`)
+     placeholder for now (e.g. `https://nudgy.onrender.com/auth/google/callback`)
      and fix it in step 3.
    `SECRET_KEY` and `DATABASE_URL` are handled automatically — leave them.
 5. **Apply**. First build takes a few minutes.
 
-> **Already deployed before ORBI_MODEL was added to `render.yaml`?** Editing the
+> **Already deployed before NUDGY_MODEL was added to `render.yaml`?** Editing the
 > blueprint does not always push a new env var onto a running service. Check
-> the `orbi` service → **Environment** for `ORBI_MODEL`. If it's missing, add
+> the `nudgy` service → **Environment** for `NUDGY_MODEL`. If it's missing, add
 > it by hand:
 >
 > ```
-> ORBI_MODEL=meta-llama/llama-4-scout-17b-16e-instruct
+> NUDGY_MODEL=meta-llama/llama-4-scout-17b-16e-instruct
 > ```
 >
 > Without it the service falls back to `llama-3.3-70b-versatile`, whose free
@@ -42,7 +42,7 @@ hackathon).
 ## 2. Grab your URL
 
 When the web service goes live, Render shows its URL near the top, like
-`https://orbi.onrender.com` (or `https://orbi-xxxx.onrender.com` if the name
+`https://nudgy.onrender.com` (or `https://nudgy-xxxx.onrender.com` if the name
 was taken). Copy it — call it `BACKEND` below.
 
 ## 3. Wire up Google OAuth for the deployed URL
@@ -53,8 +53,8 @@ URLs. Add the deployed one:
 1. [Google Cloud Console](https://console.cloud.google.com) → **APIs & Services**
    → **Credentials** → your OAuth client (the Web application one).
 2. Under **Authorized redirect URIs**, add: `BACKEND/auth/google/callback`
-   (e.g. `https://orbi.onrender.com/auth/google/callback`). Save.
-3. Back in Render → the `orbi` service → **Environment** → set
+   (e.g. `https://nudgy.onrender.com/auth/google/callback`). Save.
+3. Back in Render → the `nudgy` service → **Environment** → set
    `GOOGLE_REDIRECT_URI` to that same `BACKEND/auth/google/callback`. Save
    (this triggers a redeploy).
 

@@ -1,7 +1,7 @@
 """Seed the LOCAL app database with demo people, groups, events, tasks and plans
 so every feature has something to show — different creators, different groups.
 
-Demo users all live under the @demo.orbi domain so re-seeding is clean:
+Demo users all live under the @demo.nudgy domain so re-seeding is clean:
 
     python backend/scripts/seed_app_data.py                # wipe + seed fresh
     python backend/scripts/seed_app_data.py --wipe         # remove demo data only
@@ -27,7 +27,7 @@ from app.db.models import (
 )
 from app.db.session import SessionLocal, init_db
 
-DEMO_DOMAIN = "@demo.orbi"
+DEMO_DOMAIN = "@demo.nudgy"
 
 DEMO_PEOPLE = [
     ("aya" + DEMO_DOMAIN, "Aya"),

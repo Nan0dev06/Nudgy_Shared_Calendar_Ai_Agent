@@ -27,7 +27,7 @@ from app.db.models import Plan, TimeRound, User
 from app.db import repo
 from app.tools.plan_rules import Ballot, Tally, ballot_for, tally
 
-log = logging.getLogger("orbi.agent")
+log = logging.getLogger("nudgy.agent")
 
 
 # ----------------------------------------------------------------- labels

@@ -1,4 +1,4 @@
-"""The Orbi agentic loop — a real multi-step tool-using loop, not one LLM call.
+"""The Nudgy agentic loop — a real multi-step tool-using loop, not one LLM call.
 
 Flow per user message:
   build system prompt (with current datetime injected)
@@ -25,7 +25,7 @@ from app.agent.prompt import build_system_prompt
 from app.agent.tools import TOOL_SCHEMAS, ToolContext, run_tool
 from app.core.config import LLM_API_KEY, LLM_BASE_URL, LLM_MODEL, LLM_PROVIDER
 
-log = logging.getLogger("orbi.agent")
+log = logging.getLogger("nudgy.agent")
 
 MAX_STEPS = 8  # safety bound on tool-call iterations per user message
 
@@ -95,7 +95,7 @@ def _create_with_retry(client: OpenAI, messages: list[dict], attempts: int = 3):
 
 
 def run_agent(ctx: ToolContext, history: list[dict], user_message: str) -> AgentResult:
-    """Run one turn of Orbi. `history` is prior [{"role","content"}] messages
+    """Run one turn of Nudgy. `history` is prior [{"role","content"}] messages
     (plain strings; not mutated — the caller decides what to persist)."""
     now = ctx.now_utc or datetime.now(timezone.utc)
     system = build_system_prompt(

@@ -16,8 +16,8 @@ from app.db.models import User
 from app.db import repo
 from app.db.session import get_session
 
-COOKIE_NAME = "orbi_session"
-_signer = URLSafeSerializer(SECRET_KEY, salt="orbi-session")
+COOKIE_NAME = "nudgy_session"
+_signer = URLSafeSerializer(SECRET_KEY, salt="nudgy-session")
 
 # The cookie IS the login, so it must never cross the wire in clear text. It
 # can't be Secure on http://localhost though — the browser would silently drop
@@ -35,13 +35,13 @@ def make_session_cookie(user_id: int) -> str:
 
 
 def get_current_user(
-    orbi_session: str | None = Cookie(default=None, alias=COOKIE_NAME),
+    nudgy_session: str | None = Cookie(default=None, alias=COOKIE_NAME),
     session: Session = Depends(get_session),
 ) -> User:
-    if not orbi_session:
+    if not nudgy_session:
         raise HTTPException(status_code=401, detail="Not logged in. Connect Google first.")
     try:
-        data = _signer.loads(orbi_session)
+        data = _signer.loads(nudgy_session)
     except BadSignature:
         raise HTTPException(status_code=401, detail="Invalid session cookie.")
     user = repo.get_user(session, data.get("user_id"))

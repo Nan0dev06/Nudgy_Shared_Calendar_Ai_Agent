@@ -32,7 +32,7 @@ router = APIRouter(prefix="/auth", tags=["auth"])
 # log that victim into an ACCOUNT THEY CONTROL — the victim then plans hangouts
 # inside the attacker's account. Google hands `state` back untouched, so a value
 # only we could have set proves the callback answers our own login.
-STATE_COOKIE = "orbi_oauth_state"
+STATE_COOKIE = "nudgy_oauth_state"
 STATE_TTL_SECONDS = 600
 
 

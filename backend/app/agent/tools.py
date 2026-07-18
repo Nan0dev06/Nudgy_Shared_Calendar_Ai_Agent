@@ -25,7 +25,7 @@ from app.db.models import Group, User
 from app.db import repo
 from app.tools.plan_service import day_label, time_label
 
-log = logging.getLogger("orbi.agent")
+log = logging.getLogger("nudgy.agent")
 
 
 @dataclass

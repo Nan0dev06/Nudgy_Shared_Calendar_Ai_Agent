@@ -1,4 +1,4 @@
-"""Plan endpoints: members answer their step of the cascade; Orbi creates plans.
+"""Plan endpoints: members answer their step of the cascade; Nudgy creates plans.
 
 GET  /groups/{group_id}/plans      -> plans for a group, each carrying THIS
                                       member's current ballot (and, for the
@@ -34,7 +34,7 @@ from app.db import repo
 from app.db.session import get_session
 from app.tools.plan_service import day_label, member_ballot, plan_tally, time_label
 
-log = logging.getLogger("orbi.agent")
+log = logging.getLogger("nudgy.agent")
 
 router = APIRouter(tags=["plans"])
 

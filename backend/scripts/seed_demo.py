@@ -22,7 +22,7 @@ from googleapiclient.discovery import build
 from app.auth.google import list_connected_accounts, load_credentials
 
 BEIRUT = ZoneInfo("Asia/Beirut")
-MARKER = {"private": {"orbi_demo": "1"}}
+MARKER = {"private": {"nudgy_demo": "1"}}
 
 # Per-account weekly plan: (day_offset, start_hour, end_hour, title, location)
 # Deliberately overlapping/complementary so intersection produces interesting
@@ -64,7 +64,7 @@ def wipe_demo_events(service, email: str) -> int:
     while True:
         resp = service.events().list(
             calendarId="primary",
-            privateExtendedProperty="orbi_demo=1",
+            privateExtendedProperty="nudgy_demo=1",
             pageToken=page_token,
             maxResults=100,
         ).execute()

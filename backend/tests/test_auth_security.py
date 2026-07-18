@@ -66,8 +66,8 @@ def test_matching_state_is_allowed_through(monkeypatch):
 
     r = _callback({"code": "good", "state": "same"}, cookies={STATE_COOKIE: "same"})
     assert r.status_code == 307                    # logged in, redirected home
-    assert "orbi_session" in r.headers["set-cookie"]
-    assert 'orbi_oauth_state=""' in r.headers["set-cookie"]  # state burned after use
+    assert "nudgy_session" in r.headers["set-cookie"]
+    assert 'nudgy_oauth_state=""' in r.headers["set-cookie"]  # state burned after use
 
 
 def test_login_issues_a_state_cookie_matching_the_google_url(monkeypatch):

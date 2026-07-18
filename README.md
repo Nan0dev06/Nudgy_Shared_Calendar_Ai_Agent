@@ -1,12 +1,12 @@
-# Orbi — Agentic Group Scheduling Assistant
+# Nudgy — Agentic Group Scheduling Assistant
 
 **Hackathon project · July 2026 · Team of 2**
 
-Orbi is a conversational AI agent that finds when a group can *actually* meet — and where. Users connect their Google Calendars, join a group, and ask Orbi things like:
+Nudgy is a conversational AI agent that finds when a group can *actually* meet — and where. Users connect their Google Calendars, join a group, and ask Nudgy things like:
 
 > "Find a time this week when everyone's free and suggest somewhere to meet."
 
-Orbi cross-references everyone's live availability, proposes a time and venue with its reasoning, puts the plan to the group as a two-stage cascade (are you in? → does this time work?), and books it on a shared calendar once the host decides. All through chat with a floating orb in the app.
+Nudgy cross-references everyone's live availability, proposes a time and venue with its reasoning, puts the plan to the group as a two-stage cascade (are you in? → does this time work?), and books it on a shared calendar once the host decides. All through chat with a floating orb in the app.
 
 ---
 
@@ -17,7 +17,7 @@ Orbi cross-references everyone's live availability, proposes a time and venue wi
 > in-app plan cascade → the host's decision → a **real booking** written to the
 > calendar of everyone who's coming.
 >
-> - **Live deployment:** <https://orbi-1jgh.onrender.com> (Render free tier — the
+> - **Live deployment:** <https://nudgy-1jgh.onrender.com> (Render free tier — the
 >   first request after it's been idle can take ~50s to wake up).
 > - **Model:** Llama 4 Scout 17B on Groq's free tier. Groq's limits are
 >   per-model, and Scout's (500K tokens/day, 30K/min) are the ones that
@@ -34,12 +34,12 @@ Groups with shared calendars still can't schedule. Manually cross-referencing fi
 - **"When does everyone want to meet?"** — requires asking people and honoring their answers.
 - **"Where should we go?"** — requires knowing roughly where the group will be.
 
-Existing tools (Calendly, Doodle) solve slices of this with forms and links. Orbi solves it as a conversation with an agent that does the legwork.
+Existing tools (Calendly, Doodle) solve slices of this with forms and links. Nudgy solves it as a conversation with an agent that does the legwork.
 
-## What Orbi Does
+## What Nudgy Does
 
-1. You talk to Orbi in natural language — including vaguely. "I wanna go out today with my friends" tells it the day and nothing else.
-2. Orbi fetches **live** free/busy data for every group member at the moment you ask.
+1. You talk to Nudgy in natural language — including vaguely. "I wanna go out today with my friends" tells it the day and nothing else.
+2. Nudgy fetches **live** free/busy data for every group member at the moment you ask.
 3. It intersects busy blocks to find common free windows, filtered to sensible hours and durations.
 4. It **asks for what it doesn't know instead of guessing** — the times it works out itself, but whether you have a place in mind, whether to search near where you'll all already be or somewhere you name, and what kind of outing, it asks. All in one message, then it waits. A plan built on a guess costs the whole group another round of questions.
 5. It anchors a location — on the locations members **explicitly typed** into their own calendar events near the slot, or on an area you named — and searches for a real venue nearby.
@@ -49,7 +49,7 @@ Existing tools (Calendly, Doodle) solve slices of this with forms and links. Orb
 
 ## Agent Architecture
 
-This is the core of the project: a **real multi-step agentic loop**, not a single LLM call. Orbi is an LLM (Llama 4 Scout 17B via Groq's free tier by default; Ollama/OpenAI supported via the same OpenAI-compatible code path) driving a set of backend tools via native tool/function calling.
+This is the core of the project: a **real multi-step agentic loop**, not a single LLM call. Nudgy is an LLM (Llama 4 Scout 17B via Groq's free tier by default; Ollama/OpenAI supported via the same OpenAI-compatible code path) driving a set of backend tools via native tool/function calling.
 
 ### Context injection
 
@@ -66,7 +66,7 @@ All seven are built and wired into the agent:
 |---|---|
 | `get_group_members` | Resolve the user's group → member list + calendar connection status |
 | `find_meeting_slots` | Live `freebusy.query` for all members, then intersect busy blocks → common free windows, filtered to reasonable local hours and the requested duration. Returns **only busy time ranges** — never titles or details. The intersection math is a pure, unit-tested function |
-| `suggest_venues` | Searches for **real** named places, anchored the way the user chose: on the group itself (read the locations members typed into their *own* events near the slot → geocode → centroid), or on an area they named (`near`, which reads no calendar at all). Venues come only from this call; if it returns nothing, Orbi says so, and if the map service itself fails Orbi says *that* instead — an unreachable API is not an empty neighbourhood. **It never invents a venue** |
+| `suggest_venues` | Searches for **real** named places, anchored the way the user chose: on the group itself (read the locations members typed into their *own* events near the slot → geocode → centroid), or on an area they named (`near`, which reads no calendar at all). Venues come only from this call; if it returns nothing, Nudgy says so, and if the map service itself fails Nudgy says *that* instead — an unreachable API is not an empty neighbourhood. **It never invents a venue** |
 | `create_plan` | Put a plan — place, day, and an ordered queue of candidate times — to the group, starting the cascade |
 | `get_plan_status` | The host's decision box: who's in, who's out, who's silent, and for the time being asked, who can and can't make it |
 | `use_next_time` | **Host move.** Drop the current time and ask the next candidate — to everyone who's in, including those who liked the old one |
@@ -117,10 +117,10 @@ separately, because they're different decisions:
 
 **The host decides — the system doesn't.** There is no majority rule, no
 unanimity, no threshold, no auto-booking, and one no does **not** kill a time.
-Orbi reports the tally; the host chooses:
+Nudgy reports the tally; the host chooses:
 
 - **Lock it in** → only the members who said **that time** works get the event and the invite. People who said it doesn't are deliberately left off.
-- **Move on** → the next candidate time goes to the **whole** interested cohort. Out of times → the plan closes and Orbi searches for fresh ones.
+- **Move on** → the next candidate time goes to the **whole** interested cohort. Out of times → the plan closes and Nudgy searches for fresh ones.
 - **Never** silently book onto the calendar of someone who declined, and silence is never consent.
 
 The cascade lives in `tools/plan_rules.py` as pure, unit-tested functions that
@@ -128,7 +128,7 @@ only *report*; `tools/plan_service.py` is the single place state transitions.
 
 ### The host's report
 
-The host doesn't have to go looking for the tally — Orbi pushes it. When a vote
+The host doesn't have to go looking for the tally — Nudgy pushes it. When a vote
 lands, a report pops up on the host's screen showing **every member on both
 questions** (in / out / silent for the plan; can / can't / silent for the time
 being asked) and the two moves available, each spelling out its consequence
@@ -149,7 +149,7 @@ Trying 19:00 asks everyone who's in again, including bea.
 ```
 
 Only the host ever sees it — the API omits the tally entirely for everyone else,
-so a member cannot see how anyone voted. The buttons **say it to Orbi in words**
+so a member cannot see how anyone voted. The buttons **say it to Nudgy in words**
 rather than calling a booking endpoint, so the agent stays the single path to a
 calendar and the host guard lives in one place. Dismissing it keeps it shut until
 somebody actually votes again.
@@ -158,20 +158,20 @@ somebody actually votes again.
 
 This is a design principle, not a feature:
 
-- **Orbi cannot see event details.** Availability comes exclusively from Google Calendar's `freebusy` endpoint, which returns only busy time ranges — no titles, no descriptions, no attendees. Event contents never enter the system or the model's context.
-- **Orbi cannot reveal what it does not have** — and it never fabricates. If you ask why someone is busy, the honest and only answer is: *"Nour is busy then."* There is no deception logic anywhere in the codebase.
+- **Nudgy cannot see event details.** Availability comes exclusively from Google Calendar's `freebusy` endpoint, which returns only busy time ranges — no titles, no descriptions, no attendees. Event contents never enter the system or the model's context.
+- **Nudgy cannot reveal what it does not have** — and it never fabricates. If you ask why someone is busy, the honest and only answer is: *"Nour is busy then."* There is no deception logic anywhere in the codebase.
 - **Location comes only from what users typed.** The single exception to "no event details" is the location field of a user's *own* events, used only to anchor venue search. No tracking, no movement inference, no location history.
 
 ## Scope Guard
 
-Orbi does group scheduling and meetup planning. Nothing else. Asked to write an essay or discuss the weather, it politely declines and restates what it can do. Enforced in the system prompt and verified against injection-style prompts.
+Nudgy does group scheduling and meetup planning. Nothing else. Asked to write an essay or discuss the weather, it politely declines and restates what it can do. Enforced in the system prompt and verified against injection-style prompts.
 
 ## Tech Stack
 
 | Layer | Choice |
 |---|---|
 | Backend | Python 3.11+, FastAPI |
-| Agent | Llama 4 Scout 17B via Groq (free tier) with native tool calling; model overridable via `ORBI_MODEL`, provider via `LLM_PROVIDER` (Ollama/OpenAI use the same code path) |
+| Agent | Llama 4 Scout 17B via Groq (free tier) with native tool calling; model overridable via `NUDGY_MODEL`, provider via `LLM_PROVIDER` (Ollama/OpenAI use the same code path) |
 | Calendar | Google Calendar API — OAuth 2.0, `calendar.readonly` + `calendar.events` scopes, `freebusy.query` |
 | Venues | OpenStreetMap — Nominatim (geocoding) + Overpass (venue search). Free, **no API key**, no account |
 | Frontend | React (teammate's branch). Backend exposes a documented REST API with example request/response bodies for every endpoint. A minimal scaffold UI ships in `backend/app/static/` for testing |
@@ -191,7 +191,7 @@ backend/
     tools/             # freebusy, slot intersection, venue search, cascade rules, booking
     db/                # SQLAlchemy models + repo + session (users, groups, plans, rounds, votes)
     api/               # REST endpoints (auth, groups, plans, chat)
-    static/            # minimal scaffold UI (Orbi orb + chat + the host's report)
+    static/            # minimal scaffold UI (Nudgy orb + chat + the host's report)
   scripts/
     check_freebusy.py  # Phase 1 CLI proof: OAuth + freebusy + intersection
     check_plan_cascade.py  # Cascade proof: interest → time → host decides → real booking
@@ -237,7 +237,7 @@ five conversations before the day's quota is gone, and its 12K/min ceiling
 throttles a *single* conversation in progress. Scout's budget fits ~27.
 
 Because the budgets are per-model, developing on Scout leaves the 70B's quota
-untouched — set `ORBI_MODEL=llama-3.3-70b-versatile` for a demo if you want its
+untouched — set `NUDGY_MODEL=llama-3.3-70b-versatile` for a demo if you want its
 quality, and it will be full. `LLM_PROVIDER=ollama` runs a local model for
 unlimited free iteration (weaker at tool calling; good for plumbing, not for
 verifying final behaviour).
@@ -259,7 +259,7 @@ does this automatically) to use Postgres. Full walkthrough in
 | Phase | Deliverable | Status |
 |---|---|---|
 | 1 | Google OAuth + freebusy across test accounts + intersection logic, proven via CLI script | ✅ |
-| 2 | Conversational agent + Orbi orb UI: open-ended prompt → candidate slots → reasoning in natural language | ✅ (agent chat needs the free `GROQ_API_KEY`) |
+| 2 | Conversational agent + Nudgy orb UI: open-ended prompt → candidate slots → reasoning in natural language | ✅ (agent chat needs the free `GROQ_API_KEY`) |
 | 3 | Plan cascade → interest + time votes → host decides → commit to shared calendar or try the next time | ✅ (verified end-to-end incl. a real booking) |
 | 4 | Venue suggestion (only if time permits) | ✅ (built on OpenStreetMap instead of Places — free and keyless) |
 | + | **Deployed** to Render with Postgres | ✅ (bonus, beyond the original plan) |
@@ -270,13 +270,13 @@ Each phase must work before the next begins.
 
 - **Timezones**: UTC everywhere internally; per-user local display; members may be in different zones; unit tests on the intersection + conversion logic.
 - **OAuth token refresh**: expiry handled explicitly — no silent failures.
-- **No common slot**: Orbi says so clearly and offers the closest partial options ("4 of 5 are free Thursday 5pm").
+- **No common slot**: Nudgy says so clearly and offers the closest partial options ("4 of 5 are free Thursday 5pm").
 - **Members without a connected calendar**: surfaced explicitly, never silently ignored.
 - **Tool-call logging**: every agent step logged for live debugging and demoing the loop.
 - **A flaky LLM doesn't kill the turn**: Groq rate limits are retried with backoff, and a malformed tool call is handed back to the model as an error it can correct rather than crashing the request.
 - **No raw 500s in chat**: agent, LLM, and DB errors are caught and answered in words.
 - **A failed booking doesn't strand a plan**: if Google refuses or throws, the time reverts to active so the host can retry or move on, instead of sticking in a state that is neither bookable nor skippable.
-- **A failed venue search is not an empty neighbourhood**: Overpass is a free public API and 504s under load. Transient failures are retried, and a search that still fails is reported as *"the venue lookup is temporarily down"* — never as "there are no cafes there", which would be Orbi stating something false about a real place.
+- **A failed venue search is not an empty neighbourhood**: Overpass is a free public API and 504s under load. Transient failures are retried, and a search that still fails is reported as *"the venue lookup is temporarily down"* — never as "there are no cafes there", which would be Nudgy stating something false about a real place.
 
 ## Roadmap / Not Yet Built
 

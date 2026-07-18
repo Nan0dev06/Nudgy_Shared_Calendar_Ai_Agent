@@ -1,4 +1,4 @@
-# Orbi (a.k.a. "Overlap") — agentic group scheduling
+# Nudgy (a.k.a. "Overlap") — agentic group scheduling
 
 Conversational AI agent that finds when a group can meet and where. Users
 connect Google Calendar, join a group, and ask an LLM agent (via chat) to
@@ -24,5 +24,5 @@ decides. Privacy by design: only `freebusy` ranges — never event details.
 - Seed demo data: `python backend/scripts/seed_app_data.py`
 
 ## Gotchas
-- Chat needs a working `ORBI_MODEL`; `llama-3.3-70b-versatile` is current.
+- Chat needs a working `NUDGY_MODEL`; `llama-3.3-70b-versatile` is current.
 - Render only runs `pip install` — it serves the **committed** static bundle.

@@ -647,7 +647,7 @@ function NewPollModal() {
               )}
             </div>
             <span style={{ fontSize: 11, color: "#a09889" }}>
-              Optional — helps Orbi know when enough people are in.
+              Optional — helps Nudgy know when enough people are in.
             </span>
           </div>
           {err && stage === 0 && errText(err)}
@@ -786,7 +786,7 @@ function ReviewModal() {
       <div>
         <div style={{ fontSize: 19, fontWeight: 600 }}>How was it?</div>
         <div style={{ fontSize: 12, color: "#8c8577", marginTop: 3, lineHeight: 1.5 }}>
-          Orbi remembers what you liked and suggests better spots next time.
+          Nudgy remembers what you liked and suggests better spots next time.
         </div>
       </div>
       <PlacePicker
@@ -903,7 +903,7 @@ function InviteModal() {
       </div>
       <div style={{ fontSize: 12, color: "#a09889", lineHeight: 1.5 }}>
         Anyone with the code can join — no roles, no hierarchy. New members
-        connect their own calendar so Orbi can plan around them.
+        connect their own calendar so Nudgy can plan around them.
       </div>
     </div>
   );

@@ -27,7 +27,7 @@ import httpx
 from googleapiclient.discovery import build
 from google.oauth2.credentials import Credentials
 
-log = logging.getLogger("orbi.agent")
+log = logging.getLogger("nudgy.agent")
 
 NOMINATIM_URL = "https://nominatim.openstreetmap.org"
 OVERPASS_URL = "https://overpass-api.de/api/interpreter"
@@ -38,7 +38,7 @@ OVERPASS_URL = "https://overpass-api.de/api/interpreter"
 # worse than an error because it looks like a real "no venues here").
 OVERPASS_ATTEMPTS = 3
 # Nominatim usage policy requires an identifying User-Agent.
-HTTP_HEADERS = {"User-Agent": "orbi-hackathon-demo/1.0"}
+HTTP_HEADERS = {"User-Agent": "nudgy-hackathon-demo/1.0"}
 
 VENUE_KINDS = {"cafe", "restaurant", "bar", "fast_food"}
 

@@ -40,7 +40,7 @@ GOOGLE_REDIRECT_URI = os.getenv(
 )
 
 # --- LLM provider -----------------------------------------------------------
-# Which model backend Orbi talks to. Default is Groq (free tier, fast).
+# Which model backend Nudgy talks to. Default is Groq (free tier, fast).
 #   groq      -> free cloud, needs GROQ_API_KEY   (recommended for the demo)
 #   ollama    -> free local, no key, run `ollama serve` first
 #   openai    -> needs LLM_API_KEY
@@ -57,7 +57,7 @@ _OPENAI_COMPAT = {
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
 
 _cfg = _OPENAI_COMPAT.get(LLM_PROVIDER, _OPENAI_COMPAT["groq"])
-LLM_MODEL = os.getenv("ORBI_MODEL", _cfg["model"])
+LLM_MODEL = os.getenv("NUDGY_MODEL", _cfg["model"])
 LLM_BASE_URL = os.getenv("LLM_BASE_URL", _cfg["base_url"])
 # ollama ignores the key; groq/openai need a real one
 LLM_API_KEY = os.getenv("LLM_API_KEY") or GROQ_API_KEY or "ollama"

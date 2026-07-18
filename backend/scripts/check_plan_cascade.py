@@ -54,7 +54,7 @@ def main() -> None:
                 datetime.combine(tomorrow, time(hour + 1), tzinfo=BEIRUT).astimezone(timezone.utc),
             )
 
-        plan = repo.create_plan(session, group, host, "Orbi cascade smoke test",
+        plan = repo.create_plan(session, group, host, "Nudgy cascade smoke test",
                                 slots=[slot(17), slot(19)], location="Test cafe")
         active = repo.get_active_round(session, plan)
         print(f"[1] plan {plan.id} created — 2 candidate times, active is {active.ordinal} (17:00)")

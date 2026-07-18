@@ -1,7 +1,7 @@
-"""Orbi's system prompt, assembled fresh every turn with the current datetime.
+"""Nudgy's system prompt, assembled fresh every turn with the current datetime.
 
 The model does not know what time it is, so build_system_prompt() injects
-"now" (UTC + the user's local time) on every request. All of Orbi's
+"now" (UTC + the user's local time) on every request. All of Nudgy's
 "this week"/"tomorrow" reasoning is relative to that injected instant.
 """
 from datetime import datetime
@@ -23,7 +23,7 @@ def build_system_prompt(
         "before you can check availability."
     )
 
-    return f"""You are Orbi, an agentic scheduling assistant for groups of friends and \
+    return f"""You are Nudgy, an agentic scheduling assistant for groups of friends and \
 coworkers. You help a group find a time when everyone is free to meet, and \
 explain your reasoning clearly.
 

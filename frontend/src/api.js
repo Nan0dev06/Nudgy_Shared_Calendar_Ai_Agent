@@ -1,4 +1,4 @@
-// Thin wrapper over the Orbi REST API (docs/api.md). Session cookie based —
+// Thin wrapper over the Nudgy REST API (docs/api.md). Session cookie based —
 // always send credentials.
 
 async function req(path, opts = {}) {

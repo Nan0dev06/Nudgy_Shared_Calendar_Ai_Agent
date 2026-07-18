@@ -31,7 +31,7 @@ from app.tools.slots import (
     reasonable_hours,
 )
 
-log = logging.getLogger("orbi.agent")
+log = logging.getLogger("nudgy.agent")
 
 
 @dataclass
@@ -178,7 +178,7 @@ def _best_partial_windows(
     max_windows: int = 3,
 ) -> list[dict]:
     """Windows (>= duration, in reasonable hours) ranked by how many members
-    are free. Lets Orbi say '4 of 5 are free Thursday 5pm'."""
+    are free. Lets Nudgy say '4 of 5 are free Thursday 5pm'."""
     hours = reasonable_hours(now, window_end, tz_name, earliest_hour, latest_hour)
     need = timedelta(minutes=duration_minutes)
 

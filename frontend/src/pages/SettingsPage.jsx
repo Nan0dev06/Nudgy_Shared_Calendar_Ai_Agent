@@ -202,14 +202,14 @@ export default function SettingsPage() {
             {toggleRow("auto", "Auto-decline conflicts", "Off by default — when on, polls that clash with your events are declined for you")}
             {prefs.auto &&
               toggleRow("prio", "Let me choose which event wins", "When two things clash you pick the one to keep, instead of always losing the newer one")}
-            {toggleRow("busy", "Share busy times only", "Off by default. Leaving this off lets Orbi see titles and places, so it can learn what you like from your reviews and plan around it")}
+            {toggleRow("busy", "Share busy times only", "Off by default. Leaving this off lets Nudgy see titles and places, so it can learn what you like from your reviews and plan around it")}
           </>
         )}
 
         {settingsTab === "Reviews" && (
           <>
             <div style={{ fontSize: 13, color: "#8c8577", marginTop: -6, lineHeight: 1.5 }}>
-              Rate the places you've been. Orbi saves these as taste memory —
+              Rate the places you've been. Nudgy saves these as taste memory —
               next time someone types “bhi” it knows you mean BHive, and it can
               suggest spots you actually liked.
             </div>
@@ -244,7 +244,7 @@ export default function SettingsPage() {
           <>
             <div style={{ fontSize: 13, color: "#8c8577", marginTop: -6 }}>
               What the agent has learned about your group — correct anything
-              that's wrong. Orbi reads this when planning.
+              that's wrong. Nudgy reads this when planning.
             </div>
             {memory.map((m, i) => (
               <div key={i} style={prefCard}>

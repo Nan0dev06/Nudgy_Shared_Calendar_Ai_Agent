@@ -1,4 +1,4 @@
-"""Orbi backend entrypoint.
+"""Nudgy backend entrypoint.
 
 Run from the repo root:
     uvicorn app.main:app --reload --app-dir backend
@@ -23,7 +23,7 @@ from app.db.session import init_db
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(message)s")
 
-app = FastAPI(title="Orbi", description="Agentic group scheduling assistant")
+app = FastAPI(title="Nudgy", description="Agentic group scheduling assistant")
 init_db()
 
 app.include_router(auth_router)

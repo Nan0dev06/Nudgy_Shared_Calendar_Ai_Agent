@@ -1,9 +1,9 @@
-"""Phase 2 CLI: talk to Orbi from the terminal, or smoke-test the tools.
+"""Phase 2 CLI: talk to Nudgy from the terminal, or smoke-test the tools.
 
 Ensures a demo group exists containing all imported users, then:
   --tools     run the tools directly (no LLM, no API key needed) and print
               members + live availability. Proves the tool layer end to end.
-  (default)   interactive chat with Orbi (needs GROQ_API_KEY in .env).
+  (default)   interactive chat with Nudgy (needs GROQ_API_KEY in .env).
 
     python backend/scripts/chat_cli.py --tools
     python backend/scripts/chat_cli.py
@@ -67,7 +67,7 @@ def main() -> None:
 
         # interactive chat
         from app.agent.loop import run_agent
-        print(f"\nOrbi ready. Group: {group.name}, you are {user.email}.")
+        print(f"\nNudgy ready. Group: {group.name}, you are {user.email}.")
         print("Type your message (or 'quit').\n")
         history: list[dict] = []
         while True:
@@ -81,7 +81,7 @@ def main() -> None:
                 continue
             ctx.now_utc = datetime.now(timezone.utc)  # fresh "now" each turn
             result = run_agent(ctx, history, msg)
-            print(f"\norbi> {result.reply}\n")
+            print(f"\nnudgy> {result.reply}\n")
             history.append({"role": "user", "content": msg})
             history.append({"role": "assistant", "content": result.reply})
     finally:

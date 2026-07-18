@@ -2,7 +2,7 @@
 
 Two backends, chosen by whether DATABASE_URL is set:
 - set  -> Postgres (Render deployment; survives restarts)
-- unset-> a local SQLite file at repo-root/orbi.db (gitignored), for dev
+- unset-> a local SQLite file at repo-root/nudgy.db (gitignored), for dev
 
 For a hackathon we create tables on startup with create_all — no migrations.
 """
@@ -21,7 +21,7 @@ if DATABASE_URL:
     url = DATABASE_URL.replace("postgres://", "postgresql://", 1)
     engine = create_engine(url, pool_pre_ping=True)
 else:
-    DB_PATH = ROOT_DIR / "orbi.db"
+    DB_PATH = ROOT_DIR / "nudgy.db"
     # check_same_thread=False so FastAPI's threadpool can share the engine
     engine = create_engine(
         f"sqlite:///{DB_PATH}", connect_args={"check_same_thread": False}

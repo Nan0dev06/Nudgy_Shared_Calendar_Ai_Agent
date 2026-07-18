@@ -26,7 +26,7 @@ from app.auth.google import credentials_from_json
 from app.db.models import Plan, TimeRound, User
 from app.db import repo
 
-log = logging.getLogger("orbi.agent")
+log = logging.getLogger("nudgy.agent")
 
 
 def book_round_event(
@@ -56,7 +56,7 @@ def book_round_event(
         "start": {"dateTime": round_.start.astimezone(timezone.utc).isoformat()},
         "end": {"dateTime": round_.end.astimezone(timezone.utc).isoformat()},
         "attendees": [{"email": e} for e in attendee_emails],
-        "description": "Scheduled by Orbi — the people here said this time works.",
+        "description": "Scheduled by Nudgy — the people here said this time works.",
     }
     if plan.location:
         body["location"] = plan.location

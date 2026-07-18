@@ -5,7 +5,7 @@ import { nameFromEmail } from "../people.js";
 
 // Two-stage plan cascade. Stage 1 asks "are you in for this at all?"; a yes
 // immediately opens stage 2 — "does the active candidate time work?". Nothing
-// auto-books: the HOST reads the tally and (through Orbi) locks a time in or
+// auto-books: the HOST reads the tally and (through Nudgy) locks a time in or
 // moves to the next one.
 
 // host_box fields are lists of emails — show a count plus the names
