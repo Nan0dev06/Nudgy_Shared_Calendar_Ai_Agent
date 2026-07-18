@@ -40,6 +40,10 @@ class CreateEventBody(BaseModel):
     end_iso: str | None = None
     invite_emails: list[str] = Field(default_factory=list)  # default: everyone
     sync_google: bool = False
+    # personal=True: my own thing — groupmates see only busy time; anonymous
+    # decides whether they see the title/place (anonymous is the default)
+    personal: bool = False
+    anonymous: bool = True
 
 
 class PatchEventBody(BaseModel):
@@ -63,21 +67,32 @@ def _parse_iso(value: str | None, name: str) -> datetime | None:
     return dt.astimezone(timezone.utc)
 
 
-def _event_json(event: GroupEvent, tz_name: str) -> dict:
+def _event_json(
+    event: GroupEvent, tz_name: str,
+    viewer_id: int | None = None, creator_email: str | None = None,
+) -> dict:
     tz = ZoneInfo(tz_name)
     iso = lambda dt: dt.astimezone(tz).isoformat() if dt else None  # noqa: E731
+    # someone else's ANONYMOUS personal event: the busy range is all they get
+    masked = (
+        event.personal and event.anonymous
+        and viewer_id is not None and viewer_id != event.created_by
+    )
     return {
         "id": event.id,
         "kind": event.kind,
-        "title": event.title,
-        "category": event.category,
-        "location": event.location,
+        "title": "Busy" if masked else event.title,
+        "category": "Busy" if masked else event.category,
+        "location": None if masked else event.location,
         "start_iso": iso(event.start),
         "end_iso": iso(event.end),
         "done": event.done,
+        "personal": event.personal,
+        "anonymous": event.anonymous,
         "synced": event.synced,
-        "gcal_link": event.gcal_link,
+        "gcal_link": None if masked else event.gcal_link,
         "created_by": event.created_by,
+        "creator_email": creator_email,
     }
 
 
@@ -88,7 +103,14 @@ def group_events(
     session: Session = Depends(get_session),
 ):
     _require_membership(session, user, group_id)
-    return [_event_json(e, user.timezone) for e in repo.get_group_events(session, group_id)]
+    members = repo.get_group_members(session, group_id)
+    email_of = {m.id: m.email for m in members}
+    events = repo.get_group_events(session, group_id, member_ids=list(email_of))
+    return [
+        _event_json(e, user.timezone, viewer_id=user.id,
+                    creator_email=email_of.get(e.created_by))
+        for e in events
+    ]
 
 
 @router.post("/groups/{group_id}/events")
@@ -114,10 +136,11 @@ def create_event(
         group_id=group_id, created_by=user.id, kind=body.kind, title=body.title,
         category=body.category, location=body.location,
         start_utc=start, end_utc=end,
+        personal=body.personal, anonymous=body.anonymous,
     )
 
-    out = _event_json(event, user.timezone)
-    if body.sync_google and body.kind == "event":
+    out = _event_json(event, user.timezone, viewer_id=user.id, creator_email=user.email)
+    if body.sync_google and body.kind == "event" and not body.personal:
         out["sync"] = _sync_to_google(session, event, user, body.invite_emails, group_id)
         out["synced"] = event.synced
         out["gcal_link"] = event.gcal_link
@@ -174,7 +197,7 @@ def patch_event(
         raise HTTPException(status_code=404, detail="No such event.")
     _require_membership(session, user, event.group_id)
     repo.set_event_done(session, event, body.done)
-    return _event_json(event, user.timezone)
+    return _event_json(event, user.timezone, viewer_id=user.id)
 
 
 @router.delete("/events/{event_id}")

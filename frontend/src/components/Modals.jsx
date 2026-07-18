@@ -100,6 +100,9 @@ function EventModal() {
   const past = e.end < new Date();
   const canReview =
     past && e.where && e.where !== "—" && !reviews.some((r) => r.place === e.where);
+  // RSVP only makes sense for events you never voted on: poll-locked times
+  // already collected everyone's yes, and a personal event is only yours
+  const showRsvp = !e.booked && !e.personal && !past;
   const rsvpBtn = (v, label) => (
     <div
       style={{
@@ -163,11 +166,23 @@ function EventModal() {
             </div>
           )}
         </div>
-        <div style={{ display: "flex", gap: 9 }}>
-          {rsvpBtn("going", "Going")}
-          {rsvpBtn("maybe", "Maybe")}
-          {rsvpBtn("cant", "Can't go")}
-        </div>
+        {showRsvp && (
+          <div style={{ display: "flex", flexDirection: "column", gap: 7 }}>
+            <div style={{ display: "flex", gap: 9 }}>
+              {rsvpBtn("going", "Going")}
+              {rsvpBtn("maybe", "Maybe")}
+              {rsvpBtn("cant", "Can't go")}
+            </div>
+            <span style={{ fontSize: 10.5, color: "#a09889" }}>
+              Someone added this directly — let them know if you can make it.
+            </span>
+          </div>
+        )}
+        {e.booked && (
+          <span style={{ fontSize: 11.5, color: "#a09889" }}>
+            Locked in through a poll — attendance was settled by the votes.
+          </span>
+        )}
       </div>
     </div>
   );
@@ -280,9 +295,13 @@ function NewEventModal() {
   const [cat, setCat] = useState(draft.cat || "Event");
   const [inv, setInv] = useState(members.filter((m) => m.email !== me?.email).map((m) => m.email));
   const [sync, setSync] = useState(!!me?.calendar_connected);
+  // shared = a group thing · personal = your own; groupmates see busy time,
+  // and "visible" additionally shows them the title/place (anonymous is default)
+  const [vis, setVis] = useState(draft.vis || "shared");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
 
+  const personal = vis !== "shared";
   const hasTime = date && start && end;
 
   const create = async () => {
@@ -305,8 +324,10 @@ function NewEventModal() {
         location: where.trim() || null,
         start_iso: new Date(`${date}T${start}`).toISOString(),
         end_iso: new Date(`${date}T${end}`).toISOString(),
-        invite_emails: inv,
-        sync_google: sync,
+        invite_emails: personal ? [] : inv,
+        sync_google: personal ? false : sync,
+        personal,
+        anonymous: vis !== "personalOpen",
       });
       if (where.trim()) rememberPlace(where.trim());
       if (draft.id) removeDraft(draft.id);
@@ -326,7 +347,7 @@ function NewEventModal() {
       return;
     }
     if (draft.id) removeDraft(draft.id);
-    addDraft({ kind: "event", title: title.trim(), where, date, start, end, cat });
+    addDraft({ kind: "event", title: title.trim(), where, date, start, end, cat, vis });
     setModal(null);
   };
 
@@ -346,23 +367,48 @@ function NewEventModal() {
         reviewedPlaces={reviews.map((r) => r.place)}
       />
       <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-        <span style={fieldLabel}>Invite</span>
-        <InviteePicker selected={inv} setSelected={setInv} />
+        <span style={fieldLabel}>Who is this for?</span>
+        <div style={{ display: "flex", gap: 8 }}>
+          {[
+            ["shared", "The group"],
+            ["personal", "Just me"],
+            ["personalOpen", "Just me · details visible"],
+          ].map(([v, label]) => (
+            <div key={v} style={{ ...(vis === v ? dpill(true) : gpill(true)), fontSize: 11.5, padding: "6px 12px" }} onClick={() => setVis(v)}>
+              {label}
+            </div>
+          ))}
+        </div>
+        {personal && (
+          <span style={{ fontSize: 11, color: "#a09889", lineHeight: 1.45 }}>
+            {vis === "personalOpen"
+              ? "Groupmates will see this as busy time with the title and place shown."
+              : "Groupmates only see you're busy — no title, no place (the default)."}
+          </span>
+        )}
       </div>
+      {!personal && (
+        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+          <span style={fieldLabel}>Invite</span>
+          <InviteePicker selected={inv} setSelected={setInv} />
+        </div>
+      )}
       {catPills(["Meet", "Event", "Call"], cat, setCat)}
-      <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-        <div style={{ flex: 1 }}>
-          <div style={{ fontSize: 13.5, fontWeight: 600 }}>Sync with Google Calendar</div>
-          <div style={{ fontSize: 11.5, color: "#8c8577", marginTop: 2 }}>
-            {me?.calendar_connected
-              ? "Creates the event on Google Calendar and invites everyone — their calendars update automatically."
-              : "Connect your Google Calendar to sync events."}
+      {!personal && (
+        <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+          <div style={{ flex: 1 }}>
+            <div style={{ fontSize: 13.5, fontWeight: 600 }}>Sync with Google Calendar</div>
+            <div style={{ fontSize: 11.5, color: "#8c8577", marginTop: 2 }}>
+              {me?.calendar_connected
+                ? "Creates the event on Google Calendar and invites everyone — their calendars update automatically."
+                : "Connect your Google Calendar to sync events."}
+            </div>
+          </div>
+          <div style={toggleStyle(sync)} onClick={() => me?.calendar_connected && setSync((v) => !v)}>
+            <div style={knobStyle(sync)} />
           </div>
         </div>
-        <div style={toggleStyle(sync)} onClick={() => me?.calendar_connected && setSync((v) => !v)}>
-          <div style={knobStyle(sync)} />
-        </div>
-      </div>
+      )}
       {err && errText(err)}
       <div style={{ display: "flex", gap: 9 }}>
         <div
@@ -474,12 +520,14 @@ function NewTaskModal() {
 // Panel 2: place + day + candidate times — slides in inside the same glass.
 function NewPollModal() {
   const {
-    modal, setModal, createPlanDirect, members, plans, setPage,
+    modal, setModal, createPlanDirect, addTimesToPlan, members, plans, setPage,
     reviews, addDraft, removeDraft,
   } = useApp();
   const pre = modal.prefill || {};
   const change = modal.proposeChange || null;
   const draft = modal.draft || {};
+  // appending times to an existing timeless poll — same plan, no second poll
+  const appendTo = change?.skipToTimes ? change.planId : null;
 
   const [stage, setStage] = useState(change?.skipToTimes ? 1 : 0);
   const [title, setTitle] = useState(change?.title || draft.title || pre.title || "");
@@ -537,6 +585,24 @@ function NewPollModal() {
       setErr("Add a place or at least one candidate time — or go back and just check who's in.");
       return;
     }
+    if (appendTo) {
+      if (bodySlots.length === 0) {
+        setErr("Pick a day and at least one time to add.");
+        return;
+      }
+      setBusy(true);
+      setErr("");
+      try {
+        await addTimesToPlan(appendTo, bodySlots);
+        setModal(null);
+        setPage("polls");
+      } catch (e) {
+        setErr(e.message || "That didn't work — try again.");
+      } finally {
+        setBusy(false);
+      }
+      return;
+    }
     const dup = findDuplicate(bodySlots);
     if (dup) {
       setDupLink(dup);
@@ -552,19 +618,13 @@ function NewPollModal() {
     setBusy(true);
     setErr("");
     try {
-      const plan = await createPlanDirect({
+      const n = expected === "custom" ? parseInt(customN, 10) : expected;
+      await createPlanDirect({
         title: title.trim(),
         location: where.trim() || null,
         slots: bodySlots,
+        expected_count: n || null,
       });
-      const n = expected === "custom" ? parseInt(customN, 10) : expected;
-      if (n) {
-        try {
-          const m = JSON.parse(localStorage.getItem("ov.expected") || "{}");
-          m[plan.id] = n;
-          localStorage.setItem("ov.expected", JSON.stringify(m));
-        } catch { /* fine */ }
-      }
       if (where.trim()) rememberPlace(where.trim());
       if (draft.id) removeDraft(draft.id);
       setModal(null);
@@ -599,12 +659,14 @@ function NewPollModal() {
         <div className="slide-panel" style={{ padding: 22 }}>
           <div>
             <div style={{ fontSize: 19, fontWeight: 600 }}>
-              {change ? "Suggest a change" : "New poll"}
+              {appendTo ? "Add times" : change ? "Suggest a change" : "New poll"}
             </div>
             <div style={{ fontSize: 12, color: "#8c8577", marginTop: 3, lineHeight: 1.5 }}>
-              {change
-                ? "Same plan, new proposal — it starts pre-filled, change what didn't work."
-                : "Only the title is required. Time and place can be voted on — or left open until you know who's in."}
+              {appendTo
+                ? "These times join the same poll — everyone who's in gets asked, no new poll."
+                : change
+                  ? "Same plan, new proposal — it starts pre-filled, change what didn't work."
+                  : "Only the title is required. Time and place can be voted on — or left open until you know who's in."}
             </div>
           </div>
           <input
@@ -723,7 +785,7 @@ function NewPollModal() {
               style={{ ...dpill(false), flex: 1, justifyContent: "center", opacity: busy ? 0.55 : 1 }}
               onClick={() => submit(false)}
             >
-              {busy ? "Starting…" : change ? "Propose the change" : "Start the poll"}
+              {busy ? "Starting…" : appendTo ? "Add these times" : change ? "Propose the change" : "Start the poll"}
             </div>
             <div
               className="hov-glass"

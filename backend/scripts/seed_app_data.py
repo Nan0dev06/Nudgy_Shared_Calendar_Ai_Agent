@@ -23,7 +23,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from sqlalchemy import select
 
 from app.db.models import (
-    Group, GroupEvent, InterestVote, Membership, Plan, TimeRound, TimeVote, User,
+    Group, GroupEvent, InterestVote, Membership, Plan, PlaceReview, TimeRound,
+    TimeVote, User,
 )
 from app.db.session import SessionLocal, init_db
 
@@ -71,6 +72,9 @@ def wipe(session) -> None:
     for v in session.scalars(select(TimeVote)):
         if v.user_id in demo_ids:
             session.delete(v)
+    for r in session.scalars(select(PlaceReview)):
+        if r.user_id in demo_ids:
+            session.delete(r)
     for u in demo_users:
         session.delete(u)
     session.commit()
@@ -106,17 +110,24 @@ def seed(session, me_email: str | None) -> None:
     g2 = group("Uni Study Group", "DEMO02", karim, [karim, omar, maya] + ([me] if me else []))
     g3 = group("Weekend Hikers", "DEMO03", lina, [lina, maya, aya])
 
-    def event(g, creator, kind, title, category, location, start, end=None, done=False):
+    def event(g, creator, kind, title, category, location, start, end=None,
+              done=False, personal=False, anonymous=True):
         session.add(GroupEvent(
             group_id=g.id, created_by=creator.id, kind=kind, title=title,
             category=category, location=location, start_utc=start,
-            end_utc=end or (start + timedelta(hours=2) if start else None), done=done,
+            end_utc=end or (start + timedelta(hours=2) if start else None),
+            done=done, personal=personal, anonymous=anonymous,
         ))
 
-    # ---- ~10 events/tasks PER USER, spread across their groups -------------
-    # A couple land in the past (so review nudges fire); the rest spread over
-    # the next three weeks so day/week/month views all have content.
-    EVENT_IDEAS = [
+    # ---- DENSE calendar: ~3 things/day per user across two months ----------
+    # Days -30..+31 around today. Each user gets 2-3 PERSONAL events per day
+    # (their own life — shown to groupmates as busy time; roughly a third have
+    # anonymous=False so the "see what they're doing" path has data) plus the
+    # shared group outings and tasks below.
+    import random
+    rng = random.Random(42)  # deterministic: re-seeding gives the same world
+
+    SHARED_IDEAS = [
         ("Dinner at Kalei", "Event", "Kalei Coffee Co."),
         ("Movie night", "Event", "ABC Verdun VOX"),
         ("Beach day", "Event", "Lazy B"),
@@ -131,6 +142,24 @@ def seed(session, me_email: str | None) -> None:
         ("Karaoke warm-up", "Event", "Cheers Broumana"),
         ("Group call", "Call", None),
         ("Football five-a-side", "Event", "Beirut By Bike Pitch"),
+    ]
+    PERSONAL_IDEAS = [
+        ("Gym", "Event", "Fitness Zone Hamra"),
+        ("Dentist appointment", "Event", "Clemenceau Medical Center"),
+        ("Lecture", "Meet", "AUB"),
+        ("Shift at the shop", "Event", None),
+        ("Family lunch", "Event", None),
+        ("Therapy", "Event", None),
+        ("Guitar practice", "Event", None),
+        ("Tutoring session", "Meet", "Bliss Hall"),
+        ("Deep-work block", "Event", None),
+        ("Errands run", "Event", "ABC Verdun"),
+        ("Football training", "Event", "Beirut By Bike Pitch"),
+        ("Reading hour", "Event", None),
+        ("Side project", "Event", None),
+        ("Call with grandma", "Call", None),
+        ("Arabic class", "Meet", None),
+        ("Swim", "Event", "AUB Beach"),
     ]
     TASK_IDEAS = [
         ("Book the table for Friday", "Task", "Kalei Coffee Co."),
@@ -157,30 +186,71 @@ def seed(session, me_email: str | None) -> None:
         ):
             groups_of.setdefault(m.id, []).append(g)
     users_by_id = {u.id: u for u in session.scalars(select(User))}
+    demo_ids = {u.id for u in people.values()}
 
     made = 0
-    for offset, (uid, ugroups) in enumerate(sorted(groups_of.items())):
+    DAY_SPAN = range(-30, 32)
+
+    # personal daily life — DEMO users only (your own calendar is really yours)
+    for uid, ugroups in sorted(groups_of.items()):
+        if uid not in demo_ids:
+            continue
         u = users_by_id[uid]
-        for i in range(10):
-            # i//2 so the event/task pair rotates groups together — plain
-            # i % len would alias with the even/odd split below and dump
-            # every task into the same group
-            g = ugroups[(i // 2 + offset) % len(ugroups)]
-            # days -2..+19: a few finished outings, the rest upcoming
-            day = ((offset * 7 + i * 3) % 22) - 2
-            if i % 2 == 0:  # event
-                title, cat, loc = EVENT_IDEAS[(offset + i) % len(EVENT_IDEAS)]
-                hour = 9 + ((offset * 5 + i * 2) % 11)  # 9:00–20:00 starts
-                event(g, u, "event", title, cat, loc, _at(day, hour))
-            else:  # task
-                title, cat, loc = TASK_IDEAS[(offset + i) % len(TASK_IDEAS)]
-                event(g, u, "task", title, cat, loc, _at(day, 12), done=(day < 0))
-            made += 1
+        for day in DAY_SPAN:
+            n = rng.choice((2, 2, 3))  # 2-3 personal things a day
+            hours = rng.sample((8, 9, 10, 11, 13, 14, 16, 17, 18, 19, 20), n)
+            for hour in hours:
+                title, cat, loc = rng.choice(PERSONAL_IDEAS)
+                event(
+                    ugroups[0], u, "event", title, cat, loc,
+                    _at(day, hour, rng.choice((0, 30))),
+                    end=None if rng.random() < 0.7 else _at(day, hour + 2),
+                    personal=True,
+                    anonymous=rng.random() < 0.65,  # ~1/3 share the details
+                )
+                made += 1
+
+    # shared outings: each group gets one roughly every other day, hosted by a
+    # rotating member, plus a task every ~4 days
+    for gi, g in enumerate((g1, g2, g3)):
+        members = [users_by_id[uid] for uid, gs in groups_of.items() if g in gs]
+        for day in DAY_SPAN:
+            if (day + gi) % 2 == 0:
+                host = members[(day + gi) % len(members)]
+                title, cat, loc = SHARED_IDEAS[(day + gi * 5) % len(SHARED_IDEAS)]
+                hour = (11 + (day + gi * 3) % 9)  # 11:00–19:00 starts
+                event(g, host, "event", title, cat, loc, _at(day, hour))
+                made += 1
+            if (day + gi) % 4 == 1:
+                owner = members[(day * 2 + gi) % len(members)]
+                title, cat, loc = TASK_IDEAS[(day + gi * 4) % len(TASK_IDEAS)]
+                event(g, owner, "task", title, cat, loc, _at(day, 12), done=(day < 0))
+                made += 1
+
+    # ---- Place reviews — the taste memory the agent + Places page read -----
+    REVIEWS = [
+        (aya, "BHive Cafe", 5, "Quiet upstairs, great flat white"),
+        (aya, "Kalei Coffee Co.", 4, "Lovely garden, gets busy on weekends"),
+        (aya, "Cheers Broumana", 3, "Fun but loud"),
+        (karim, "BHive Cafe", 4, "Good wifi, decent prices"),
+        (karim, "Socrate", 5, "Best mankousheh in Hamra"),
+        (karim, "ABC Verdun VOX", 4, None),
+        (lina, "Kalei Coffee Co.", 5, "My favorite spot in the city"),
+        (lina, "Tannourine Cedar Reserve", 5, "Go early, the light is unreal"),
+        (lina, "Lazy B", 4, "Clean water, pricey entrance"),
+        (omar, "Backburner Coffee", 4, "Calm for studying"),
+        (omar, "Socrate", 3, "Solid but slow service"),
+        (maya, "Em Sherif Cafe", 5, "Fancy but worth it"),
+        (maya, "BHive Cafe", 4, "Nice for catching up"),
+    ]
+    for u, place, stars, text in REVIEWS:
+        session.add(PlaceReview(user_id=u.id, place=place, stars=stars, text=text))
 
     # ---- Plans (two-stage polls) in the crew group --------------------------
-    def plan(g, host, title, location, slot_pairs, interest=(), time_votes=(), status="open"):
+    def plan(g, host, title, location, slot_pairs, interest=(), time_votes=(),
+             status="open", expected=None):
         p = Plan(group_id=g.id, created_by=host.id, title=title,
-                 location=location, status=status)
+                 location=location, status=status, expected_count=expected)
         session.add(p)
         session.flush()
         rounds = []
@@ -203,6 +273,7 @@ def seed(session, me_email: str | None) -> None:
         [(_at(5, 20), _at(5, 23))],
         interest=[(karim, True), (lina, False)],
         time_votes=[(karim, True)],
+        expected=3,
     )
     plan(g1, karim, "Paintball next weekend?", None, [],
          interest=[(aya, True)])  # pure interest check — no time yet
@@ -213,7 +284,8 @@ def seed(session, me_email: str | None) -> None:
     )
 
     session.commit()
-    print(f"seeded: 5 demo users, 3 groups, {made} events/tasks, 3 plans"
+    print(f"seeded: 5 demo users, 3 groups, {made} events/tasks, "
+          f"{len(REVIEWS)} reviews, 3 plans"
           + (f" (you are in Beirut Crew + Uni Study Group as {me_email})" if me else ""))
 
 

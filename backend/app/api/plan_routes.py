@@ -57,6 +57,11 @@ class CreatePlanBody(BaseModel):
     title: str = Field(min_length=1, max_length=200)
     location: str | None = Field(default=None, max_length=200)
     slots: list[SlotBody] = Field(default_factory=list, max_length=6)
+    expected_count: int | None = Field(default=None, ge=1, le=100)
+
+
+class AddRoundsBody(BaseModel):
+    slots: list[SlotBody] = Field(min_length=1, max_length=6)
 
 
 def _plan_json(session: Session, plan: Plan, viewer: User, tz_name: str) -> dict:
@@ -73,6 +78,7 @@ def _plan_json(session: Session, plan: Plan, viewer: User, tz_name: str) -> dict
         "status": plan.status,
         "host": host.email if host else None,
         "is_host": is_host,
+        "expected_count": plan.expected_count,
         "times": [
             {
                 "round_id": r.id,
@@ -169,9 +175,37 @@ def create_plan(
     plan = repo.create_plan(
         session, group, user, title=body.title.strip(),
         slots=slots, location=(body.location or "").strip() or None,
+        expected_count=body.expected_count,
     )
     log.info("[plan %d] %s created it directly from the app (%d candidate times)",
              plan.id, user.email, len(slots))
+    return _plan_json(session, plan, user, user.timezone)
+
+
+@router.post("/plans/{plan_id}/rounds")
+def add_rounds(
+    plan_id: int,
+    body: AddRoundsBody,
+    user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+):
+    """Host-only: append candidate times to an existing OPEN plan — the way a
+    timeless "who's in?" check grows into a timed poll without starting over.
+    If the plan had no live time, the first appended one activates immediately."""
+    plan = _get_plan_for_member(session, user, plan_id)
+    if user.id != plan.created_by:
+        raise HTTPException(status_code=403, detail="Only the host can add times.")
+    if len(plan.rounds) + len(body.slots) > 8:
+        raise HTTPException(status_code=400, detail="A plan can hold at most 8 candidate times.")
+    slots = []
+    for i, s in enumerate(body.slots):
+        start = _parse_iso_utc(s.start_iso, f"slots[{i}].start_iso")
+        end = _parse_iso_utc(s.end_iso, f"slots[{i}].end_iso")
+        if end <= start:
+            raise HTTPException(status_code=400, detail=f"slots[{i}]: end must be after start.")
+        slots.append((start, end))
+    repo.append_rounds(session, plan, slots)
+    log.info("[plan %d] %s appended %d candidate time(s)", plan.id, user.email, len(slots))
     return _plan_json(session, plan, user, user.timezone)
 
 

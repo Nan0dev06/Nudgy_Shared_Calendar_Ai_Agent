@@ -40,6 +40,14 @@ export const api = {
     req(`/plans/${planId}/interest`, { method: "POST", body: { yes } }),
   voteTime: (planId, yes, round_id) =>
     req(`/plans/${planId}/time-vote`, { method: "POST", body: { yes, round_id } }),
+  addRounds: (planId, slots) =>
+    req(`/plans/${planId}/rounds`, { method: "POST", body: { slots } }),
+  myReviews: () => req("/reviews"),
+  upsertReview: (body) => req("/reviews", { method: "POST", body }),
+  deleteReview: (reviewId) => req(`/reviews/${reviewId}`, { method: "DELETE" }),
+  groupReviews: (groupId) => req(`/groups/${groupId}/reviews`),
+  getDrafts: () => req("/auth/me/drafts"),
+  putDrafts: (drafts) => req("/auth/me/drafts", { method: "PUT", body: { drafts } }),
   events: (groupId) => req(`/groups/${groupId}/events`),
   createEvent: (groupId, body) =>
     req(`/groups/${groupId}/events`, { method: "POST", body }),

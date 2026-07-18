@@ -1,8 +1,9 @@
+import { useEffect, useRef } from "react";
 import { useApp } from "../ctx.js";
 import {
   glass, gpill, dpill, evBlock, catChip, avatar, popover, dot, kicker, sagePill,
 } from "../theme.js";
-import { ChevronLeft, ChevronRight } from "../Icons.jsx";
+import { ChevronLeft, ChevronRight, CheckIcon } from "../Icons.jsx";
 import {
   DAY_MS, mondayOf, sameDay, fmtDayShort, fmtDayLong,
   fmtMonth, fmtWeekLabel, fmtRange, monthCells,
@@ -38,11 +39,13 @@ const freeStyle = {
 
 export default function CalendarPage() {
   const {
-    view, setView, calAnchor, setCalAnchor, events, members, activeGroup, avail,
-    setModal, focusId, hoverKey, setHoverKey, doSend,
+    view, setView, calAnchor, setCalAnchor, events, tasks, members, activeGroup,
+    avail, setModal, focusId, hoverKey, setHoverKey, doSend,
   } = useApp();
 
   const today = new Date();
+  const isToday = sameDay(calAnchor, today);
+  const dayScrollRef = useRef(null);
   const monday = mondayOf(calAnchor);
   const memberByEmail = Object.fromEntries(members.map((m) => [m.email, m]));
   const colorOf = (email) => memberByEmail[email]?.color || "#8A8A8A";
@@ -89,7 +92,9 @@ export default function CalendarPage() {
     </div>
   );
 
-  // Gray overlap cluster block with the "who's busy" hover popover.
+  // Gray overlap cluster block with the "who's busy" hover popover. Rows that
+  // came from a NON-anonymous personal event carry a title/place — those show
+  // what the person is actually doing; anonymous ones stay just "busy".
   const clusterBlock = (c, key, popRight, extraStyle = {}) => {
     const single = c.count === 1;
     const label = single
@@ -113,21 +118,56 @@ export default function CalendarPage() {
               Who's busy · {fmtRange(c.start, c.end)}
             </div>
             {c.rows.map((r, i) => (
-              <div key={i} style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                <div style={dot(colorOf(r.email))} />
-                <span style={{ fontSize: 12, fontWeight: 600, color: colorOf(r.email) }}>
-                  {nameOf(r.email)}
-                </span>
-                <span style={{ marginLeft: "auto", fontSize: 11.5, color: "#8c8577" }}>
-                  {fmtRange(r.start, r.end)}
-                </span>
+              <div key={i} style={{ display: "flex", flexDirection: "column", gap: 1 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <div style={dot(colorOf(r.email))} />
+                  <span style={{ fontSize: 12, fontWeight: 600, color: colorOf(r.email) }}>
+                    {nameOf(r.email)}
+                  </span>
+                  <span style={{ marginLeft: "auto", fontSize: 11.5, color: "#8c8577" }}>
+                    {fmtRange(r.start, r.end)}
+                  </span>
+                </div>
+                {r.title && (
+                  <span style={{ fontSize: 11.5, color: "#5c564b", paddingLeft: 18 }}>
+                    {r.title}
+                    {r.where ? ` · ${r.where}` : ""}
+                  </span>
+                )}
               </div>
             ))}
+            <span style={{ fontSize: 10, color: "#a09889" }}>
+              Details show only what people chose to share — the rest stays anonymous.
+            </span>
           </div>
         )}
       </div>
     );
   };
+
+  // Task chip — a due item pinned onto its day
+  const taskChip = (t) => (
+    <div
+      key={"tk" + t.id}
+      className="hov-lift-sm"
+      onClick={() => setModal({ type: "task", task: t })}
+      style={{
+        display: "flex", alignItems: "center", gap: 7, padding: "7px 11px",
+        borderRadius: 11, cursor: "pointer",
+        background: "rgba(220,167,68,.14)", border: "1px solid rgba(220,167,68,.35)",
+        transition: "all .2s",
+      }}
+    >
+      {t.done ? (
+        <CheckIcon size={11} color="#DCA744" />
+      ) : (
+        <div style={{ ...dot("#DCA744"), width: 7, height: 7 }} />
+      )}
+      <span style={{ fontSize: 11.5, fontWeight: 600, color: "#8a6f33", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", textDecoration: t.done ? "line-through" : "none" }}>
+        {t.title}
+      </span>
+    </div>
+  );
 
   const freeBlock = (w, key) => (
     <div
@@ -160,8 +200,16 @@ export default function CalendarPage() {
         <span style={{ fontSize: 15, fontWeight: 600, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
           {label}
         </span>
-        <div className="hov-glass" style={{ ...gpill(true), flex: "none" }} onClick={() => setCalAnchor(new Date())}>
-          Today
+        <div
+          className="hov-glass"
+          style={{ ...gpill(true), flex: "none" }}
+          onClick={() => {
+            // viewing today's day rail: jump to the current hour instead
+            if (view === "day" && isToday) scrollDayTo(today.getHours() - 1);
+            else setCalAnchor(new Date());
+          }}
+        >
+          {view === "day" && isToday ? "Now" : "Today"}
         </div>
       </div>
       <div
@@ -201,11 +249,14 @@ export default function CalendarPage() {
       return {
         date: d,
         evs: events.filter((e) => sameDay(e.start, d)),
+        dueTasks: tasks.filter((t) => t.dueAt && sameDay(t.dueAt, d)),
         clusters: dayClusters(avail.members_busy, d),
         free: dayFreeWindows(avail.common_slots, d),
       };
     });
-    const anything = cols.some((c) => c.evs.length + c.clusters.length + c.free.length > 0);
+    const anything = cols.some(
+      (c) => c.evs.length + c.dueTasks.length + c.clusters.length + c.free.length > 0
+    );
     if (!anything)
       return (
         <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center" }}>
@@ -220,7 +271,7 @@ export default function CalendarPage() {
         </div>
       );
     return (
-      <div style={{ flex: 1, display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: 12, minHeight: 0 }}>
+      <div style={{ flex: 1, display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: 12, minHeight: 0, overflow: "hidden auto", alignItems: "start", paddingBottom: 8 }}>
         {cols.map((col, ci) => {
           // one chronological stack per day: events, busy clusters, free windows
           const items = [
@@ -233,6 +284,7 @@ export default function CalendarPage() {
               <div style={{ ...kicker, color: sameDay(col.date, today) ? "#2A9D8F" : "#a49c8c", padding: "0 4px" }}>
                 {fmtDayShort(col.date)}
               </div>
+              {col.dueTasks.map(taskChip)}
               {items.map((it, idx) => {
                 if (it.t === "ev") return eventCard(it.e, [16, 20, 18][idx % 3]);
                 if (it.t === "ov")
@@ -247,23 +299,48 @@ export default function CalendarPage() {
   };
 
   // ---------------- day ----------------
+  // A full 24h rail inside a scroll container (HOUR_PX per hour); the view
+  // auto-scrolls to the morning (or the current hour on today).
+  const HOUR_PX = 56;
+  const scrollDayTo = (hour) => {
+    dayScrollRef.current?.scrollTo({
+      top: Math.max(0, hour) * HOUR_PX,
+      behavior: "smooth",
+    });
+  };
+
   const dayView = () => {
-    const dayStart = 9, daySpan = 12; // 9am–9pm rail
     const frac = (d) =>
-      Math.max(0, Math.min(1, (d.getHours() + d.getMinutes() / 60 - dayStart) / daySpan));
+      Math.max(0, Math.min(1, (d.getHours() + d.getMinutes() / 60) / 24));
     const dayEvs = events.filter((e) => sameDay(e.start, calAnchor));
+    const dayTasks = tasks.filter((t) => t.dueAt && sameDay(t.dueAt, calAnchor));
     const clusters = dayClusters(avail.members_busy, calAnchor);
     const free = dayFreeWindows(avail.common_slots, calAnchor);
-    const nowFrac = (today.getHours() + today.getMinutes() / 60 - dayStart) / daySpan;
-    const showNow = sameDay(calAnchor, today) && nowFrac >= 0 && nowFrac <= 1;
+    const nowFrac = (today.getHours() + today.getMinutes() / 60) / 24;
+    const showNow = isToday;
     const empty = dayEvs.length + clusters.length + free.length === 0;
+    const railH = 24 * HOUR_PX;
     return (
-      <div style={{ flex: 1, display: "flex", gap: 12, minHeight: 0 }}>
-        <div style={{ width: 44, flex: "none", display: "flex", flexDirection: "column", justifyContent: "space-between", padding: "4px 0", fontSize: 11, color: "#a09889", textAlign: "right" }}>
-          <span>9am</span><span>11am</span><span>1pm</span><span>3pm</span>
-          <span>5pm</span><span>7pm</span><span>9pm</span>
-        </div>
-        <div style={{ flex: 1, position: "relative", borderLeft: "1.5px solid rgba(150,142,128,.3)", minHeight: 0 }}>
+      <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: 8, minHeight: 0 }}>
+        {dayTasks.length > 0 && (
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", flex: "none" }}>
+            <span style={{ ...kicker, alignSelf: "center" }}>Due today</span>
+            {dayTasks.map(taskChip)}
+          </div>
+        )}
+        <div ref={dayScrollRef} className="day-scroll" style={{ flex: 1, minHeight: 0, overflow: "hidden auto" }}>
+          <div style={{ display: "flex", gap: 12, height: railH, position: "relative" }}>
+            <div style={{ width: 44, flex: "none", position: "relative", fontSize: 11, color: "#a09889", textAlign: "right" }}>
+              {Array.from({ length: 24 }, (_, h) => (
+                <span key={h} style={{ position: "absolute", top: h * HOUR_PX - 7, right: 0 }}>
+                  {h === 0 ? "12am" : h < 12 ? `${h}am` : h === 12 ? "12pm" : `${h - 12}pm`}
+                </span>
+              ))}
+            </div>
+            <div style={{ flex: 1, position: "relative", borderLeft: "1.5px solid rgba(150,142,128,.3)" }}>
+              {Array.from({ length: 24 }, (_, h) => (
+                <div key={h} style={{ position: "absolute", top: h * HOUR_PX, left: 0, right: 0, borderTop: "1px solid rgba(150,142,128,.12)" }} />
+              ))}
           {dayEvs.map((e) => (
             <div
               key={e.id}
@@ -334,10 +411,20 @@ export default function CalendarPage() {
               <div style={{ position: "absolute", top: `${nowFrac * 100}%`, left: -4, width: 9, height: 9, marginTop: -4.5, borderRadius: "50%", background: "#D95D39", zIndex: 3 }} />
             </>
           )}
+            </div>
+          </div>
         </div>
       </div>
     );
   };
+
+  // land the day rail somewhere useful: the current hour on today, 8am otherwise
+  useEffect(() => {
+    if (view !== "day" || !dayScrollRef.current) return;
+    const hour = sameDay(calAnchor, new Date()) ? new Date().getHours() - 1 : 8;
+    dayScrollRef.current.scrollTop = Math.max(0, hour) * HOUR_PX;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [view, calAnchor]);
 
   // ---------------- month ----------------
   const monthView = () => {

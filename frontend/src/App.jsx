@@ -43,8 +43,14 @@ const BG = {
   display: "flex",
   position: "relative",
   overflow: "hidden",
+  // warm parchment base with faint tinted pools (sage top-left, rose right,
+  // mustard bottom) — the Blobs float on top of this for the liquid look
   background:
-    "radial-gradient(120% 100% at 15% 0%, #F2E9DA, transparent 60%), radial-gradient(110% 90% at 100% 100%, #EEE2D2, transparent 55%), linear-gradient(140deg, #EFE7D9, #E8DECD 55%, #EDE2D3)",
+    "radial-gradient(120% 100% at 15% 0%, rgba(42,157,143,.08), transparent 55%), " +
+    "radial-gradient(90% 80% at 100% 30%, rgba(203,163,156,.12), transparent 60%), " +
+    "radial-gradient(110% 90% at 100% 100%, #EEE2D2, transparent 55%), " +
+    "radial-gradient(100% 90% at 30% 100%, rgba(220,167,68,.1), transparent 55%), " +
+    "linear-gradient(140deg, #EFE7D9, #E8DECD 55%, #EDE2D3)",
 };
 
 export default function App() {
@@ -102,10 +108,16 @@ export default function App() {
   const [memory, setMemory] = useStored("ov.memory", []);
   const [profile, setProfile] = useStored("ov.profile", {});
   const [readNotifs, setReadNotifs] = useStored("ov.readNotifs", []);
-  // place reviews: [{place, stars, text, ts}] — the agent's taste memory
+  // place reviews: [{id, place, stars, text, ts}] — the agent's taste memory.
+  // Server-backed now; localStorage is just the instant-boot cache.
   const [reviews, setReviews] = useStored("ov.reviews", []);
-  // unfinished things (event/poll started without a time) — sidebar "Drafts"
-  const [drafts, setDrafts] = useStored(`ov.drafts${gk}`, []);
+  // groupmates' reviews for the active group: [{place, stars, text, ts, email}]
+  const [friendReviews, setFriendReviews] = useState([]);
+  // unfinished things (event/poll started without a time) — sidebar "Still
+  // planning". One list with a `gid` per draft; synced server-side.
+  const [drafts, setDrafts] = useStored("ov.drafts2", []);
+  // which place the Places page is showing (from search or a card click)
+  const [placeFocus, setPlaceFocus] = useState(null);
 
   const activeGroup = groups.find((g) => g.id === activeGroupId) || null;
 
@@ -125,6 +137,17 @@ export default function App() {
         if (gs.length && !gs.some((g) => g.id === activeGroupId)) {
           setActiveGroupId(gs[0].id);
         }
+        // server copies of taste + drafts; local cache is only the fallback
+        api
+          .myReviews()
+          .then((rs) =>
+            setReviews(rs.map((r) => ({ ...r, ts: r.ts ? Date.parse(r.ts) : Date.now() })))
+          )
+          .catch(() => {});
+        api
+          .getDrafts()
+          .then(({ drafts: ds }) => ds.length && setDrafts(ds))
+          .catch(() => {});
       } catch {
         setMe(null);
       } finally {
@@ -133,6 +156,19 @@ export default function App() {
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // push draft changes to the server (debounced; skip the initial mount)
+  const draftsBooted = useRef(false);
+  useEffect(() => {
+    if (!draftsBooted.current) {
+      draftsBooted.current = true;
+      return;
+    }
+    if (!me) return;
+    const t = setTimeout(() => api.putDrafts(drafts).catch(() => {}), 800);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [drafts]);
 
   const refreshGroupData = useCallback(async () => {
     if (!activeGroupId) {
@@ -159,6 +195,7 @@ export default function App() {
     else setPlans([]);
     if (evs.status === "fulfilled") setGroupEvents(evs.value);
     else setGroupEvents([]);
+    api.groupReviews(activeGroupId).then(setFriendReviews).catch(() => setFriendReviews([]));
     // availability hits Google live for every member — slow, so don't block
     // the rest of the data on it
     api
@@ -284,6 +321,23 @@ export default function App() {
     [activeGroupId, pushActivity]
   );
 
+  // host appending candidate times to an existing (usually timeless) poll —
+  // grows the same plan instead of spawning a second one
+  const addTimesToPlan = useCallback(
+    async (planId, slots) => {
+      const out = await api.addRounds(planId, slots);
+      setPlans((ps) => ps.map((p) => (p.id === planId ? out : p)));
+      pushActivity({
+        dot: "#D95D39",
+        pre: "You added times to ",
+        bold: out.title,
+        post: "",
+      });
+      return out;
+    },
+    [pushActivity]
+  );
+
   const saveProfile = useCallback(async (patch) => {
     const updated = await api.patchMe(patch);
     setMe(updated);
@@ -292,10 +346,21 @@ export default function App() {
 
   const addReview = useCallback(
     (rev) => {
+      // optimistic local update, then persist; the server's id replaces ours
       setReviews((rs) => [
         { ...rev, ts: Date.now() },
         ...rs.filter((r) => r.place !== rev.place),
       ]);
+      api
+        .upsertReview({ place: rev.place, stars: rev.stars, text: rev.text || null })
+        .then((saved) =>
+          setReviews((rs) =>
+            rs.map((r) =>
+              r.place === saved.place ? { ...r, id: saved.id } : r
+            )
+          )
+        )
+        .catch(() => {});
       pushActivity({
         dot: "#DCA744",
         pre: `You rated ${"★".repeat(rev.stars)} `,
@@ -306,11 +371,21 @@ export default function App() {
     [setReviews, pushActivity]
   );
 
+  const removeReview = useCallback(
+    (rev) => {
+      setReviews((rs) => rs.filter((r) => r.place !== rev.place));
+      if (rev.id) api.deleteReview(rev.id).catch(() => {});
+    },
+    [setReviews]
+  );
+
   const addDraft = useCallback(
     (d) => {
-      setDrafts((ds) => [{ ...d, id: Date.now() }, ...ds].slice(0, 10));
+      setDrafts((ds) =>
+        [{ ...d, id: Date.now(), gid: activeGroupId }, ...ds].slice(0, 12)
+      );
     },
-    [setDrafts]
+    [setDrafts, activeGroupId]
   );
 
   const removeDraft = useCallback(
@@ -412,8 +487,15 @@ export default function App() {
           booked: true,
         }))
     );
+    // someone else's personal event is THEIR life, not a group outing — it
+    // becomes busy time (below), never an event card
     const fromBackend = groupEvents
-      .filter((e) => e.kind === "event" && e.start_iso)
+      .filter(
+        (e) =>
+          e.kind === "event" &&
+          e.start_iso &&
+          (!e.personal || e.creator_email === meRef.current?.email)
+      )
       .map((e) => ({
         id: "ev" + e.id,
         backendId: e.id,
@@ -424,10 +506,38 @@ export default function App() {
         where: e.location || "—",
         link: e.gcal_link,
         synced: e.synced,
-        emails: members.map((m) => m.email),
+        personal: e.personal,
+        anonymous: e.anonymous,
+        emails: e.personal ? [e.creator_email] : members.map((m) => m.email),
       }));
     return [...fromPlans, ...fromBackend].sort((a, b) => a.start - b.start);
   }, [plans, groupEvents, members]);
+
+  // groupmates' personal events -> per-member busy ranges, merged with the
+  // live Google free/busy. Anonymous ones arrive already masked ("Busy");
+  // non-anonymous ones carry their real title/place for the hover details.
+  const combinedAvail = useMemo(() => {
+    const mine = meRef.current?.email;
+    const local = new Map();
+    for (const e of groupEvents) {
+      if (!e.personal || e.kind !== "event" || !e.start_iso) continue;
+      if (!e.creator_email || e.creator_email === mine) continue;
+      if (!local.has(e.creator_email)) local.set(e.creator_email, []);
+      local.get(e.creator_email).push({
+        start_iso: e.start_iso,
+        end_iso: e.end_iso,
+        title: e.anonymous ? null : e.title,
+        where: e.anonymous ? null : e.location,
+      });
+    }
+    return {
+      ...avail,
+      members_busy: [
+        ...(avail.members_busy || []),
+        ...[...local.entries()].map(([email, busy]) => ({ email, busy })),
+      ],
+    };
+  }, [groupEvents, avail]);
 
   const tasks = useMemo(
     () =>
@@ -522,9 +632,14 @@ export default function App() {
 
   const unread = notifs.some((n) => !readNotifs.includes(n.id));
 
+  const groupDrafts = useMemo(
+    () => drafts.filter((d) => !d.gid || d.gid === activeGroupId),
+    [drafts, activeGroupId]
+  );
+
   const ctx = {
     me, groups, activeGroup, activeGroupId, setActiveGroupId, members, plans,
-    openPlans, events, tasks, avail,
+    openPlans, events, tasks, avail: combinedAvail,
     page, setPage, view, setView, calAnchor, setCalAnchor,
     collapsed, setCollapsed, focusId, setFocusId, hoverKey, setHoverKey,
     modal, setModal, groupOpen, setGroupOpen, notifOpen, setNotifOpen,
@@ -533,10 +648,12 @@ export default function App() {
     activity, pushActivity, rsvp, setRsvp, prefs, setPrefs,
     memory, setMemory, profile, setProfile,
     notifs, unread, readNotifs, setReadNotifs,
-    reviews, addReview, setReviews, favoritePlace,
-    drafts, addDraft, removeDraft,
+    reviews, addReview, removeReview, setReviews, favoritePlace,
+    friendReviews, placeFocus, setPlaceFocus,
+    drafts: groupDrafts, addDraft, removeDraft,
     voteInterest, voteTime, createGroup, joinGroup, logout, refreshGroupData,
-    createEvent, setTaskDone, removeEvent, createPlanDirect, saveProfile,
+    createEvent, setTaskDone, removeEvent, createPlanDirect, addTimesToPlan,
+    saveProfile,
     displayName:
       me?.display_name || profile.name || (me ? nameFromEmail(me.email) : ""),
   };

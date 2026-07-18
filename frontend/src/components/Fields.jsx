@@ -27,6 +27,44 @@ const drop = {
   overflow: "auto",
 };
 
+// Dropdowns inside a modal card would be clipped by its overflow (the poll
+// composer's slide track needs overflow:hidden). position:fixed escapes every
+// clip: measure the field on open and pin the panel to the viewport, flipping
+// above the field when there's no room below.
+function useFixedDrop(boxRef, open, panelH = 260, minW = 0) {
+  const [pos, setPos] = useState(null);
+  useEffect(() => {
+    if (!open || !boxRef.current) {
+      setPos(null);
+      return;
+    }
+    const place = () => {
+      const r = boxRef.current.getBoundingClientRect();
+      const below = window.innerHeight - r.bottom;
+      const width = Math.max(r.width, minW);
+      setPos({
+        position: "fixed",
+        left: Math.min(r.left, window.innerWidth - width - 12),
+        width,
+        top: undefined,
+        right: "auto",
+        ...(below > panelH + 16 || r.top < panelH + 16
+          ? { top: r.bottom + 8 }
+          : { top: r.top - panelH - 8 }),
+        zIndex: 200,
+      });
+    };
+    place();
+    window.addEventListener("resize", place);
+    window.addEventListener("scroll", place, true);
+    return () => {
+      window.removeEventListener("resize", place);
+      window.removeEventListener("scroll", place, true);
+    };
+  }, [open, boxRef, panelH, minW]);
+  return pos;
+}
+
 const RECENTS_KEY = "ov.placeRecents";
 const getRecents = () => {
   try {
@@ -52,6 +90,7 @@ export function PlacePicker({ value, onChange, placeholder = "Search a place…"
   const [osmRows, setOsmRows] = useState([]);
   const boxRef = useRef(null);
   const abortRef = useRef(null);
+  const dropPos = useFixedDrop(boxRef, open, 250);
 
   useEffect(() => {
     const onDoc = (e) => {
@@ -107,7 +146,7 @@ export function PlacePicker({ value, onChange, placeholder = "Search a place…"
         style={{ ...fieldStyle, paddingLeft: 34 }}
       />
       {open && (rows.length > 0 || (value || "").trim()) && (
-        <div style={drop}>
+        <div style={{ ...drop, ...(dropPos || {}) }}>
           {rows.map((p, i) => (
             <div
               key={p.name + i}
@@ -143,6 +182,7 @@ export function GlassDatePicker({ value, onChange, placeholder = "Pick a day" })
   const [open, setOpen] = useState(false);
   const [anchor, setAnchor] = useState(() => (value ? new Date(value) : new Date()));
   const boxRef = useRef(null);
+  const dropPos = useFixedDrop(boxRef, open, 300, 258);
   useEffect(() => {
     const onDoc = (e) => {
       if (boxRef.current && !boxRef.current.contains(e.target)) setOpen(false);
@@ -168,7 +208,7 @@ export function GlassDatePicker({ value, onChange, placeholder = "Pick a day" })
         {sel ? fmtDayLong(sel) : placeholder}
       </div>
       {open && (
-        <div style={{ ...drop, maxHeight: "none", padding: 12 }}>
+        <div style={{ ...drop, maxHeight: "none", padding: 12, ...(dropPos || {}) }}>
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "0 2px 6px" }}>
             <div className="hov-icon" style={{ width: 24, height: 24, borderRadius: 8, display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", color: "#8c8577" }} onClick={() => shiftMonth(-1)}>
               <ChevronLeft size={13} />
@@ -227,10 +267,15 @@ const timeLabel = (t) => {
   return `${hh}:${String(m).padStart(2, "0")} ${ampm}`;
 };
 
+// 5 visible rows (30-min pitch), the rest reachable by scrolling
+const TIME_ROW = 34; // 32px row + 2px gap
+const TIME_PANEL_H = 5 * TIME_ROW + 14;
+
 export function GlassTimePicker({ value, onChange, placeholder = "Time" }) {
   const [open, setOpen] = useState(false);
   const boxRef = useRef(null);
   const listRef = useRef(null);
+  const dropPos = useFixedDrop(boxRef, open, TIME_PANEL_H, 116);
   useEffect(() => {
     const onDoc = (e) => {
       if (boxRef.current && !boxRef.current.contains(e.target)) setOpen(false);
@@ -239,9 +284,10 @@ export function GlassTimePicker({ value, onChange, placeholder = "Time" }) {
     return () => document.removeEventListener("mousedown", onDoc);
   }, []);
   useEffect(() => {
-    if (open && listRef.current && value) {
-      const idx = TIMES.indexOf(value);
-      if (idx > 0) listRef.current.scrollTop = idx * 32 - 64;
+    if (open && listRef.current) {
+      // land on the picked time, or a sane default (9:00) — 2 rows of context above
+      const idx = TIMES.indexOf(value || "09:00");
+      if (idx > 0) listRef.current.scrollTop = idx * TIME_ROW - 2 * TIME_ROW;
     }
   }, [open, value]);
 
@@ -254,7 +300,7 @@ export function GlassTimePicker({ value, onChange, placeholder = "Time" }) {
         {value ? timeLabel(value) : placeholder}
       </div>
       {open && (
-        <div ref={listRef} style={{ ...drop, maxHeight: 200, minWidth: 116 }}>
+        <div ref={listRef} style={{ ...drop, maxHeight: TIME_PANEL_H, minWidth: 116, ...(dropPos || {}) }}>
           {TIMES.map((t) => (
             <div
               key={t}

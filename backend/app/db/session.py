@@ -30,14 +30,27 @@ else:
 SessionLocal = sessionmaker(bind=engine, expire_on_commit=False)
 
 
+# columns added after a DB was first created: (table, column, DDL type+default)
+_LATE_COLUMNS = [
+    ("users", "display_name", "VARCHAR"),
+    ("users", "drafts_json", "VARCHAR"),
+    ("plans", "expected_count", "INTEGER"),
+    # TRUE/FALSE literals work on both SQLite (>=3.23) and Postgres
+    ("events", "personal", "BOOLEAN DEFAULT FALSE NOT NULL"),
+    ("events", "anonymous", "BOOLEAN DEFAULT TRUE NOT NULL"),
+]
+
+
 def init_db() -> None:
     Base.metadata.create_all(engine)
     # create_all never ALTERs existing tables, so columns added after a DB was
     # first created need this tiny in-place migration (works on SQLite + PG).
-    cols = {c["name"] for c in inspect(engine).get_columns("users")}
-    if "display_name" not in cols:
-        with engine.begin() as conn:
-            conn.execute(text("ALTER TABLE users ADD COLUMN display_name VARCHAR"))
+    insp = inspect(engine)
+    for table, column, ddl in _LATE_COLUMNS:
+        cols = {c["name"] for c in insp.get_columns(table)}
+        if column not in cols:
+            with engine.begin() as conn:
+                conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}"))
 
 
 def get_session() -> Iterator[Session]:

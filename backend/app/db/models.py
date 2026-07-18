@@ -37,6 +37,9 @@ class User(Base):
     timezone: Mapped[str] = mapped_column(String, default="Asia/Beirut")
     # optional user-chosen name; UI falls back to deriving one from the email
     display_name: Mapped[str | None] = mapped_column(String, default=None)
+    # unfinished things (event/poll started without a time) — a JSON array the
+    # frontend owns entirely; stored server-side so drafts survive across devices
+    drafts_json: Mapped[str | None] = mapped_column(String, default=None)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
 
     memberships: Mapped[list["Membership"]] = relationship(
@@ -89,6 +92,9 @@ class Plan(Base):
     title: Mapped[str] = mapped_column(String, default="Group hangout")
     location: Mapped[str | None] = mapped_column(String, default=None)
     status: Mapped[str] = mapped_column(String, default="open")
+    # optional "aiming for N people" — lets the host (and the agent) see when
+    # enough of the group has said yes; None means no target
+    expected_count: Mapped[int | None] = mapped_column(default=None)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
 
     rounds: Mapped[list["TimeRound"]] = relationship(
@@ -193,6 +199,11 @@ class GroupEvent(Base):
     start_utc: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
     end_utc: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
     done: Mapped[bool] = mapped_column(default=False)
+    # personal=True: this is one member's own thing, not a group outing. It
+    # shows on groupmates' calendars only as busy time; anonymous decides
+    # whether the title/place are revealed to them (anonymous is the default).
+    personal: Mapped[bool] = mapped_column(default=False)
+    anonymous: Mapped[bool] = mapped_column(default=True)
     synced: Mapped[bool] = mapped_column(default=False)
     gcal_event_id: Mapped[str | None] = mapped_column(String, default=None)
     gcal_link: Mapped[str | None] = mapped_column(String, default=None)
@@ -208,6 +219,26 @@ class GroupEvent(Base):
     def end(self) -> datetime | None:
         dt = self.end_utc
         return dt if dt is None or dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+
+
+class PlaceReview(Base):
+    """One member's rating of a place — the agent's taste memory.
+
+    One review per (user, place); re-reviewing replaces. Reviews are shared
+    with groupmates (the Places page shows friends' reviews) and injected into
+    the agent's prompt so venue suggestions can lean on what people liked.
+    """
+    __tablename__ = "place_reviews"
+    __table_args__ = (UniqueConstraint("user_id", "place", name="uq_user_place"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"))
+    place: Mapped[str] = mapped_column(String)
+    stars: Mapped[int] = mapped_column()  # 1..5
+    text: Mapped[str | None] = mapped_column(String, default=None)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+
+    user: Mapped["User"] = relationship()
 
 
 class Membership(Base):

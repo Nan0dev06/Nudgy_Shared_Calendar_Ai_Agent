@@ -9,16 +9,18 @@ const TITLES = {
   calendar: "Calendar",
   activity: "Activity",
   polls: "Polls",
+  places: "Places",
   settings: "Settings",
 };
 
-const CAT_COLORS = { Event: "#D95D39", Meet: "#2A9D8F", Call: "#DCA744", Task: "#DCA744", Poll: "#D95D39" };
+const CAT_COLORS = { Event: "#D95D39", Meet: "#2A9D8F", Call: "#DCA744", Task: "#DCA744", Poll: "#D95D39", Place: "#2B5B84" };
 
 export default function TopBar() {
   const {
     page, displayName, members, notifOpen, setNotifOpen, setGroupOpen,
     notifs, unread, readNotifs, setReadNotifs,
     events, tasks, plans, setModal, setPage, setCalAnchor, setView,
+    reviews, friendReviews, setPlaceFocus,
   } = useApp();
 
   const hour = new Date().getHours();
@@ -39,11 +41,22 @@ export default function TopBar() {
 
   const n = q.toLowerCase().trim();
   const hit = (s) => (s || "").toLowerCase().includes(n);
+  // every place the app knows about — reviews (yours + friends') and event
+  // locations — so "bhi" finds BHive's profile
+  const knownPlaces = [
+    ...new Set(
+      [
+        ...reviews.map((r) => r.place),
+        ...friendReviews.map((r) => r.place),
+        ...events.map((e) => e.where),
+      ].filter((p) => p && p !== "—")
+    ),
+  ];
   const results = !n
     ? []
     : [
         ...events
-          .filter((e) => hit(e.title) || hit(e.where))
+          .filter((e) => hit(e.title))
           .slice(0, 4)
           .map((e) => ({
             kind: e.cat || "Event",
@@ -51,14 +64,19 @@ export default function TopBar() {
             meta: fmtDayLong(e.start),
             go: () => setModal({ type: "event", event: e }),
           })),
+        // a task takes you to its day on the calendar, in context
         ...tasks
-          .filter((t) => hit(t.title) || hit(t.where))
+          .filter((t) => hit(t.title))
           .slice(0, 4)
           .map((t) => ({
             kind: "Task",
             title: t.title,
             meta: t.done ? "done" : `due ${t.due}`,
-            go: () => setModal({ type: "task", task: t }),
+            go: () => {
+              setCalAnchor(t.dueAt || new Date());
+              setView("day");
+              setPage("calendar");
+            },
           })),
         ...plans
           .filter((p) => hit(p.title) || hit(p.location))
@@ -69,7 +87,20 @@ export default function TopBar() {
             meta: p.status,
             go: () => setPage("polls"),
           })),
-      ].slice(0, 8);
+        // a place opens its review profile — yours and your friends' takes
+        ...knownPlaces
+          .filter((p) => hit(p))
+          .slice(0, 3)
+          .map((p) => ({
+            kind: "Place",
+            title: p,
+            meta: "reviews",
+            go: () => {
+              setPlaceFocus(p);
+              setPage("places");
+            },
+          })),
+      ].slice(0, 9);
 
   const pick = (r) => {
     r.go();

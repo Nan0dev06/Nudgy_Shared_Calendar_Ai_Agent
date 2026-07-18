@@ -94,6 +94,35 @@ def _create_with_retry(client: OpenAI, messages: list[dict], attempts: int = 3):
     raise last_exc
 
 
+def _taste_notes(ctx: ToolContext) -> str | None:
+    """Members' own place reviews, best-rated first, as prompt lines.
+
+    Capped hard (5 per member / 40 lines total) so a review-happy group can't
+    blow up the prompt. Returns None when nobody has reviewed anything."""
+    if ctx.group is None or ctx.session is None:
+        return None
+    try:
+        from app.db import repo
+
+        members = repo.get_group_members(ctx.session, ctx.group.id)
+        name_of = {m.id: (m.display_name or m.email.split("@")[0]) for m in members}
+        reviews = repo.get_reviews_for_users(ctx.session, list(name_of))
+    except Exception:  # taste is a nice-to-have; never break the turn over it
+        log.exception("[loop] failed to load taste notes")
+        return None
+    if not reviews:
+        return None
+    per_member: dict[int, int] = {}
+    lines = []
+    for r in sorted(reviews, key=lambda r: -r.stars):
+        if per_member.get(r.user_id, 0) >= 5 or len(lines) >= 40:
+            continue
+        per_member[r.user_id] = per_member.get(r.user_id, 0) + 1
+        note = f' — "{r.text}"' if r.text else ""
+        lines.append(f"- {name_of[r.user_id]}: {r.place} {r.stars}/5{note}")
+    return "\n".join(lines)
+
+
 def run_agent(ctx: ToolContext, history: list[dict], user_message: str) -> AgentResult:
     """Run one turn of Orbi. `history` is prior [{"role","content"}] messages
     (plain strings; not mutated — the caller decides what to persist)."""
@@ -104,6 +133,7 @@ def run_agent(ctx: ToolContext, history: list[dict], user_message: str) -> Agent
         now_utc=now,
         group_name=ctx.group.name if ctx.group else None,
         group_id=ctx.group.id if ctx.group else None,
+        taste_notes=_taste_notes(ctx),
     )
 
     if not LLM_API_KEY:

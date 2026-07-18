@@ -121,17 +121,41 @@ input::placeholder {
     0 22px 44px rgba(96, 78, 54, 0.18) !important;
 }
 
-/* Sidebar collapse: labels fade + slide instead of popping in/out */
+/* Sidebar collapse: the aside eases with a long settle (no spring snap), and
+   labels fade + slide instead of popping in/out */
+.sb-aside {
+  transition:
+    width 0.5s cubic-bezier(0.22, 1, 0.36, 1),
+    padding 0.5s cubic-bezier(0.22, 1, 0.36, 1);
+  will-change: width;
+}
 .sb-label {
   transition:
-    opacity 0.24s var(--ease-standard),
-    transform 0.3s var(--ease-standard);
+    opacity 0.28s var(--ease-standard),
+    transform 0.38s cubic-bezier(0.22, 1, 0.36, 1);
   white-space: nowrap;
 }
 .sb-collapsed .sb-label {
   opacity: 0;
-  transform: translateX(-6px);
+  transform: translateX(-8px);
   pointer-events: none;
+}
+
+/* Liquid background blobs: a slow, organic drift on top of the per-page
+   morph — each blob gets its own duration/delay inline so they never sync */
+@keyframes blobDrift {
+  0% {
+    transform: translate(-50%, -50%) scale(1);
+  }
+  33% {
+    transform: translate(-46%, -55%) scale(1.08);
+  }
+  66% {
+    transform: translate(-55%, -46%) scale(0.94);
+  }
+  100% {
+    transform: translate(-50%, -50%) scale(1);
+  }
 }
 
 /* Two-stage poll composer: panels slide inside the glass card */

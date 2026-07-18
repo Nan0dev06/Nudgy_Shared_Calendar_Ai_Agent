@@ -109,6 +109,36 @@ def patch_me(
     return _me_json(user)
 
 
+@router.get("/me/drafts")
+def get_drafts(user: User = Depends(get_current_user)):
+    """Server-side draft storage so unfinished things survive across devices.
+    The payload is an opaque JSON array the frontend owns."""
+    import json
+    try:
+        return {"drafts": json.loads(user.drafts_json) if user.drafts_json else []}
+    except ValueError:
+        return {"drafts": []}
+
+
+class DraftsBody(BaseModel):
+    drafts: list[dict] = Field(max_length=30)
+
+
+@router.put("/me/drafts")
+def put_drafts(
+    body: DraftsBody,
+    user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+):
+    import json
+    raw = json.dumps(body.drafts)
+    if len(raw) > 20_000:
+        raise HTTPException(status_code=400, detail="Drafts too large.")
+    user.drafts_json = raw
+    session.commit()
+    return {"ok": True, "drafts": body.drafts}
+
+
 @router.post("/logout")
 def logout():
     response = JSONResponse({"ok": True})

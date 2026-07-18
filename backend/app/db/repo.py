@@ -12,7 +12,8 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.db.models import (
-    Group, GroupEvent, InterestVote, Membership, Plan, TimeRound, TimeVote, User,
+    Group, GroupEvent, InterestVote, Membership, Plan, PlaceReview, TimeRound,
+    TimeVote, User,
 )
 
 
@@ -114,6 +115,7 @@ def create_plan(
     title: str,
     slots: list[tuple],          # ordered [(start_utc, end_utc), ...] candidate times
     location: str | None = None,
+    expected_count: int | None = None,
 ) -> Plan:
     """Create a plan with its candidate times queued in order.
 
@@ -122,7 +124,8 @@ def create_plan(
     plan, so their interest is recorded as yes up front — they still vote on
     the times themselves.
     """
-    plan = Plan(group_id=group.id, created_by=host.id, title=title, location=location)
+    plan = Plan(group_id=group.id, created_by=host.id, title=title,
+                location=location, expected_count=expected_count)
     session.add(plan)
     session.flush()  # assign plan.id
     for i, (start, end) in enumerate(slots):
@@ -133,6 +136,31 @@ def create_plan(
     session.add(InterestVote(plan_id=plan.id, user_id=host.id, yes=True))
     session.commit()
     return plan
+
+
+def append_rounds(session: Session, plan: Plan, slots: list[tuple]) -> list[TimeRound]:
+    """Append candidate times to an existing plan (host adding times later).
+
+    Ordinals continue after the current queue. If no round is active or queued
+    (a timeless "who's in?" plan, or every earlier time was skipped), the first
+    appended time becomes active immediately so the interested cohort has a
+    question to answer.
+    """
+    existing = list(plan.rounds)
+    next_ordinal = max((r.ordinal for r in existing), default=-1) + 1
+    has_live = any(r.status in ("active", "queued") for r in existing)
+    made: list[TimeRound] = []
+    for i, (start, end) in enumerate(slots):
+        r = TimeRound(
+            plan_id=plan.id, ordinal=next_ordinal + i,
+            slot_start_utc=start, slot_end_utc=end,
+            status="active" if (not has_live and i == 0) else "queued",
+        )
+        session.add(r)
+        made.append(r)
+    session.commit()
+    session.refresh(plan)
+    return made
 
 
 def get_plan(session: Session, plan_id: int) -> Plan | None:
@@ -243,11 +271,27 @@ def get_event(session: Session, event_id: int) -> GroupEvent | None:
     return session.get(GroupEvent, event_id)
 
 
-def get_group_events(session: Session, group_id: int) -> list[GroupEvent]:
-    """All events + tasks for a group, chronological (undated tasks last)."""
-    rows = session.scalars(
-        select(GroupEvent).where(GroupEvent.group_id == group_id)
-    )
+def get_group_events(
+    session: Session, group_id: int, member_ids: list[int] | None = None,
+) -> list[GroupEvent]:
+    """All events + tasks for a group, chronological (undated tasks last).
+
+    When member_ids is given, members' PERSONAL events are included too — from
+    ANY group they're in — so their busy time shows on this group's calendar
+    (the anonymity masking happens at the API layer, not here).
+    """
+    rows = list(session.scalars(
+        select(GroupEvent).where(
+            GroupEvent.group_id == group_id, GroupEvent.personal.is_(False)
+        )
+    ))
+    if member_ids:
+        rows += list(session.scalars(
+            select(GroupEvent).where(
+                GroupEvent.personal.is_(True),
+                GroupEvent.created_by.in_(member_ids),
+            )
+        ))
     return sorted(rows, key=lambda e: (e.start is None, e.start or e.created_at))
 
 
@@ -265,4 +309,51 @@ def set_event_gcal(session: Session, event: GroupEvent, gcal_id: str | None, lin
     event.synced = gcal_id is not None
     event.gcal_event_id = gcal_id
     event.gcal_link = link
+    session.commit()
+
+
+# ----------------------------------------------------------------- reviews
+
+def upsert_review(
+    session: Session, user: User, place: str, stars: int, text: str | None,
+) -> PlaceReview:
+    """One review per (user, place); reviewing again replaces the old one."""
+    review = session.scalar(
+        select(PlaceReview).where(
+            PlaceReview.user_id == user.id, PlaceReview.place == place
+        )
+    )
+    if review is None:
+        review = PlaceReview(user_id=user.id, place=place, stars=stars, text=text)
+        session.add(review)
+    else:
+        review.stars = stars
+        review.text = text
+    session.commit()
+    return review
+
+
+def get_review(session: Session, review_id: int) -> PlaceReview | None:
+    return session.get(PlaceReview, review_id)
+
+
+def get_user_reviews(session: Session, user: User) -> list[PlaceReview]:
+    return list(session.scalars(
+        select(PlaceReview).where(PlaceReview.user_id == user.id)
+        .order_by(PlaceReview.created_at.desc())
+    ))
+
+
+def get_reviews_for_users(session: Session, user_ids: list[int]) -> list[PlaceReview]:
+    """All reviews by this set of users (the Places page's friends view)."""
+    if not user_ids:
+        return []
+    return list(session.scalars(
+        select(PlaceReview).where(PlaceReview.user_id.in_(user_ids))
+        .order_by(PlaceReview.created_at.desc())
+    ))
+
+
+def delete_review(session: Session, review: PlaceReview) -> None:
+    session.delete(review)
     session.commit()

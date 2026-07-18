@@ -14,7 +14,15 @@ function dayIntervals(membersBusy, day) {
       const s = new Date(b.start_iso).getTime();
       const e = new Date(b.end_iso).getTime();
       if (e <= d0 || s >= d1) continue;
-      out.push({ email: m.email, start: new Date(Math.max(s, d0)), end: new Date(Math.min(e, d1)) });
+      out.push({
+        email: m.email,
+        start: new Date(Math.max(s, d0)),
+        end: new Date(Math.min(e, d1)),
+        // present only on non-anonymous personal events — the "see what
+        // they're doing" path; Google free/busy never carries these
+        title: b.title || null,
+        where: b.where || null,
+      });
     }
   }
   return out.sort((a, b) => a.start - b.start);

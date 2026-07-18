@@ -7,6 +7,7 @@ import HomePage from "../pages/HomePage.jsx";
 import CalendarPage from "../pages/CalendarPage.jsx";
 import ActivityPage from "../pages/ActivityPage.jsx";
 import PollsPage from "../pages/PollsPage.jsx";
+import PlacesPage from "../pages/PlacesPage.jsx";
 import SettingsPage from "../pages/SettingsPage.jsx";
 import { orbGradient } from "../theme.js";
 
@@ -28,6 +29,7 @@ export default function Shell() {
         {page === "calendar" && <CalendarPage />}
         {page === "activity" && <ActivityPage />}
         {page === "polls" && <PollsPage />}
+        {page === "places" && <PlacesPage />}
         {page === "settings" && <SettingsPage />}
 
         {/* floating orb — hidden while chat is open */}

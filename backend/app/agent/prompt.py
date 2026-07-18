@@ -14,6 +14,7 @@ def build_system_prompt(
     now_utc: datetime,
     group_name: str | None,
     group_id: int | None,
+    taste_notes: str | None = None,
 ) -> str:
     now_local = now_utc.astimezone(ZoneInfo(tz_name))
     group_line = (
@@ -21,6 +22,19 @@ def build_system_prompt(
         if group_id is not None
         else "The user is NOT in a group yet. Ask them to create or join one "
         "before you can check availability."
+    )
+    taste_block = (
+        f"""
+
+# What the group likes (from their own place reviews)
+{taste_notes}
+Use this when a place comes up: prefer spots members rated highly, mention who
+liked them ("Aya gave BHive 5 stars"), and if someone types a shorthand that
+matches a reviewed place ("bhi"), assume they mean that place and confirm.
+These are real reviews the members wrote — never invent one, and never claim a
+rating that isn't listed here."""
+        if taste_notes
+        else ""
     )
 
     return f"""You are Orbi, an agentic scheduling assistant for groups of friends and \
@@ -35,7 +49,7 @@ this instant. The user's timezone is {tz_name}; show times in their local zone.
 
 # Who you're talking to
 - User: {user_email}
-- {group_line}
+- {group_line}{taste_block}
 
 # What you can do — the decision loop
 You have tools to look up members, compute live availability, put plans to the \

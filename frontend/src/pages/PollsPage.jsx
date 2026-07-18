@@ -20,10 +20,13 @@ export default function PollsPage() {
     plans, activeGroup, voteInterest, voteTime, setModal, setPage, setView, doSend,
   } = useApp();
 
-  let expectedMap = {};
+  // expected_count now lives on the plan itself; the localStorage map only
+  // covers polls created before the backend column existed
+  let legacyExpected = {};
   try {
-    expectedMap = JSON.parse(localStorage.getItem("ov.expected") || "{}");
+    legacyExpected = JSON.parse(localStorage.getItem("ov.expected") || "{}");
   } catch { /* fine */ }
+  const expectedOf = (p) => p.expected_count || legacyExpected[p.id] || null;
 
   const choice = (label, sub, color, onClick, selected) => (
     <div
@@ -102,9 +105,11 @@ export default function PollsPage() {
                 <span style={{ display: "inline-flex", alignItems: "center", gap: 5 }}>
                   <ClockIcon size={13} /> {p.day}
                 </span>
-                {expectedMap[p.id] && (
+                {expectedOf(p) && (
                   <span style={{ fontSize: 11.5, fontWeight: 600, color: "#2B5B84" }}>
-                    aiming for {expectedMap[p.id]} people
+                    {p.host_box
+                      ? `${(p.host_box.interested || []).length} of ${expectedOf(p)} in`
+                      : `aiming for ${expectedOf(p)} people`}
                   </span>
                 )}
               </div>

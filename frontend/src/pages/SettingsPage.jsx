@@ -13,7 +13,7 @@ export default function SettingsPage() {
   const {
     me, displayName, saveProfile, prefs, setPrefs, memory, setMemory,
     groups, members, activeGroup, setModal, logout, setSettingsTab, settingsTab,
-    reviews, setReviews,
+    reviews, removeReview, setPage,
   } = useApp();
 
   const [memInput, setMemInput] = useState("");
@@ -211,7 +211,13 @@ export default function SettingsPage() {
             <div style={{ fontSize: 13, color: "#8c8577", marginTop: -6, lineHeight: 1.5 }}>
               Rate the places you've been. Orbi saves these as taste memory —
               next time someone types “bhi” it knows you mean BHive, and it can
-              suggest spots you actually liked.
+              suggest spots you actually liked.{" "}
+              <span
+                style={{ color: "#2B5B84", fontWeight: 600, cursor: "pointer" }}
+                onClick={() => setPage("places")}
+              >
+                See every place's profile →
+              </span>
             </div>
             <AddReview />
             {reviews.map((r, i) => (
@@ -226,7 +232,7 @@ export default function SettingsPage() {
                 </div>
                 <span
                   style={{ fontSize: 12, fontWeight: 600, color: "#b08a80", cursor: "pointer", flex: "none" }}
-                  onClick={() => setReviews((rs) => rs.filter((_, j) => j !== i))}
+                  onClick={() => removeReview(r)}
                 >
                   Remove
                 </span>
@@ -336,7 +342,13 @@ export default function SettingsPage() {
             {toggleRow("nvote", "Votes needed", "When a poll is waiting on you")}
             {toggleRow("nrsvp", "RSVP updates", "When someone answers going or can't")}
             {toggleRow("nment", "Mentions", "When someone tags you")}
-            {toggleRow("quiet", "Quiet hours", `Mute everything ${prefs.quietStart || "22:00"}–${prefs.quietEnd || "08:00"}`)}
+            {toggleRow(
+              "quiet",
+              "Quiet hours",
+              prefs.quiet
+                ? `Mute everything ${prefs.quietStart || "22:00"}–${prefs.quietEnd || "08:00"}`
+                : "Choose from when to when — turn it on and you'll pick the times"
+            )}
             {prefs.quiet && (
               <div style={{ ...prefCard, gap: 10 }}>
                 <span style={{ fontSize: 12.5, color: "#8c8577", flex: "none" }}>From</span>
