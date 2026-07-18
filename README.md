@@ -17,7 +17,7 @@ Nudgy cross-references everyone's live availability, proposes a time and venue w
 > in-app plan cascade → the host's decision → a **real booking** written to the
 > calendar of everyone who's coming.
 >
-> - **Live deployment:** <https://nudgy-1jgh.onrender.com> (Render free tier — the
+> - **Live deployment:** <https://nudgy.onrender.com> (Render free tier — the
 >   first request after it's been idle can take ~50s to wake up).
 > - **Model:** Llama 3.3 70B Versatile on Groq's free tier — the strongest
 >   currently-available Groq model for the agent's tool calling. Groq's limits
