@@ -63,9 +63,12 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 _cfg = _OPENAI_COMPAT.get(LLM_PROVIDER, _OPENAI_COMPAT["groq"])
 LLM_MODEL = os.getenv("NUDGY_MODEL", _cfg["model"])
 LLM_BASE_URL = os.getenv("LLM_BASE_URL", _cfg["base_url"])
-# ollama ignores the key; the cloud providers need a real one. Prefer an
-# explicit LLM_API_KEY, else the provider-specific key.
-LLM_API_KEY = os.getenv("LLM_API_KEY") or GEMINI_API_KEY or GROQ_API_KEY or "ollama"
+# ollama ignores the key; the cloud providers need a real one. Pick the key
+# that matches the ACTIVE provider — otherwise a leftover key for another
+# provider (e.g. GEMINI_API_KEY still set while running on groq) would be sent
+# to the wrong service and fail auth. An explicit LLM_API_KEY overrides.
+_PROVIDER_KEY = {"groq": GROQ_API_KEY, "gemini": GEMINI_API_KEY}
+LLM_API_KEY = os.getenv("LLM_API_KEY") or _PROVIDER_KEY.get(LLM_PROVIDER, "") or "ollama"
 
 # Big-intake guard: if an estimated request would exceed this many input
 # tokens, the agent asks the user to narrow the request instead of firing a
