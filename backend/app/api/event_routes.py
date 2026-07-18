@@ -147,7 +147,7 @@ def _sync_to_google(
             "start": {"dateTime": event.start.astimezone(timezone.utc).isoformat()},
             "end": {"dateTime": event.end.astimezone(timezone.utc).isoformat()},
             "attendees": [{"email": e} for e in attendees],
-            "description": "Created in Overlap.",
+            "description": "Created in Nudgy.",
         }
         if event.location:
             gcal_body["location"] = event.location

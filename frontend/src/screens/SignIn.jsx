@@ -19,7 +19,7 @@ export default function SignIn() {
       >
         <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
           <div style={{ width: 32, height: 32, borderRadius: "50%", background: orbGradient(20) }} />
-          <span style={{ fontSize: 18, fontWeight: 600 }}>Overlap</span>
+          <span style={{ fontSize: 18, fontWeight: 600 }}>Nudgy</span>
         </div>
         <div>
           <div style={{ fontSize: 22, fontWeight: 600 }}>Welcome</div>

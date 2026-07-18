@@ -1,4 +1,4 @@
-// Style recipes ported 1:1 from the design prototype (Overlap Prototype.dc.html).
+// Style recipes ported 1:1 from the design prototype.
 // These are the binding "liquid glass" formulas — do not tweak values.
 
 export const INK = "#2D2D2D";

@@ -1,4 +1,4 @@
-# Nudgy (a.k.a. "Overlap") — agentic group scheduling
+# Nudgy — agentic group scheduling
 
 Conversational AI agent that finds when a group can meet and where. Users
 connect Google Calendar, join a group, and ask an LLM agent (via chat) to

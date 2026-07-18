@@ -567,9 +567,9 @@ function NewPollModal() {
       const n = expected === "custom" ? parseInt(customN, 10) : expected;
       if (n) {
         try {
-          const m = JSON.parse(localStorage.getItem("ov.expected") || "{}");
+          const m = JSON.parse(localStorage.getItem("nudgy.expected") || "{}");
           m[plan.id] = n;
-          localStorage.setItem("ov.expected", JSON.stringify(m));
+          localStorage.setItem("nudgy.expected", JSON.stringify(m));
         } catch { /* fine */ }
       }
       if (where.trim()) rememberPlace(where.trim());

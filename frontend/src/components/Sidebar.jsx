@@ -105,7 +105,7 @@ export default function Sidebar() {
           {!collapsed && (
             <>
               <div style={{ display: "flex", flexDirection: "column", minWidth: 0 }}>
-                <span className="sb-label" style={{ fontSize: 15, fontWeight: 600 }}>Overlap</span>
+                <span className="sb-label" style={{ fontSize: 15, fontWeight: 600 }}>Nudgy</span>
               </div>
               <div
                 className="hov-icon"

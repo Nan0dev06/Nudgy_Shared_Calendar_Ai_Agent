@@ -22,7 +22,7 @@ export default function PollsPage() {
 
   let expectedMap = {};
   try {
-    expectedMap = JSON.parse(localStorage.getItem("ov.expected") || "{}");
+    expectedMap = JSON.parse(localStorage.getItem("nudgy.expected") || "{}");
   } catch { /* fine */ }
 
   const choice = (label, sub, color, onClick, selected) => (

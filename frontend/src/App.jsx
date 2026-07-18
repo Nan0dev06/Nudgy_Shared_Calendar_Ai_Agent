@@ -52,11 +52,11 @@ export default function App() {
   const [me, setMe] = useState(null);
   const [authChecked, setAuthChecked] = useState(false);
   const [groups, setGroups] = useState([]);
-  const [activeGroupId, setActiveGroupId] = useStored("ov.activeGroup", null);
+  const [activeGroupId, setActiveGroupId] = useStored("nudgy.activeGroup", null);
   const [members, setMembers] = useState([]);
   const [plans, setPlans] = useState([]);
   const [gateDone, setGateDone] = useState(
-    () => sessionStorage.getItem("ov.gateDone") === "1"
+    () => sessionStorage.getItem("nudgy.gateDone") === "1"
   );
 
   // ui
@@ -82,11 +82,11 @@ export default function App() {
 
   // persisted user-local state
   const gk = activeGroupId ? `.g${activeGroupId}` : "";
-  const [activity, setActivity] = useStored(`ov.activity${gk}`, []);
-  const [rsvp, setRsvp] = useStored("ov.rsvp", {});
+  const [activity, setActivity] = useStored(`nudgy.activity${gk}`, []);
+  const [rsvp, setRsvp] = useStored("nudgy.rsvp", {});
   // v2: auto-decline + share-busy-only now default OFF (user opts in),
   // quiet hours are editable, and conflict priority is a choice.
-  const [prefs, setPrefs] = useStored("ov.prefs2", {
+  const [prefs, setPrefs] = useStored("nudgy.prefs2", {
     push: true,
     digest: false,
     auto: false,
@@ -99,13 +99,13 @@ export default function App() {
     quietStart: "22:00",
     quietEnd: "08:00",
   });
-  const [memory, setMemory] = useStored("ov.memory", []);
-  const [profile, setProfile] = useStored("ov.profile", {});
-  const [readNotifs, setReadNotifs] = useStored("ov.readNotifs", []);
+  const [memory, setMemory] = useStored("nudgy.memory", []);
+  const [profile, setProfile] = useStored("nudgy.profile", {});
+  const [readNotifs, setReadNotifs] = useStored("nudgy.readNotifs", []);
   // place reviews: [{place, stars, text, ts}] — the agent's taste memory
-  const [reviews, setReviews] = useStored("ov.reviews", []);
+  const [reviews, setReviews] = useStored("nudgy.reviews", []);
   // unfinished things (event/poll started without a time) — sidebar "Drafts"
-  const [drafts, setDrafts] = useStored(`ov.drafts${gk}`, []);
+  const [drafts, setDrafts] = useStored(`nudgy.drafts${gk}`, []);
 
   const activeGroup = groups.find((g) => g.id === activeGroupId) || null;
 
@@ -322,13 +322,13 @@ export default function App() {
     try {
       await api.logout();
     } finally {
-      sessionStorage.removeItem("ov.gateDone");
+      sessionStorage.removeItem("nudgy.gateDone");
       window.location.reload();
     }
   }, []);
 
   const finishGate = useCallback(() => {
-    sessionStorage.setItem("ov.gateDone", "1");
+    sessionStorage.setItem("nudgy.gateDone", "1");
     setGateDone(true);
   }, []);
 

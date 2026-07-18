@@ -27,7 +27,7 @@ const drop = {
   overflow: "auto",
 };
 
-const RECENTS_KEY = "ov.placeRecents";
+const RECENTS_KEY = "nudgy.placeRecents";
 const getRecents = () => {
   try {
     return JSON.parse(localStorage.getItem(RECENTS_KEY)) || [];
