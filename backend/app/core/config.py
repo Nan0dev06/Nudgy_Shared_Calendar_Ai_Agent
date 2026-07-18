@@ -49,7 +49,7 @@ LLM_PROVIDER = os.getenv("LLM_PROVIDER", "groq").lower()
 
 # base_url + default model per provider
 _OPENAI_COMPAT = {
-    "groq":   {"base_url": "https://api.groq.com/openai/v1", "model": "llama-3.1-8b-instant"},
+    "groq":   {"base_url": "https://api.groq.com/openai/v1", "model": "llama-3.3-70b-versatile"},
     "ollama": {"base_url": "http://localhost:11434/v1",      "model": "llama3.1"},
     "openai": {"base_url": "https://api.openai.com/v1",      "model": "gpt-4o-mini"},
 }
