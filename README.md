@@ -19,9 +19,9 @@ Nudgy cross-references everyone's live availability, proposes a time and venue w
 >
 > - **Live deployment:** <https://nudgy-1jgh.onrender.com> (Render free tier — the
 >   first request after it's been idle can take ~50s to wake up).
-> - **Model:** Llama 4 Scout 17B on Groq's free tier. Groq's limits are
->   per-model, and Scout's (500K tokens/day, 30K/min) are the ones that
->   comfortably fit an agent loop — see [Staying inside the free tier](#staying-inside-the-free-tier).
+> - **Model:** Llama 3.3 70B Versatile on Groq's free tier — the strongest
+>   currently-available Groq model for the agent's tool calling. Groq's limits
+>   are per-model — see [Staying inside the free tier](#staying-inside-the-free-tier).
 > - **No paid APIs anywhere**, including venues: OpenStreetMap needs no key.
 
 ---
@@ -49,7 +49,7 @@ Existing tools (Calendly, Doodle) solve slices of this with forms and links. Nud
 
 ## Agent Architecture
 
-This is the core of the project: a **real multi-step agentic loop**, not a single LLM call. Nudgy is an LLM (Llama 4 Scout 17B via Groq's free tier by default; Ollama/OpenAI supported via the same OpenAI-compatible code path) driving a set of backend tools via native tool/function calling.
+This is the core of the project: a **real multi-step agentic loop**, not a single LLM call. Nudgy is an LLM (Llama 3.3 70B Versatile via Groq's free tier by default; Ollama/OpenAI supported via the same OpenAI-compatible code path) driving a set of backend tools via native tool/function calling.
 
 ### Context injection
 
@@ -171,7 +171,7 @@ Nudgy does group scheduling and meetup planning. Nothing else. Asked to write an
 | Layer | Choice |
 |---|---|
 | Backend | Python 3.11+, FastAPI |
-| Agent | Llama 4 Scout 17B via Groq (free tier) with native tool calling; model overridable via `NUDGY_MODEL`, provider via `LLM_PROVIDER` (Ollama/OpenAI use the same code path) |
+| Agent | Llama 3.3 70B Versatile via Groq (free tier) with native tool calling; model overridable via `NUDGY_MODEL`, provider via `LLM_PROVIDER` (Ollama/OpenAI use the same code path) |
 | Calendar | Google Calendar API — OAuth 2.0, `calendar.readonly` + `calendar.events` scopes, `freebusy.query` |
 | Venues | OpenStreetMap — Nominatim (geocoding) + Overpass (venue search). Free, **no API key**, no account |
 | Frontend | React (teammate's branch). Backend exposes a documented REST API with example request/response bodies for every endpoint. A minimal scaffold UI ships in `backend/app/static/` for testing |
@@ -226,21 +226,24 @@ model is the whole game:
 
 | Model | Tokens/day | Tokens/min |
 |---|---|---|
-| `llama-4-scout-17b-16e-instruct` (default here) | 500K | 30K |
+| `llama-3.3-70b-versatile` (default here) | 100K | 12K |
 | `llama-3.1-8b-instant` | 500K | 6K |
-| `llama-3.3-70b-versatile` | 100K | 12K |
+
+> The old `llama-4-scout-17b-16e-instruct` was the original default, but Groq
+> removed it from its catalog — it now 404s, so it's no longer an option.
 
 One turn costs roughly **4K tokens per LLM call** — a ~2.4K system prompt plus
 ~1.6K of tool schemas, re-sent on every step of the loop — and a turn takes 3-4
 calls. So a two-message conversation runs ~18K tokens. On the 70B that is about
 five conversations before the day's quota is gone, and its 12K/min ceiling
-throttles a *single* conversation in progress. Scout's budget fits ~27.
+throttles a *single* conversation in progress.
 
-Because the budgets are per-model, developing on Scout leaves the 70B's quota
-untouched — set `NUDGY_MODEL=llama-3.3-70b-versatile` for a demo if you want its
-quality, and it will be full. `LLM_PROVIDER=ollama` runs a local model for
-unlimited free iteration (weaker at tool calling; good for plumbing, not for
-verifying final behaviour).
+The 70B is the default because it's the strongest of the remaining free models
+at tool calling, which the agent leans on heavily. `llama-3.1-8b-instant` has a
+far bigger daily budget (500K) if you need the headroom, but it's weaker at
+tools — set `NUDGY_MODEL=llama-3.1-8b-instant` to switch. `LLM_PROVIDER=ollama`
+runs a local model for unlimited free iteration (weaker at tool calling; good
+for plumbing, not for verifying final behaviour).
 
 ### Demo safety
 

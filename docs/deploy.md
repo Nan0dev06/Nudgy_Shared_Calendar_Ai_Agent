@@ -25,19 +25,14 @@ hackathon).
    `SECRET_KEY` and `DATABASE_URL` are handled automatically — leave them.
 5. **Apply**. First build takes a few minutes.
 
-> **Already deployed before NUDGY_MODEL was added to `render.yaml`?** Editing the
-> blueprint does not always push a new env var onto a running service. Check
-> the `nudgy` service → **Environment** for `NUDGY_MODEL`. If it's missing, add
-> it by hand:
->
-> ```
-> NUDGY_MODEL=meta-llama/llama-4-scout-17b-16e-instruct
-> ```
->
-> Without it the service falls back to `llama-3.3-70b-versatile`, whose free
-> limit is 100K tokens/day and 12K/minute — roughly five conversations before
-> the agent starts returning rate-limit errors mid-demo. See
-> [Staying inside the free tier](../README.md#staying-inside-the-free-tier).
+> **Model:** the blueprint sets `NUDGY_MODEL=llama-3.3-70b-versatile` — the
+> strongest remaining Groq free model at tool calling. Its free limit is 100K
+> tokens/day and 12K/minute, roughly five conversations before it rate-limits,
+> so pace a demo. If you already deployed and the var is missing, check the
+> `nudgy` service → **Environment** and add it by hand. `llama-3.1-8b-instant`
+> has a bigger daily budget (500K) but is weaker at tools. (The old
+> `llama-4-scout-17b-16e-instruct` was removed from Groq's catalog and 404s.)
+> See [Staying inside the free tier](../README.md#staying-inside-the-free-tier).
 
 ## 2. Grab your URL
 
