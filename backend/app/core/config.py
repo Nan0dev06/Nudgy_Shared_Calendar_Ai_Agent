@@ -42,25 +42,37 @@ GOOGLE_REDIRECT_URI = os.getenv(
 # --- LLM provider -----------------------------------------------------------
 # Which model backend Nudgy talks to. Default is Groq (free tier, fast).
 #   groq      -> free cloud, needs GROQ_API_KEY   (recommended for the demo)
+#   gemini    -> free cloud, needs GEMINI_API_KEY (huge token limits, no card)
 #   ollama    -> free local, no key, run `ollama serve` first
 #   openai    -> needs LLM_API_KEY
-# All three speak the OpenAI API, so they share one code path.
+# All speak the OpenAI API (Gemini via its OpenAI-compatible endpoint), so
+# they share one code path.
 LLM_PROVIDER = os.getenv("LLM_PROVIDER", "groq").lower()
 
 # base_url + default model per provider
 _OPENAI_COMPAT = {
     "groq":   {"base_url": "https://api.groq.com/openai/v1", "model": "llama-3.3-70b-versatile"},
+    "gemini": {"base_url": "https://generativelanguage.googleapis.com/v1beta/openai/", "model": "gemini-2.0-flash"},
     "ollama": {"base_url": "http://localhost:11434/v1",      "model": "llama3.1"},
     "openai": {"base_url": "https://api.openai.com/v1",      "model": "gpt-4o-mini"},
 }
 
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 
 _cfg = _OPENAI_COMPAT.get(LLM_PROVIDER, _OPENAI_COMPAT["groq"])
 LLM_MODEL = os.getenv("NUDGY_MODEL", _cfg["model"])
 LLM_BASE_URL = os.getenv("LLM_BASE_URL", _cfg["base_url"])
-# ollama ignores the key; groq/openai need a real one
-LLM_API_KEY = os.getenv("LLM_API_KEY") or GROQ_API_KEY or "ollama"
+# ollama ignores the key; the cloud providers need a real one. Prefer an
+# explicit LLM_API_KEY, else the provider-specific key.
+LLM_API_KEY = os.getenv("LLM_API_KEY") or GEMINI_API_KEY or GROQ_API_KEY or "ollama"
+
+# Big-intake guard: if an estimated request would exceed this many input
+# tokens, the agent asks the user to narrow the request instead of firing a
+# call that the model would reject. 0 disables the check. The default leaves
+# generous headroom under Gemini's free tier while still catching runaway
+# conversations; lower it (e.g. 10000) when running on Groq's tighter tier.
+LLM_MAX_INPUT_TOKENS = int(os.getenv("LLM_MAX_INPUT_TOKENS", "100000"))
 
 # Both scopes requested up front so test accounts consent once and we never
 # have to re-run OAuth when Phase 3 starts writing events.
