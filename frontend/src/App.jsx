@@ -341,6 +341,12 @@ export default function App() {
     []
   );
 
+  // host deleting one of their polls entirely (there's no un-delete)
+  const removePlan = useCallback(async (planId) => {
+    await api.deletePlan(planId);
+    setPlans((ps) => ps.filter((p) => p.id !== planId));
+  }, []);
+
   const createPlanDirect = useCallback(
     async (body) => {
       const plan = await api.createPlan(activeGroupId, body);
@@ -688,7 +694,7 @@ export default function App() {
     drafts: groupDrafts, addDraft, removeDraft,
     voteInterest, voteTime, createGroup, joinGroup, logout, refreshGroupData,
     createEvent, setTaskDone, removeEvent, createPlanDirect, addTimesToPlan,
-    saveProfile,
+    removePlan, saveProfile,
     displayName:
       me?.display_name || profile.name || (me ? nameFromEmail(me.email) : ""),
   };

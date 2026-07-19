@@ -34,6 +34,7 @@ export const api = {
   availability: (groupId, days = 14) =>
     req(`/groups/${groupId}/availability?days_ahead=${days}`),
   plans: (groupId) => req(`/groups/${groupId}/plans`),
+  deletePlan: (planId) => req(`/plans/${planId}`, { method: "DELETE" }),
   createPlan: (groupId, body) =>
     req(`/groups/${groupId}/plans`, { method: "POST", body }),
   voteInterest: (planId, yes) =>

@@ -198,6 +198,15 @@ def get_plan(session: Session, plan_id: int) -> Plan | None:
     return session.get(Plan, plan_id)
 
 
+def delete_plan(session: Session, plan: Plan) -> None:
+    """Remove a plan and everything hanging off it — its candidate times and
+    both kinds of vote — via the ORM delete-orphan cascades on Plan/TimeRound.
+    Host-gated at the API layer. Does NOT touch any Google Calendar event a
+    booked round already created; that stays on the calendar."""
+    session.delete(plan)
+    session.commit()
+
+
 def get_group_plans(session: Session, group_id: int, only_open: bool = False) -> list[Plan]:
     q = select(Plan).where(Plan.group_id == group_id).order_by(Plan.created_at.desc())
     if only_open:

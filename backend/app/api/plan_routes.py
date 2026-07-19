@@ -193,6 +193,26 @@ def create_plan(
     return _plan_json(session, plan, user, user.timezone)
 
 
+@router.delete("/plans/{plan_id}")
+def delete_plan(
+    plan_id: int,
+    user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+):
+    """Host-only: remove a poll entirely (any status — open, booked, or dead).
+    Deletes its candidate times and votes with it; a Google Calendar event a
+    booked round created is left in place."""
+    plan = repo.get_plan(session, plan_id)
+    if plan is None:
+        raise HTTPException(status_code=404, detail="No such plan.")
+    _require_membership(session, user, plan.group_id)
+    if user.id != plan.created_by:
+        raise HTTPException(status_code=403, detail="Only the host who made this poll can delete it.")
+    repo.delete_plan(session, plan)
+    log.info("[plan %d] deleted by host %s", plan_id, user.email)
+    return {"deleted": True, "plan_id": plan_id}
+
+
 @router.post("/plans/{plan_id}/rounds")
 def add_rounds(
     plan_id: int,

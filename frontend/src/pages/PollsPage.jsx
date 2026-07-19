@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { useApp } from "../ctx.js";
 import { glass, gpill, dpill, sagePill, agentBox } from "../theme.js";
 import { CheckIcon, PinIcon, ClockIcon } from "../Icons.jsx";
@@ -18,7 +19,12 @@ const tallyLine = (list, word) => {
 export default function PollsPage() {
   const {
     plans, activeGroup, voteInterest, voteTime, setModal, setPage, setView, doSend,
+    removePlan,
   } = useApp();
+
+  // which poll (if any) is showing its "Delete? Yes / Cancel" inline confirm —
+  // delete is permanent, so never one-click
+  const [confirmingDelete, setConfirmingDelete] = useState(null);
 
   // expected_count now lives on the plan itself; the localStorage map only
   // covers polls created before the backend column existed
@@ -89,9 +95,42 @@ export default function PollsPage() {
           >
             <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
               {statusChip(p)}
-              <span style={{ fontSize: 12, color: "#a09889" }}>
-                by {p.is_host ? "you" : nameFromEmail(p.host || "")}
-              </span>
+              <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                <span style={{ fontSize: 12, color: "#a09889" }}>
+                  by {p.is_host ? "you" : nameFromEmail(p.host || "")}
+                </span>
+                {p.is_host && (confirmingDelete === p.id ? (
+                  <span style={{ display: "inline-flex", alignItems: "center", gap: 9, fontSize: 12 }}>
+                    <span style={{ color: "#a09889" }}>Delete?</span>
+                    <span
+                      className="hov-lift-sm"
+                      style={{ cursor: "pointer", color: "#D95D39", fontWeight: 600 }}
+                      onClick={async () => {
+                        try { await removePlan(p.id); } catch { /* stays on screen */ }
+                        setConfirmingDelete(null);
+                      }}
+                    >
+                      Yes
+                    </span>
+                    <span
+                      className="hov-lift-sm"
+                      style={{ cursor: "pointer", color: "#8c8577" }}
+                      onClick={() => setConfirmingDelete(null)}
+                    >
+                      Cancel
+                    </span>
+                  </span>
+                ) : (
+                  <span
+                    className="hov-lift-sm"
+                    title="Delete this poll"
+                    style={{ cursor: "pointer", fontSize: 12, color: "#b8968c" }}
+                    onClick={() => setConfirmingDelete(p.id)}
+                  >
+                    Delete
+                  </span>
+                ))}
+              </div>
             </div>
 
             <div>
