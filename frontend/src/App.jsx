@@ -211,6 +211,22 @@ export default function App() {
     if (me && activeGroupId) refreshGroupData();
   }, [me, activeGroupId, refreshGroupData]);
 
+  // Live updates: the poll cascade has no WebSocket — the host's decision box and
+  // every member's ballot are kept current by polling GET /plans every 5s while a
+  // plan is open (per spec). Without this the frontend is a frozen snapshot: the
+  // host never sees votes land, and members never see the host lock in or move to
+  // the next time. Plans-only (not the full refresh) so we don't re-hit Google
+  // freebusy every tick; pauses when the tab is hidden or no plan is open.
+  const hasOpenPlan = plans.some((p) => p.status === "open");
+  useEffect(() => {
+    if (!me || !activeGroupId || !hasOpenPlan) return;
+    const id = setInterval(() => {
+      if (document.hidden) return;
+      api.plans(activeGroupId).then(setPlans).catch(() => {});
+    }, 5000);
+    return () => clearInterval(id);
+  }, [me, activeGroupId, hasOpenPlan]);
+
   // ---- actions -------------------------------------------------------------
   const pushActivity = useCallback(
     (entry) => {
@@ -222,33 +238,51 @@ export default function App() {
   // Stage 1 of the cascade: "are you in for this plan at all?"
   const voteInterest = useCallback(
     async (planId, yes) => {
-      const out = await api.voteInterest(planId, yes);
-      setPlans((ps) => ps.map((p) => (p.id === planId ? out : p)));
-      pushActivity({
-        dot: yes ? "#2A9D8F" : "#D95D39",
-        pre: yes ? "You're in for " : "You passed on ",
-        bold: out.title,
-        post: "",
-      });
-      return out;
+      try {
+        const out = await api.voteInterest(planId, yes);
+        setPlans((ps) => ps.map((p) => (p.id === planId ? out : p)));
+        pushActivity({
+          dot: yes ? "#2A9D8F" : "#D95D39",
+          pre: yes ? "You're in for " : "You passed on ",
+          bold: out.title,
+          post: "",
+        });
+        return out;
+      } catch (e) {
+        // a failed vote must never vanish silently (the old code let the throw
+        // escape, so a dropped/rejected request just looked like a dead button).
+        // Resync to the server so the card shows live state, and leave a trail.
+        refreshGroupData();
+        pushActivity({ dot: "#D95D39", pre: "Couldn't save that — ", bold: "try again", post: "" });
+        throw e;
+      }
     },
-    [pushActivity]
+    [pushActivity, refreshGroupData]
   );
 
   // Stage 2: "does this specific time work?"
   const voteTime = useCallback(
     async (planId, yes, roundId) => {
-      const out = await api.voteTime(planId, yes, roundId);
-      setPlans((ps) => ps.map((p) => (p.id === planId ? out : p)));
-      pushActivity({
-        dot: yes ? "#2A9D8F" : "#D95D39",
-        pre: `You said the time ${yes ? "works" : "doesn't work"} for `,
-        bold: out.title,
-        post: "",
-      });
-      return out;
+      try {
+        const out = await api.voteTime(planId, yes, roundId);
+        setPlans((ps) => ps.map((p) => (p.id === planId ? out : p)));
+        pushActivity({
+          dot: yes ? "#2A9D8F" : "#D95D39",
+          pre: `You said the time ${yes ? "works" : "doesn't work"} for `,
+          bold: out.title,
+          post: "",
+        });
+        return out;
+      } catch (e) {
+        // 409 = the host moved to the next time while we were voting; any other
+        // failure = a dropped request. Either way, resync so the card reflects
+        // the live question instead of silently doing nothing.
+        refreshGroupData();
+        pushActivity({ dot: "#D95D39", pre: "Couldn't save that — ", bold: "try again", post: "" });
+        throw e;
+      }
     },
-    [pushActivity]
+    [pushActivity, refreshGroupData]
   );
 
   const createGroup = useCallback(
