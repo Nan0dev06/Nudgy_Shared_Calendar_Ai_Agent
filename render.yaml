@@ -24,13 +24,14 @@ services:
         value: "3.12.7"
       - key: LLM_PROVIDER
         value: groq
-      # Groq's free limits are per-model. llama-3.3-70b-versatile (100K
-      # tokens/day, 12K/min) is the best currently-available model for the
-      # agent's tool calling; llama-3.1-8b-instant has a bigger budget
-      # (500K/day) but is weaker at tools. The old llama-4-scout was removed
-      # from Groq's catalog (404s), so it's no longer an option.
+      # Groq's free limits are per-model. llama-3.1-8b-instant (500K tokens/day,
+      # higher per-minute) is the reliable choice for a live demo — the 70b
+      # (llama-3.3-70b-versatile, only 100K/day) runs out of tokens after a
+      # handful of turns. 70b is smarter at tools; swap back if budget allows.
+      # For the smart model WITHOUT the tiny budget, point LLM_BASE_URL at
+      # Cerebras (free, no card): https://api.cerebras.ai/v1 + a CEREBRAS key.
       - key: NUDGY_MODEL
-        value: llama-3.3-70b-versatile
+        value: llama-3.1-8b-instant
       # Render generates a strong value once and keeps it stable.
       - key: SECRET_KEY
         generateValue: true
