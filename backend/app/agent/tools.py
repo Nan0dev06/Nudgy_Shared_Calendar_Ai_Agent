@@ -316,6 +316,24 @@ def _create_plan(ctx: ToolContext, args: dict) -> dict:
         slots.append((start.astimezone(timezone.utc), end.astimezone(timezone.utc)))
     slots.sort(key=lambda s: s[0])  # the queue is walked in chronological order
 
+    # Don't spawn a second card for a plan the group already has open at the same
+    # place and time — the model will re-call create_plan across turns, and the
+    # title alone ("hang out" vs "Hang out at Blend Cafe") won't stop it.
+    dup = repo.find_duplicate_open_plan(ctx.session, ctx.group, args.get("location"), slots)
+    if dup is not None:
+        active = repo.get_active_round(ctx.session, dup)
+        log.info("[plan %d] create_plan skipped — duplicate of an open plan", dup.id)
+        return {
+            "plan_id": dup.id,
+            "title": dup.title,
+            "location": dup.location,
+            "duplicate": True,
+            "first_time": time_label(active, ctx.tz_name) if active else None,
+            "note": ("An open plan for this place and these times already exists, so "
+                     "a second one was NOT created. Tell the user it's already up — "
+                     "call get_plan_status for its tally rather than proposing again."),
+        }
+
     plan = repo.create_plan(
         ctx.session, ctx.group, ctx.user,
         title=args["title"],

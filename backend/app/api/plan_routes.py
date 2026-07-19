@@ -172,9 +172,20 @@ def create_plan(
         slots.append((start, end))
 
     group = next(g for g in repo.get_user_groups(session, user) if g.id == group_id)
+    location = (body.location or "").strip() or None
+
+    # Backstop the client-side guard (which only catches an exact title match):
+    # if an open plan for this place and these times already exists, return it
+    # instead of creating a near-duplicate with a different title.
+    dup = repo.find_duplicate_open_plan(session, group, location, slots)
+    if dup is not None:
+        log.info("[plan %d] %s tried to create a duplicate (same place+times) — returning existing",
+                 dup.id, user.email)
+        return _plan_json(session, dup, user, user.timezone)
+
     plan = repo.create_plan(
         session, group, user, title=body.title.strip(),
-        slots=slots, location=(body.location or "").strip() or None,
+        slots=slots, location=location,
         expected_count=body.expected_count,
     )
     log.info("[plan %d] %s created it directly from the app (%d candidate times)",

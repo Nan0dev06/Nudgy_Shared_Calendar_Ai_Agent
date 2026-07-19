@@ -7,6 +7,7 @@ exist, and a single place to debug when a query misbehaves.
 from __future__ import annotations
 
 import secrets
+from datetime import timezone
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -136,6 +137,36 @@ def create_plan(
     session.add(InterestVote(plan_id=plan.id, user_id=host.id, yes=True))
     session.commit()
     return plan
+
+
+def find_duplicate_open_plan(
+    session: Session, group: Group, location: str | None, slots: list[tuple]
+) -> Plan | None:
+    """An already-open plan in this group that is effectively the same proposal
+    — same place and the same set of candidate times — so neither the agent nor
+    the UI spawns a second card for it.
+
+    Title is deliberately ignored: the whole point is that "Hang out at Blend
+    Cafe" and "hang out" for the same place and time ARE the same plan. Timeless
+    "who's in?" checks (no slots) are never deduped — they carry no time to
+    compare and are cheap to re-ask.
+    """
+    if not slots:
+        return None
+    loc_key = (location or "").strip().casefold()
+    want = frozenset(
+        (s.astimezone(timezone.utc), e.astimezone(timezone.utc)) for s, e in slots
+    )
+    for p in get_group_plans(session, group.id, only_open=True):
+        if (p.location or "").strip().casefold() != loc_key:
+            continue
+        have = frozenset(
+            (r.start.astimezone(timezone.utc), r.end.astimezone(timezone.utc))
+            for r in p.rounds
+        )
+        if have == want:
+            return p
+    return None
 
 
 def append_rounds(session: Session, plan: Plan, slots: list[tuple]) -> list[TimeRound]:
