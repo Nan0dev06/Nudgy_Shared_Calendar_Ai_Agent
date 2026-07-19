@@ -154,6 +154,48 @@ rather than calling a booking endpoint, so the agent stays the single path to a
 calendar and the host guard lives in one place. Dismissing it keeps it shut until
 somebody actually votes again.
 
+## Frontend
+
+The UI is a single-page **React 18 + Vite** app in `frontend/` — plain React,
+no router, no state library, no component kit. The look is a hand-rolled
+glassmorphism theme (`theme.js` + `styles.css`): frosted panels and pill
+buttons floating over a warm parchment background with slow-drifting color
+blobs, and the Nudgy orb as the constant presence in the corner.
+
+### What's in it
+
+- **SignIn → GroupGate → Shell.** Google sign-in, then create or join a group
+  by invite code, then the app proper: a collapsible sidebar (groups, members
+  and their calendar-connection status, drafts) plus a top bar around the
+  active page.
+- **Pages:** Home (dashboard), Calendar (month view of the group's
+  availability), Polls (the two-stage cascade — interest votes, time votes,
+  and the host's report with its lock-in / try-next moves), Places, Activity,
+  and Settings.
+- **ChatPanel** — the Nudgy orb opens into the agent chat; this is where plans
+  are actually made.
+- **`api.js`** is a thin `fetch` wrapper over the REST API in
+  [docs/api.md](docs/api.md): session-cookie auth, JSON in/out, errors
+  surfaced with their backend `detail` message.
+- UI state (active group, sidebar collapse, drafts) persists per group in
+  `localStorage`; while a plan is open the app short-polls so votes and the
+  host report arrive without a refresh.
+
+### Dev & build
+
+```bash
+cd frontend
+npm install
+npm run dev     # Vite dev server; proxies /auth /groups /polls /chat to :8000
+npm run build   # outputs straight into backend/app/static/
+```
+
+The production build lands in `backend/app/static/`, which FastAPI already
+serves at `/` — the deployed app **is** the built frontend, same origin as the
+API, so there is no CORS story. Render only runs `pip install`, so the built
+bundle is **committed**: after any frontend change, run `npm run build` and
+commit the result alongside the source.
+
 ## Privacy by Architecture
 
 This is a design principle, not a feature:
@@ -174,7 +216,7 @@ Nudgy does group scheduling and meetup planning. Nothing else. Asked to write an
 | Agent | Llama 3.3 70B Versatile via Groq (free tier) with native tool calling; model overridable via `NUDGY_MODEL`, provider via `LLM_PROVIDER` (Ollama/OpenAI use the same code path) |
 | Calendar | Google Calendar API — OAuth 2.0, `calendar.readonly` + `calendar.events` scopes, `freebusy.query` |
 | Venues | OpenStreetMap — Nominatim (geocoding) + Overpass (venue search). Free, **no API key**, no account |
-| Frontend | React (teammate's branch). Backend exposes a documented REST API with example request/response bodies for every endpoint. A minimal scaffold UI ships in `backend/app/static/` for testing |
+| Frontend | React 18 + Vite SPA in `frontend/` (see [Frontend](#frontend)). Builds into `backend/app/static/`, which FastAPI serves at `/` — one deploy, no CORS. The backend REST API is documented with example bodies in [docs/api.md](docs/api.md) |
 | Storage | **SQLite** locally, **Postgres** in production — auto-selected by the `DATABASE_URL` env var (Render injects it). Same code, no migrations |
 | Hosting | Render (free tier) via a one-click `render.yaml` blueprint that also provisions the Postgres database |
 | Timezones | Everything stored in UTC; converted to each user's local timezone at display time. Unit-tested |
@@ -191,7 +233,7 @@ backend/
     tools/             # freebusy, slot intersection, venue search, cascade rules, booking
     db/                # SQLAlchemy models + repo + session (users, groups, plans, rounds, votes)
     api/               # REST endpoints (auth, groups, plans, chat)
-    static/            # minimal scaffold UI (Nudgy orb + chat + the host's report)
+    static/            # committed frontend build output (served at "/")
   scripts/
     check_freebusy.py  # Phase 1 CLI proof: OAuth + freebusy + intersection
     check_plan_cascade.py  # Cascade proof: interest → time → host decides → real booking
@@ -200,6 +242,15 @@ backend/
     connect_account.py # One-time OAuth connect per test account (CLI)
     import_tokens.py   # Load existing OAuth tokens into the DB
   tests/               # slot math + plan cascade rule unit tests
+frontend/
+  src/
+    App.jsx            # auth check → group gate → app shell; localStorage-backed UI state
+    api.js             # thin fetch wrapper over the REST API (session cookie)
+    screens/           # SignIn (Google OAuth) and GroupGate (create/join a group)
+    components/        # Shell, Sidebar, TopBar, ChatPanel (the Nudgy orb), Modals, Blobs
+    pages/             # Home, Calendar, Polls (the cascade + host report), Places, Activity, Settings
+    theme.js, styles.css  # hand-rolled glassmorphism theme — no UI kit
+  vite.config.js       # dev proxy to :8000; build outputs to backend/app/static
 docs/
   api.md               # Endpoint reference with example bodies
   deploy.md            # Render deployment walkthrough
