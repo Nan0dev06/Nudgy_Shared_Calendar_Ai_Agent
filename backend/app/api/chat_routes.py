@@ -33,7 +33,12 @@ def _friendly_error(exc: Exception) -> str:
     a rate limit from a DB error from a bug when debugging."""
     name = type(exc).__name__
     text = str(exc).lower()
-    if "ratelimit" in name.lower() or "429" in text or "rate limit" in text:
+    # Groq's free tier signals rate limits two ways: a 429 RateLimitError, and a
+    # 413 on the per-minute token cap (code "rate_limit_exceeded", "tokens per
+    # minute") when a heavy multi-tool turn is too big for the TPM window. Both
+    # mean "wait a minute", so catch the 413 form too — not just 429.
+    if ("ratelimit" in name.lower() or "429" in text or "rate limit" in text
+            or "rate_limit" in text or "tokens per minute" in text):
         return ("I'm being rate-limited by the model service right now "
                 "(free tier). Give it a minute and try again.")
     return f"Sorry — I hit a problem finishing that ({name}). Please try again."
