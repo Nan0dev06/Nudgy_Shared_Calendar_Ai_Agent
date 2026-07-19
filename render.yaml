@@ -22,20 +22,23 @@ services:
           property: connectionString
       - key: PYTHON_VERSION
         value: "3.12.7"
+      # Cerebras (free tier, no card): smart tool-calling on a big budget — much
+      # better instruction-following than Groq's 8b, without the 70b's tiny
+      # 100K/day cap that rate-limits mid-demo. OpenAI-compatible path.
       - key: LLM_PROVIDER
-        value: groq
-      # Groq's free limits are per-model. llama-3.1-8b-instant (500K tokens/day,
-      # higher per-minute) is the reliable choice for a live demo — the 70b
-      # (llama-3.3-70b-versatile, only 100K/day) runs out of tokens after a
-      # handful of turns. 70b is smarter at tools; swap back if budget allows.
-      # For the smart model WITHOUT the tiny budget, point LLM_BASE_URL at
-      # Cerebras (free, no card): https://api.cerebras.ai/v1 + a CEREBRAS key.
+        value: openai
+      - key: LLM_BASE_URL
+        value: https://api.cerebras.ai/v1
       - key: NUDGY_MODEL
-        value: llama-3.1-8b-instant
+        value: gpt-oss-120b
       # Render generates a strong value once and keeps it stable.
       - key: SECRET_KEY
         generateValue: true
       # sync:false -> you paste these in the dashboard; never stored in git.
+      # LLM_API_KEY = your Cerebras key (starts "csk-").
+      - key: LLM_API_KEY
+        sync: false
+      # Kept for the Groq fallback (set LLM_PROVIDER=groq + NUDGY_MODEL to use).
       - key: GROQ_API_KEY
         sync: false
       - key: GOOGLE_CLIENT_ID

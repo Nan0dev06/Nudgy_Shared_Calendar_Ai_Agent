@@ -229,6 +229,12 @@ def run_agent(ctx: ToolContext, history: list[dict], user_message: str) -> Agent
         for tc in msg.tool_calls:
             try:
                 args = json.loads(tc.function.arguments or "{}")
+                # Llama sometimes sends `null` (or a bare array) as the whole
+                # argument object; json.loads then yields None/list and every
+                # tool that does args.get(...) would crash. Treat any non-object
+                # as "no arguments" — the optional-arg tools handle {} fine.
+                if not isinstance(args, dict):
+                    args = {}
             except json.JSONDecodeError:
                 # Same root cause as tool_use_failed, but Groq let this one
                 # through. Hand the error back as the tool result so the model
