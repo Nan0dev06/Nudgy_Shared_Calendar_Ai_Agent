@@ -95,15 +95,15 @@ export default function Blobs({ page }) {
       style={{
         position: "absolute",
         borderRadius: "50%",
-        filter: "blur(80px)",
+        filter: "blur(64px)",
         pointerEvents: "none",
         width: size,
         height: size,
         left: `${x}%`,
         top: `${y}%`,
         transform: "translate(-50%, -50%)",
-        background: `color-mix(in srgb, ${c} 34%, #F7F1E6)`,
-        opacity: op,
+        background: `color-mix(in srgb, ${c} 62%, #F7F1E6)`,
+        opacity: Math.min(0.72, op * 1.5),
         animation: `blobDrift ${DRIFT[i % DRIFT.length][0]}s ease-in-out infinite`,
         animationDelay: `${DRIFT[i % DRIFT.length][1]}s`,
         transition:

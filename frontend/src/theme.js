@@ -11,9 +11,6 @@ export const LILAC = "#BCA9C9";
 export const AMBER = "#E68E36";
 export const NEUTRAL = "#8A8A8A";
 
-export const orbGradient = (size) =>
-  `radial-gradient(${size}px ${size}px at 32% 26%, rgba(255,255,255,.55), rgba(0,0,0,0) 60%), linear-gradient(145deg, #2A9D8F, #2B5B84)`;
-
 export function glass(r, blur = 26) {
   return {
     background:

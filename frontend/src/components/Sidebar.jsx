@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useApp } from "../ctx.js";
-import { glass, dot, orbGradient, avatar } from "../theme.js";
+import { glass, dot, avatar } from "../theme.js";
+import { OrbLogo } from "./OrbLogo.jsx";
 import {
   HomeIcon, CalendarIcon, ActivityIcon, PollsIcon, PinIcon,
   ChevronLeft, ChevronRight, ChevronDown, PlusIcon, GearIcon, CheckIcon,
@@ -100,13 +101,9 @@ export default function Sidebar() {
               padding: collapsed ? 0 : "0 2px",
             }}
           >
-            <div
-              style={{
-                width: 30, height: 30, flex: "none", borderRadius: "50%",
-                background: orbGradient(18),
-                boxShadow: "0 4px 12px rgba(45,45,45,.18)",
-              }}
-            />
+            <div style={{ width: 30, height: 30, flex: "none", display: "flex" }}>
+              <OrbLogo size={30} />
+            </div>
             {!collapsed && (
               <>
                 <span className="sb-label" style={{ fontSize: 15, fontWeight: 600 }}>Nudgy</span>

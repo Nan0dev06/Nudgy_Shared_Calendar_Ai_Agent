@@ -18,13 +18,40 @@ const seg = (on) => ({
   background: on ? "#2D2D2D" : "transparent", transition: "all .18s", userSelect: "none",
 });
 
-// Neutral gray glass — reserved for unresolved multi-person busy blocks
-const ovStyle = (hovered) => ({
+// Busy-load color scale — clear graded steps from quiet sand to deep clay.
+// Cases: 0 · 1 · 2 · 3 · 4–5 · 6+ items, each with its own color on the ramp.
+const BUSY_SCALE = [
+  { c: "#C9C2B4", pct: 16 }, // 0 — quiet
+  { c: "#DCA744", pct: 22 }, // 1 — light gold
+  { c: "#C98F2E", pct: 34 }, // 2 — gold
+  { c: "#E68E36", pct: 42 }, // 3 — amber
+  { c: "#D95D39", pct: 46 }, // 4–5 — terracotta
+  { c: "#A03D20", pct: 54 }, // 6+ — deep clay
+];
+const busyStep = (n) =>
+  n <= 0 ? 0 : n === 1 ? 1 : n === 2 ? 2 : n === 3 ? 3 : n <= 5 ? 4 : 5;
+const busyBg = (n) => {
+  const s = BUSY_SCALE[busyStep(n)];
+  return `color-mix(in srgb, ${s.c} ${s.pct}%, rgba(255,253,247,.6))`;
+};
+const busyEdge = (n) => {
+  const s = BUSY_SCALE[busyStep(n)];
+  return `color-mix(in srgb, ${s.c} 45%, rgba(255,253,247,.7))`;
+};
+
+// Faint blue-goldish ring for days/sections with 0 events or tasks
+const quietRing = {
+  boxShadow:
+    "inset 0 0 0 1.2px rgba(46,102,152,.22), 0 0 0 1.2px rgba(220,167,68,.3)",
+};
+
+// Load-tinted glass — unresolved multi-person busy blocks, colored by count
+const ovStyle = (hovered, count = 2) => ({
   borderRadius: 14, padding: "12px 14px", display: "flex", flexDirection: "column",
   gap: 3, cursor: "default", position: "relative",
-  background: "rgba(150,142,128,.24)",
+  background: busyBg(count),
   backdropFilter: "blur(10px)", WebkitBackdropFilter: "blur(10px)",
-  border: "1px solid rgba(255,253,247,.5)",
+  border: `1px solid ${busyEdge(count)}`,
   transition: "all .22s cubic-bezier(.34,1.56,.64,1)",
   ...(hovered
     ? { transform: "translateY(-3px) scale(1.02)", boxShadow: "0 16px 34px rgba(96,78,54,.2)", zIndex: 5 }
@@ -33,7 +60,8 @@ const ovStyle = (hovered) => ({
 
 const freeStyle = {
   borderRadius: 16, padding: "13px 14px", display: "flex", flexDirection: "column",
-  gap: 7, cursor: "pointer", background: "rgba(255,253,247,.42)",
+  gap: 7, cursor: "pointer",
+  background: "linear-gradient(135deg, rgba(42,157,143,.2), rgba(255,253,247,.55))",
   border: "1.6px solid #2A9D8F", transition: "all .25s",
 };
 
@@ -95,15 +123,17 @@ export default function CalendarPage() {
   // Gray overlap cluster block with the "who's busy" hover popover. Rows that
   // came from a NON-anonymous personal event carry a title/place — those show
   // what the person is actually doing; anonymous ones stay just "busy".
+  // extraStyle positions the OUTER wrapper (the day rail passes absolute
+  // top/height there); the tinted block itself always fills the wrapper.
   const clusterBlock = (c, key, popRight, extraStyle = {}) => {
     const single = c.count === 1;
     const label = single
       ? `${nameOf(c.emails[0])} busy`
       : `${c.count} busy`;
     return (
-      <div key={key} style={{ position: "relative", ...focusAdj(c.emails) }}>
+      <div key={key} style={{ position: "relative", ...focusAdj(c.emails), ...extraStyle }}>
         <div
-          style={{ ...ovStyle(hoverKey === key), ...extraStyle }}
+          style={{ ...ovStyle(hoverKey === key, c.count), height: "100%", justifyContent: "center" }}
           onMouseEnter={() => setHoverKey(key)}
           onMouseLeave={() => setHoverKey(null)}
         >
@@ -228,7 +258,7 @@ export default function CalendarPage() {
         {view === "month" && (
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
             <span style={kicker}>Free</span>
-            <div style={{ width: 52, height: 8, borderRadius: 4, background: "linear-gradient(90deg, rgba(255,253,247,.8), #8A8A8A)" }} />
+            <div style={{ width: 64, height: 8, borderRadius: 4, background: "linear-gradient(90deg, rgba(255,253,247,.9), #E4CE8F, #DCA744, #E68E36, #D95D39, #A03D20)" }} />
             <span style={kicker}>Busy</span>
           </div>
         )}
@@ -291,6 +321,11 @@ export default function CalendarPage() {
                   return clusterBlock(it.c, `w${ci}ov${it.i}`, ci >= 4);
                 return freeBlock(it.w, `w${ci}fr${it.i}`);
               })}
+              {items.length + col.dueTasks.length === 0 && (
+                <div style={{ borderRadius: 14, padding: "14px 10px", background: "rgba(255,253,247,.35)", ...quietRing, fontSize: 11.5, color: "#a09889", textAlign: "center" }}>
+                  Nothing yet
+                </div>
+              )}
             </div>
           );
         })}
@@ -363,7 +398,6 @@ export default function CalendarPage() {
               position: "absolute", left: 14, right: 14,
               top: `${frac(c.start) * 100}%`,
               height: `${Math.max(0.06, frac(c.end) - frac(c.start)) * 100}%`,
-              justifyContent: "center",
             })
           )}
           {free.map((w, i) => (
@@ -374,7 +408,7 @@ export default function CalendarPage() {
                 top: `${frac(w.start) * 100}%`,
                 height: `${Math.max(0.08, frac(w.end) - frac(w.start)) * 100}%`,
                 border: "2px solid #2A9D8F", borderRadius: 16,
-                background: "rgba(42,157,143,.07)",
+                background: "linear-gradient(135deg, rgba(42,157,143,.18), rgba(42,157,143,.05))",
                 display: "flex", flexDirection: "column", justifyContent: "center",
                 gap: 8, padding: "0 16px",
               }}
@@ -401,7 +435,7 @@ export default function CalendarPage() {
             </div>
           ))}
           {empty && (
-            <div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 13, color: "#8c8577" }}>
+            <div style={{ position: "absolute", inset: "8px 14px", borderRadius: 16, ...quietRing, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 13, color: "#8c8577" }}>
               Nothing on this day.
             </div>
           )}
@@ -441,20 +475,17 @@ export default function CalendarPage() {
             const clusters = dim ? [] : dayClusters(avail.members_busy, date);
             const busyCount = clusters.reduce((a, c) => a + c.count, 0);
             const isToday = sameDay(date, today);
-            const load = Math.min(0.55, busyCount * 0.14 + (dayEvs.length > 1 ? 0.2 : 0));
-            const accent = dayEvs.length >= 1 ? tintFor(dayEvs[0]) : null;
+            const totalLoad = busyCount + dayEvs.length;
+            const quiet = !dim && totalLoad === 0;
             let bg = dim ? "rgba(255,253,247,.28)" : "rgba(255,253,247,.4)";
-            if (!dim && load > 0)
-              bg = `color-mix(in srgb, #8A8A8A ${Math.round(load * 100)}%, rgba(255,253,247,.6))`;
-            if (!dim && accent)
-              bg = `color-mix(in srgb, ${accent} 18%, rgba(255,253,247,.6))`;
+            if (!dim && totalLoad > 0) bg = busyBg(totalLoad);
             const hov = hoverKey === key;
             const pr = i % 7 >= 5, pu = i >= 21;
             const popText = dayEvs.length
               ? dayEvs.map((e) => e.title).join(" · ")
               : busyCount
-                ? `${busyCount} busy block${busyCount > 1 ? "s" : ""} — ask the orb for a window`
-                : "Nothing planned — ask the orb to find a window";
+                ? `${busyCount} busy block${busyCount > 1 ? "s" : ""} — ask Nudgy for a window`
+                : "Nothing planned — ask Nudgy to find a window";
             return (
               <div
                 key={key}
@@ -465,6 +496,7 @@ export default function CalendarPage() {
                   borderRadius: 12, padding: 10, display: "flex", flexDirection: "column",
                   gap: 5, position: "relative", cursor: dim ? "default" : "pointer",
                   background: bg, transition: "all .18s",
+                  ...(quiet ? quietRing : {}),
                   ...(isToday && !dim ? { outline: "2px solid #2A9D8F", outlineOffset: -2, background: "rgba(255,253,247,.6)" } : {}),
                   ...(hov ? { transform: "scale(1.03)", boxShadow: "0 12px 28px rgba(96,78,54,.18)", zIndex: 5 } : {}),
                 }}
@@ -472,8 +504,8 @@ export default function CalendarPage() {
                 <span style={{ fontSize: 12.5, fontWeight: 600, color: dim ? "#c9c2b4" : isToday ? "#2A9D8F" : "#2D2D2D" }}>
                   {date.getDate()}
                 </span>
-                {(dayEvs.length > 0 || busyCount > 0) && !dim && (
-                  <div style={{ height: 5, borderRadius: 3, background: accent || "#8A8A8A", width: `${Math.min(90, 30 + (dayEvs.length + busyCount) * 18)}%`, marginTop: "auto" }} />
+                {totalLoad > 0 && !dim && (
+                  <div style={{ height: 5, borderRadius: 3, background: BUSY_SCALE[busyStep(totalLoad)].c, width: `${Math.min(90, 30 + totalLoad * 18)}%`, marginTop: "auto" }} />
                 )}
                 {hov && !dim && (
                   <div style={popover(pr, pu)}>

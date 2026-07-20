@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useApp } from "../ctx.js";
-import { heavy, gpill, dpill, fieldStyle, orbGradient, fieldLabel } from "../theme.js";
+import { heavy, gpill, dpill, fieldStyle, fieldLabel } from "../theme.js";
+import { OrbLogo } from "../components/OrbLogo.jsx";
 
 // After sign-in: create a group, join one by invite code, or continue straight
 // to the dashboard. Users can belong to any number of groups.
@@ -41,7 +42,9 @@ export default function GroupGate({ onDone }) {
         }}
       >
         <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-          <div style={{ width: 32, height: 32, borderRadius: "50%", background: orbGradient(20) }} />
+          <div style={{ width: 32, height: 32, flex: "none", display: "flex" }}>
+            <OrbLogo size={32} />
+          </div>
           <span style={{ fontSize: 18, fontWeight: 600 }}>Nudgy</span>
         </div>
         <div>

@@ -1,4 +1,5 @@
-import { heavy, gpill, orbGradient } from "../theme.js";
+import { heavy, gpill } from "../theme.js";
+import { OrbLogo } from "../components/OrbLogo.jsx";
 import { loginUrl } from "../api.js";
 
 // Single sign-in path: Google Calendar IS the login (backend OAuth flow).
@@ -18,7 +19,9 @@ export default function SignIn() {
         }}
       >
         <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-          <div style={{ width: 32, height: 32, borderRadius: "50%", background: orbGradient(20) }} />
+          <div style={{ width: 32, height: 32, flex: "none", display: "flex" }}>
+            <OrbLogo size={32} />
+          </div>
           <span style={{ fontSize: 18, fontWeight: 600 }}>Nudgy</span>
         </div>
         <div>

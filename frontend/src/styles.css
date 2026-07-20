@@ -148,10 +148,10 @@ input::placeholder {
     transform: translate(-50%, -50%) scale(1);
   }
   33% {
-    transform: translate(-46%, -55%) scale(1.08);
+    transform: translate(-41%, -59%) scale(1.14);
   }
   66% {
-    transform: translate(-55%, -46%) scale(0.94);
+    transform: translate(-59%, -42%) scale(0.88);
   }
   100% {
     transform: translate(-50%, -50%) scale(1);

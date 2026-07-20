@@ -9,7 +9,7 @@ import ActivityPage from "../pages/ActivityPage.jsx";
 import PollsPage from "../pages/PollsPage.jsx";
 import PlacesPage from "../pages/PlacesPage.jsx";
 import SettingsPage from "../pages/SettingsPage.jsx";
-import { orbGradient } from "../theme.js";
+import { ChatbotOrb } from "./ChatbotOrb.jsx";
 
 export default function Shell() {
   const { page, chatOpen, setChatOpen } = useApp();
@@ -32,21 +32,20 @@ export default function Shell() {
         {page === "places" && <PlacesPage />}
         {page === "settings" && <SettingsPage />}
 
-        {/* floating orb — hidden while chat is open */}
+        {/* floating Nudgy orb — hidden while chat is open */}
         <div
-          title="Ask the orb"
+          title="Ask Nudgy"
           onClick={() => setChatOpen(true)}
           style={{
             position: "absolute", right: 28, bottom: 26, width: 54, height: 54,
             borderRadius: "50%", cursor: "pointer", zIndex: 30,
-            background: orbGradient(30),
             boxShadow: "0 12px 30px rgba(45,45,45,.25)",
             display: chatOpen ? "none" : "flex",
             alignItems: "center", justifyContent: "center",
             animation: "ofloat 3.4s ease-in-out infinite",
           }}
         >
-          <span style={{ fontSize: 20, color: "#fff" }}>✦</span>
+          <ChatbotOrb size={54} />
         </div>
       </main>
 

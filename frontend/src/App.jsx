@@ -6,7 +6,7 @@ import Blobs from "./components/Blobs.jsx";
 import SignIn from "./screens/SignIn.jsx";
 import GroupGate from "./screens/GroupGate.jsx";
 import Shell from "./components/Shell.jsx";
-import { orbGradient } from "./theme.js";
+import { OrbLogo } from "./components/OrbLogo.jsx";
 
 // ---- localStorage-backed state --------------------------------------------
 function readStored(key, initial) {
@@ -732,12 +732,12 @@ export default function App() {
       <div style={{ ...BG, alignItems: "center", justifyContent: "center" }}>
         <div
           style={{
-            width: 58, height: 58, borderRadius: "50%",
-            background: orbGradient(34),
-            boxShadow: "0 12px 30px rgba(45,45,45,.22)",
+            width: 58, height: 58, display: "flex",
             animation: "ofloat 3.4s ease-in-out infinite",
           }}
-        />
+        >
+          <OrbLogo size={58} />
+        </div>
       </div>
     );
 
