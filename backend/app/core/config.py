@@ -35,6 +35,11 @@ if SECRET_KEY == "dev-secret-change-me" and DATABASE_URL:
         "by anyone. Set SECRET_KEY to a random secret before starting."
     )
 
+# Encrypts OAuth tokens at rest (see core/crypto.py). A urlsafe-base64 32-byte
+# Fernet key. Unset -> derived from SECRET_KEY, which is fine for local dev; in
+# production set a dedicated key so token secrecy doesn't ride on the cookie key.
+TOKEN_ENCRYPTION_KEY = os.getenv("TOKEN_ENCRYPTION_KEY", "")
+
 GOOGLE_REDIRECT_URI = os.getenv(
     "GOOGLE_REDIRECT_URI", "http://localhost:8000/auth/google/callback"
 )
