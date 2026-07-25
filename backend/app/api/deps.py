@@ -8,7 +8,7 @@ Auth model (hackathon-simple, no passwords):
 from __future__ import annotations
 
 from fastapi import Cookie, Depends, HTTPException
-from itsdangerous import BadSignature, URLSafeSerializer
+from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
 from sqlalchemy.orm import Session
 
 from app.core.config import GOOGLE_REDIRECT_URI, SECRET_KEY
@@ -17,7 +17,12 @@ from app.db import repo
 from app.db.session import get_session
 
 COOKIE_NAME = "nudgy_session"
-_signer = URLSafeSerializer(SECRET_KEY, salt="nudgy-session")
+# Sessions expire so a leaked/stolen cookie (or one signed with an old key) can't
+# live forever. Timed signer stamps the issue time; get_current_user rejects
+# anything older than this. 30 days keeps the "stay signed in" feel for a
+# consumer app while still bounding a stolen cookie's usefulness.
+SESSION_TTL_SECONDS = 30 * 24 * 3600
+_signer = URLSafeTimedSerializer(SECRET_KEY, salt="nudgy-session")
 
 # The cookie IS the login, so it must never cross the wire in clear text. It
 # can't be Secure on http://localhost though — the browser would silently drop
@@ -41,7 +46,9 @@ def get_current_user(
     if not nudgy_session:
         raise HTTPException(status_code=401, detail="Not logged in. Connect Google first.")
     try:
-        data = _signer.loads(nudgy_session)
+        data = _signer.loads(nudgy_session, max_age=SESSION_TTL_SECONDS)
+    except SignatureExpired:
+        raise HTTPException(status_code=401, detail="Your session expired. Please sign in again.")
     except BadSignature:
         raise HTTPException(status_code=401, detail="Invalid session cookie.")
     user = repo.get_user(session, data.get("user_id"))

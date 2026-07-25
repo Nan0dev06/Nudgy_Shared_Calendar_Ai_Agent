@@ -17,7 +17,8 @@ from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from app.api.deps import (
-    COOKIE_KWARGS, COOKIE_NAME, get_current_user, make_session_cookie,
+    COOKIE_KWARGS, COOKIE_NAME, SESSION_TTL_SECONDS, get_current_user,
+    make_session_cookie,
 )
 from app.auth.google import build_web_flow, get_account_email
 from app.core.config import GOOGLE_REDIRECT_URI
@@ -65,9 +66,13 @@ def google_callback(request: Request, session: Session = Depends(get_session)):
     email = get_account_email(creds)
     user = repo.upsert_user_token(session, email, creds.to_json())
 
-    # logged in — back to the app with the signed cookie set
+    # logged in — back to the app with the signed cookie set. max_age makes the
+    # browser drop it at the same TTL the server enforces (see deps.SESSION_TTL_SECONDS).
     response = RedirectResponse("/")
-    response.set_cookie(COOKIE_NAME, make_session_cookie(user.id), **COOKIE_KWARGS)
+    response.set_cookie(
+        COOKIE_NAME, make_session_cookie(user.id),
+        max_age=SESSION_TTL_SECONDS, **COOKIE_KWARGS,
+    )
     response.delete_cookie(STATE_COOKIE)  # single use
     return response
 
