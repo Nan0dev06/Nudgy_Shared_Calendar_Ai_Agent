@@ -21,6 +21,7 @@ from sqlalchemy.orm import Session
 from app.agent.loop import run_agent
 from app.agent.tools import ToolContext
 from app.api.deps import get_current_user
+from app.core.quota import check_quota, record_turn
 from app.db.models import User
 from app.db import repo
 
@@ -71,6 +72,21 @@ def chat(
         if group is None:
             raise HTTPException(status_code=403, detail="You are not in this group.")
 
+    # The agent is the one metered resource (it spends real LLM tokens). Gate it
+    # BEFORE running so a user can't exceed their tier's daily allowance; manual
+    # actions are never metered. The allowance resets at the user's local midnight.
+    status = check_quota(session, user)
+    if not status.allowed:
+        return {
+            "reply": (
+                f"You've reached today's limit of {status.limit} AI messages. "
+                "It resets at midnight your time — and you can still set up plans, "
+                "polls, events and tasks yourself in the meantime."
+            ),
+            "trace": [],
+            "quota": {"used": status.used, "limit": status.limit, "remaining": 0},
+        }
+
     ctx = ToolContext(
         session=session,
         user=user,
@@ -86,5 +102,15 @@ def chat(
         )
     except Exception as exc:  # LLM API error, DB error, anything unexpected
         log.exception("chat turn failed for %s", user.email)
-        return {"reply": _friendly_error(exc), "trace": []}
-    return {"reply": result.reply, "trace": [asdict(s) for s in result.trace]}
+        # Don't burn the user's daily allowance on a failure that's on our side.
+        return {
+            "reply": _friendly_error(exc),
+            "trace": [],
+            "quota": {"used": status.used, "limit": status.limit, "remaining": status.remaining},
+        }
+    after = record_turn(session, user)  # count only a turn that actually ran
+    return {
+        "reply": result.reply,
+        "trace": [asdict(s) for s in result.trace],
+        "quota": {"used": after.used, "limit": after.limit, "remaining": after.remaining},
+    }

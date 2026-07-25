@@ -35,6 +35,7 @@ _LATE_COLUMNS = [
     ("users", "display_name", "VARCHAR"),
     ("users", "drafts_json", "VARCHAR"),
     ("users", "memory_json", "VARCHAR"),
+    ("users", "tier", "VARCHAR DEFAULT 'free' NOT NULL"),
     ("plans", "expected_count", "INTEGER"),
     # TRUE/FALSE literals work on both SQLite (>=3.23) and Postgres
     ("events", "personal", "BOOLEAN DEFAULT FALSE NOT NULL"),
