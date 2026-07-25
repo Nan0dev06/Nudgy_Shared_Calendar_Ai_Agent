@@ -18,6 +18,8 @@ from datetime import date, datetime, timezone
 from sqlalchemy import Date, DateTime, ForeignKey, String, UniqueConstraint
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
+from app.db.types import EncryptedString
+
 
 class Base(DeclarativeBase):
     pass
@@ -32,8 +34,10 @@ class User(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     email: Mapped[str] = mapped_column(String, unique=True, index=True)
-    # raw Google Credentials JSON; None until the user connects a calendar
-    token_json: Mapped[str | None] = mapped_column(String, default=None)
+    # raw Google Credentials JSON; None until the user connects a calendar.
+    # Encrypted at rest (EncryptedString) — reads/writes see plaintext, the DB
+    # stores ciphertext. Underlying column is still VARCHAR, so no migration.
+    token_json: Mapped[str | None] = mapped_column(EncryptedString, default=None)
     timezone: Mapped[str] = mapped_column(String, default="Asia/Beirut")
     # optional user-chosen name; UI falls back to deriving one from the email
     display_name: Mapped[str | None] = mapped_column(String, default=None)
