@@ -13,9 +13,9 @@ Design notes:
 """
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 
-from sqlalchemy import DateTime, ForeignKey, String, UniqueConstraint
+from sqlalchemy import Date, DateTime, ForeignKey, String, UniqueConstraint
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
@@ -44,6 +44,9 @@ class User(Base):
     # JSON array of strings. Persisted here so it survives across devices AND so
     # the agent prompt can actually read it (see agent/prompt.py memory block).
     memory_json: Mapped[str | None] = mapped_column(String, default=None)
+    # subscription tier (see core/entitlements.py). Everyone is "free" until a
+    # payment processor exists; this is what the agent quota reads.
+    tier: Mapped[str] = mapped_column(String, default="free")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
 
     memberships: Mapped[list["Membership"]] = relationship(
@@ -281,3 +284,17 @@ class Membership(Base):
 
     user: Mapped["User"] = relationship(back_populates="memberships")
     group: Mapped["Group"] = relationship(back_populates="memberships")
+
+
+class AgentUsage(Base):
+    """Per-user, per-day count of agent turns — the meter behind the free-tier
+    quota. One row per (user, day), where `day` is the user's LOCAL date so the
+    allowance resets at their midnight, not UTC's. A "turn" is one user->agent
+    message; manual actions never touch this table (see core/quota.py)."""
+    __tablename__ = "agent_usage"
+    __table_args__ = (UniqueConstraint("user_id", "day", name="uq_user_day"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    day: Mapped[date] = mapped_column(Date)  # the user's local calendar date
+    turns: Mapped[int] = mapped_column(default=0)
