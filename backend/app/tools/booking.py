@@ -43,12 +43,13 @@ def book_round_event(
         return {"error": "This time is already booked.", "event_link": round_.event_link}
     if not attendee_emails:
         return {"error": "Nobody said this time works — refusing to book an empty event."}
-    if not organizer.calendar_connected:
+    account = repo.get_primary_calendar_account(session, organizer)
+    if account is None:
         return {"error": "Host has no connected calendar."}
 
-    creds, refreshed = credentials_from_json(organizer.token_json)
+    creds, refreshed = credentials_from_json(account.token_json)
     if refreshed:
-        repo.set_user_token(session, organizer, refreshed)
+        repo.set_account_token(session, account, refreshed)
 
     service = build("calendar", "v3", credentials=creds, cache_discovery=False)
     body = {

@@ -34,9 +34,11 @@ class User(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     email: Mapped[str] = mapped_column(String, unique=True, index=True)
-    # raw Google Credentials JSON; None until the user connects a calendar.
-    # Encrypted at rest (EncryptedString) — reads/writes see plaintext, the DB
-    # stores ciphertext. Underlying column is still VARCHAR, so no migration.
+    # DEPRECATED — identity/calendar split (Phase 1): a user's OAuth tokens now
+    # live on CalendarAccount, one per connected calendar. This column is kept
+    # only so the one-time backfill in db/session.py can copy the pre-split
+    # token into a CalendarAccount; nothing writes it after that. A later
+    # migration drops it. Read calendars via `calendar_accounts`, never here.
     token_json: Mapped[str | None] = mapped_column(EncryptedString, default=None)
     timezone: Mapped[str] = mapped_column(String, default="Asia/Beirut")
     # optional user-chosen name; UI falls back to deriving one from the email
@@ -56,10 +58,61 @@ class User(Base):
     memberships: Mapped[list["Membership"]] = relationship(
         back_populates="user", cascade="all, delete-orphan"
     )
+    # Identity is decoupled from calendars: one person can connect several
+    # (Google, Outlook, …), each with its own encrypted token. Availability
+    # unions across ALL of them (one person = one free/busy truth); writes
+    # target the primary one. Ordered by connect time so "first = default".
+    calendar_accounts: Mapped[list["CalendarAccount"]] = relationship(
+        back_populates="user", cascade="all, delete-orphan",
+        order_by="CalendarAccount.created_at",
+    )
 
     @property
     def calendar_connected(self) -> bool:
-        return self.token_json is not None
+        """True if the user has at least one calendar account holding a token."""
+        return any(a.token_json for a in self.calendar_accounts)
+
+
+class CalendarAccount(Base):
+    """One external calendar a User has connected (the identity/calendar split).
+
+    Identity (User) and calendars are separate concerns: a single person can
+    connect a Google account, an Outlook account, more than one of each — each
+    row here is one such connection with its own OAuth token. This is what makes
+    "unified availability" and multi-provider real:
+      - availability unions busy time across ALL of a user's accounts, so Nudgy
+        never double-books someone across their personal + work calendars;
+      - writes (booking a plan, syncing an in-app event) target the PRIMARY one.
+
+    token_json is the provider's raw OAuth credentials JSON, encrypted at rest
+    (EncryptedString) — same protection the legacy User.token_json had.
+    external_email is the connected calendar's address and need NOT equal the
+    user's identity email (User.email): today a Google login makes them coincide,
+    but a magic-link user could later attach a differently-addressed calendar.
+    """
+    __tablename__ = "calendar_accounts"
+    __table_args__ = (
+        UniqueConstraint("user_id", "provider", "external_email",
+                         name="uq_user_provider_email"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    provider: Mapped[str] = mapped_column(String)  # "google" | "microsoft"
+    external_email: Mapped[str] = mapped_column(String)
+    token_json: Mapped[str | None] = mapped_column(EncryptedString, default=None)
+    # multi-calendar UI: a color so this account's events are told apart from
+    # another calendar's at a glance (v1 decision). None until the user picks one.
+    color: Mapped[str | None] = mapped_column(String, default=None)
+    # how in-app events flow to this calendar: none | one_way | two_way. Defaults
+    # to two_way per the v1 decision (applied after the user consents at connect).
+    sync_setting: Mapped[str] = mapped_column(String, default="two_way")
+    # the default WRITABLE calendar — where bookings and synced events land. The
+    # first calendar a user connects becomes primary; they can move it later.
+    is_primary: Mapped[bool] = mapped_column(default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+
+    user: Mapped["User"] = relationship(back_populates="calendar_accounts")
 
 
 class Group(Base):

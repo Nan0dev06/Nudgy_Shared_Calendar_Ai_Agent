@@ -163,7 +163,8 @@ def _sync_to_google(
     invite_emails: list[str], group_id: int,
 ) -> dict:
     """Best effort: a sync failure never loses the in-app event."""
-    if not creator.calendar_connected:
+    account = repo.get_primary_calendar_account(session, creator)
+    if account is None:
         return {"ok": False, "reason": "Your Google Calendar isn't connected."}
     from googleapiclient.discovery import build
 
@@ -172,9 +173,9 @@ def _sync_to_google(
     member_emails = {m.email for m in repo.get_group_members(session, group_id)}
     attendees = [e for e in invite_emails if e in member_emails] or sorted(member_emails)
     try:
-        creds, refreshed = credentials_from_json(creator.token_json)
+        creds, refreshed = credentials_from_json(account.token_json)
         if refreshed:
-            repo.set_user_token(session, creator, refreshed)
+            repo.set_account_token(session, account, refreshed)
         service = build("calendar", "v3", credentials=creds, cache_discovery=False)
         gcal_body = {
             "summary": event.title,
@@ -264,16 +265,17 @@ def _delete_from_google(session: Session, event: GroupEvent) -> dict:
     """Best effort — the Google copy lives on the creator's calendar, so we
     need the creator's token regardless of who deletes in-app."""
     creator = session.get(User, event.created_by)
-    if creator is None or not creator.calendar_connected:
+    account = repo.get_primary_calendar_account(session, creator) if creator else None
+    if account is None:
         return {"ok": False, "reason": "Creator's calendar not connected."}
     from googleapiclient.discovery import build
 
     from app.auth.google import credentials_from_json
 
     try:
-        creds, refreshed = credentials_from_json(creator.token_json)
+        creds, refreshed = credentials_from_json(account.token_json)
         if refreshed:
-            repo.set_user_token(session, creator, refreshed)
+            repo.set_account_token(session, account, refreshed)
         service = build("calendar", "v3", credentials=creds, cache_discovery=False)
         service.events().delete(
             calendarId="primary", eventId=event.gcal_event_id, sendUpdates="all"
