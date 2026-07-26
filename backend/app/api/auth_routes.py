@@ -23,6 +23,11 @@ from app.api.deps import (
 )
 from app.auth import tokens
 from app.auth.google import build_web_flow, get_account_email
+from app.auth.microsoft import (
+    build_authorize_url,
+    exchange_code,
+    get_account_email as ms_get_account_email,
+)
 from app.core.config import APP_BASE_URL, GOOGLE_REDIRECT_URI
 from app.core.passwords import hash_password, verify_password
 from app.db.models import User
@@ -78,6 +83,41 @@ def google_callback(request: Request, session: Session = Depends(get_session)):
         max_age=SESSION_TTL_SECONDS, **COOKIE_KWARGS,
     )
     response.delete_cookie(STATE_COOKIE)  # single use
+    return response
+
+
+# ------------------------------------------------------------- microsoft oauth
+# Same shape as Google, and it REUSES the STATE_COOKIE CSRF machinery above — one
+# cookie name, one check. Microsoft has no OAuth library generating `state`, so
+# we mint it ourselves and thread it into the authorize URL.
+
+@router.get("/microsoft/login")
+def microsoft_login():
+    state = secrets.token_urlsafe(32)
+    response = RedirectResponse(build_authorize_url(state))
+    response.set_cookie(STATE_COOKIE, state, max_age=STATE_TTL_SECONDS, **COOKIE_KWARGS)
+    return response
+
+
+@router.get("/microsoft/callback")
+def microsoft_callback(request: Request, session: Session = Depends(get_session)):
+    expected = request.cookies.get(STATE_COOKIE)
+    received = request.query_params.get("state")
+    if not expected or not received or not secrets.compare_digest(expected, received):
+        raise HTTPException(
+            status_code=400,
+            detail="This sign-in link didn't come from here, or it expired. "
+                   "Start again from the app.",
+        )
+    code = request.query_params.get("code")
+    if not code:
+        raise HTTPException(status_code=400, detail="Missing ?code from Microsoft.")
+    token_json = exchange_code(code)
+    email = ms_get_account_email(token_json)
+    user = repo.login_with_microsoft(session, email, token_json)
+
+    response = _issue_session(user)          # signed session cookie -> "/"
+    response.delete_cookie(STATE_COOKIE)     # single use
     return response
 
 
