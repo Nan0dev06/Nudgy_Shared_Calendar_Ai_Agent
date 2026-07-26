@@ -22,10 +22,14 @@ import logging
 import math
 import time
 from datetime import datetime, timedelta, timezone
+from typing import TYPE_CHECKING
 
 import httpx
 from googleapiclient.discovery import build
 from google.oauth2.credentials import Credentials
+
+if TYPE_CHECKING:
+    from app.calendars.base import CalendarProvider
 
 log = logging.getLogger("nudgy.agent")
 
@@ -177,7 +181,7 @@ def _search_failed(where: str) -> dict:
 
 
 def suggest_venues_for_slot(
-    members_with_creds: list[tuple[str, Credentials]],
+    members_with_providers: list[tuple[str, "CalendarProvider"]],
     slot_start: datetime,
     slot_end: datetime,
     kind: str = "cafe",
@@ -215,8 +219,8 @@ def suggest_venues_for_slot(
         }
 
     locations_by_member: dict[str, list[str]] = {}
-    for email, creds in members_with_creds:
-        locs = get_adjacent_event_locations(creds, slot_start, slot_end)
+    for email, provider in members_with_providers:
+        locs = provider.get_event_locations(slot_start, slot_end)
         if locs:
             locations_by_member[email] = sorted(set(locs))
         log.info("[venues] %s — %d declared location(s) near slot", email, len(locs))

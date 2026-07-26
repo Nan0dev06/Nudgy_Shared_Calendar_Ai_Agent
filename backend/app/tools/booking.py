@@ -17,12 +17,10 @@ Safety: callers must only invoke this after the host confirmed the round
 from __future__ import annotations
 
 import logging
-from datetime import timezone
 
-from googleapiclient.discovery import build
 from sqlalchemy.orm import Session
 
-from app.auth.google import credentials_from_json
+from app.calendars import provider_for_account
 from app.db.models import Plan, TimeRound, User
 from app.db import repo
 
@@ -47,30 +45,20 @@ def book_round_event(
     if account is None:
         return {"error": "Host has no connected calendar."}
 
-    creds, refreshed = credentials_from_json(account.token_json)
-    if refreshed:
-        repo.set_account_token(session, account, refreshed)
-
-    service = build("calendar", "v3", credentials=creds, cache_discovery=False)
-    body = {
-        "summary": plan.title,
-        "start": {"dateTime": round_.start.astimezone(timezone.utc).isoformat()},
-        "end": {"dateTime": round_.end.astimezone(timezone.utc).isoformat()},
-        "attendees": [{"email": e} for e in attendee_emails],
-        "description": "Scheduled by Nudgy — the people here said this time works.",
-    }
-    if plan.location:
-        body["location"] = plan.location
-
-    event = service.events().insert(
-        calendarId="primary", body=body, sendUpdates="all"
-    ).execute()
-    link = event.get("htmlLink")
-    repo.mark_round_booked(session, round_, link)
-    log.info("[booking] plan %d time %d booked -> %s", plan.id, round_.ordinal, link)
+    provider = provider_for_account(session, account)
+    created = provider.create_event(
+        summary=plan.title,
+        start=round_.start,
+        end=round_.end,
+        attendee_emails=attendee_emails,
+        location=plan.location,
+        description="Scheduled by Nudgy — the people here said this time works.",
+    )
+    repo.mark_round_booked(session, round_, created.link)
+    log.info("[booking] plan %d time %d booked -> %s", plan.id, round_.ordinal, created.link)
     return {
         "booked": True,
-        "event_link": link,
-        "event_id": event.get("id"),
+        "event_link": created.link,
+        "event_id": created.id,
         "attendees": attendee_emails,
     }

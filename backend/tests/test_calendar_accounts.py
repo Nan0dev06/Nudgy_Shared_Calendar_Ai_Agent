@@ -194,10 +194,8 @@ def test_busy_unions_across_a_members_calendars(Session, monkeypatch):
         repo.upsert_calendar_account(s, user, "google", "amir@work.com", '{"token":"work"}')
         group = repo.create_group(s, "Crew", user)
 
-        # credentials_from_json just passes the token string through (no refresh);
-        # query_busy returns a different, overlapping block per calendar.
-        monkeypatch.setattr(availability, "credentials_from_json",
-                            lambda tj: (tj, None))
+        # Stub the provider seam: one overlapping busy block per calendar, keyed
+        # by that account's token, so no Google call happens.
         base = datetime(2026, 1, 5, tzinfo=timezone.utc)
         blocks = {
             '{"token":"personal"}': [(base.replace(hour=8, minute=30),
@@ -205,8 +203,15 @@ def test_busy_unions_across_a_members_calendars(Session, monkeypatch):
             '{"token":"work"}':     [(base.replace(hour=9),
                                       base.replace(hour=10))],
         }
-        monkeypatch.setattr(availability, "query_busy",
-                            lambda creds, start, end: blocks[creds])
+
+        class FakeProvider:
+            def __init__(self, token):
+                self._token = token
+            def get_busy(self, time_min, time_max):
+                return blocks[self._token]
+
+        monkeypatch.setattr(availability, "provider_for_account",
+                            lambda session, account: FakeProvider(account.token_json))
 
         now = base.replace(hour=8)
         members = availability.fetch_busy_for_group(s, group, now, days_ahead=1)

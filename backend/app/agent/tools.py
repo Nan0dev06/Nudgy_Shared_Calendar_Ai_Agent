@@ -274,7 +274,7 @@ def _parse_slot(args: dict) -> tuple[datetime, datetime] | dict:
 def _suggest_venues(ctx: ToolContext, args: dict) -> dict:
     if ctx.group is None:
         return {"error": "The user is not in a group yet."}
-    from app.auth.google import credentials_from_json
+    from app.calendars import provider_for_account
     from app.tools.locations import suggest_venues_for_slot
 
     slot = _parse_slot(args)
@@ -286,19 +286,18 @@ def _suggest_venues(ctx: ToolContext, args: dict) -> dict:
     # Location anchoring reads each member's PRIMARY calendar (one "where is this
     # person" signal per member); availability is the place that unions all their
     # calendars, not this.
-    members_with_creds = []
+    members_with_providers = []
     if not args.get("near"):
         for m in repo.get_group_members(ctx.session, ctx.group.id):
             account = repo.get_primary_calendar_account(ctx.session, m)
             if account is None:
                 continue
-            creds, refreshed = credentials_from_json(account.token_json)
-            if refreshed:
-                repo.set_account_token(ctx.session, account, refreshed)
-            members_with_creds.append((m.email, creds))
+            members_with_providers.append(
+                (m.email, provider_for_account(ctx.session, account))
+            )
 
     return suggest_venues_for_slot(
-        members_with_creds, start, end,
+        members_with_providers, start, end,
         kind=args.get("kind", "cafe"),
         near=args.get("near"),
     )

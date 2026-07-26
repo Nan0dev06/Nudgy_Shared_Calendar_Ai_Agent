@@ -18,10 +18,9 @@ from zoneinfo import ZoneInfo
 
 from sqlalchemy.orm import Session
 
-from app.auth.google import credentials_from_json
+from app.calendars import provider_for_account
 from app.db.models import Group, User
 from app.db import repo
-from app.tools.freebusy import query_busy
 from app.tools.slots import (
     Interval,
     complement,
@@ -76,15 +75,12 @@ def fetch_busy_for_group(
             continue
         # Union busy across EVERY calendar this person connected — being busy on
         # any one of them (personal, work, …) makes them busy. This is what keeps
-        # one user = one free/busy truth across all their calendars.
+        # one user = one free/busy truth across all their calendars. Each provider
+        # persists its own silent token refresh (see from_account).
         busy: list[Interval] = []
         for account in accounts:
-            creds, refreshed = credentials_from_json(account.token_json)
-            if refreshed:  # token was expired and we refreshed it — persist it
-                repo.set_account_token(session, account, refreshed)
-                log.info("[freebusy] %s/%s — token refreshed & saved",
-                         user.email, account.external_email)
-            busy += query_busy(creds, now, window_end)
+            provider = provider_for_account(session, account)
+            busy += provider.get_busy(now, window_end)
         busy = merge_intervals(busy)
         log.info("[freebusy] %s — %d busy block(s) across %d calendar(s)",
                  user.email, len(busy), len(accounts))
