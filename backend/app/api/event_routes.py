@@ -22,6 +22,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_current_user
+from app.calendars import provider_for_account
 from app.db.models import GroupEvent, User
 from app.db import repo
 from app.db.session import get_session
@@ -166,32 +167,22 @@ def _sync_to_google(
     account = repo.get_primary_calendar_account(session, creator)
     if account is None:
         return {"ok": False, "reason": "Your Google Calendar isn't connected."}
-    from googleapiclient.discovery import build
-
-    from app.auth.google import credentials_from_json
 
     member_emails = {m.email for m in repo.get_group_members(session, group_id)}
     attendees = [e for e in invite_emails if e in member_emails] or sorted(member_emails)
     try:
-        creds, refreshed = credentials_from_json(account.token_json)
-        if refreshed:
-            repo.set_account_token(session, account, refreshed)
-        service = build("calendar", "v3", credentials=creds, cache_discovery=False)
-        gcal_body = {
-            "summary": event.title,
-            "start": {"dateTime": event.start.astimezone(timezone.utc).isoformat()},
-            "end": {"dateTime": event.end.astimezone(timezone.utc).isoformat()},
-            "attendees": [{"email": e} for e in attendees],
-            "description": "Created in Nudgy.",
-        }
-        if event.location:
-            gcal_body["location"] = event.location
-        created = service.events().insert(
-            calendarId="primary", body=gcal_body, sendUpdates="all"
-        ).execute()
-        repo.set_event_gcal(session, event, created.get("id"), created.get("htmlLink"))
-        log.info("[events] %d synced to Google -> %s", event.id, created.get("htmlLink"))
-        return {"ok": True, "event_link": created.get("htmlLink")}
+        provider = provider_for_account(session, account)
+        created = provider.create_event(
+            summary=event.title,
+            start=event.start,
+            end=event.end,
+            attendee_emails=attendees,
+            location=event.location,
+            description="Created in Nudgy.",
+        )
+        repo.set_event_gcal(session, event, created.id, created.link)
+        log.info("[events] %d synced to Google -> %s", event.id, created.link)
+        return {"ok": True, "event_link": created.link}
     except Exception as exc:
         log.exception("[events] Google sync failed for event %d", event.id)
         return {"ok": False, "reason": f"{type(exc).__name__}: {exc}"}
@@ -268,18 +259,9 @@ def _delete_from_google(session: Session, event: GroupEvent) -> dict:
     account = repo.get_primary_calendar_account(session, creator) if creator else None
     if account is None:
         return {"ok": False, "reason": "Creator's calendar not connected."}
-    from googleapiclient.discovery import build
-
-    from app.auth.google import credentials_from_json
-
     try:
-        creds, refreshed = credentials_from_json(account.token_json)
-        if refreshed:
-            repo.set_account_token(session, account, refreshed)
-        service = build("calendar", "v3", credentials=creds, cache_discovery=False)
-        service.events().delete(
-            calendarId="primary", eventId=event.gcal_event_id, sendUpdates="all"
-        ).execute()
+        provider = provider_for_account(session, account)
+        provider.delete_event(event.gcal_event_id)
         return {"ok": True}
     except Exception as exc:
         log.exception("[events] Google delete failed for event %d", event.id)
