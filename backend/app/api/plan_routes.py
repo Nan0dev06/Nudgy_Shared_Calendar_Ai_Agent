@@ -32,7 +32,9 @@ from app.api.deps import get_current_user
 from app.db.models import Plan, User
 from app.db import repo
 from app.db.session import get_session
-from app.tools.plan_service import day_label, member_ballot, plan_tally, time_label
+from app.tools.plan_service import (
+    day_label, load_plan_state, member_ballot, plan_tally, time_label,
+)
 
 log = logging.getLogger("nudgy.agent")
 
@@ -65,8 +67,11 @@ class AddRoundsBody(BaseModel):
 
 
 def _plan_json(session: Session, plan: Plan, viewer: User, tz_name: str) -> dict:
-    active = repo.get_active_round(session, plan)
-    ballot = member_ballot(session, plan, viewer)
+    # one fetch of the plan's vote state, reused by both the ballot and (for the
+    # host) the tally — see plan_service.load_plan_state
+    state = load_plan_state(session, plan)
+    active = state.active
+    ballot = member_ballot(session, plan, viewer, state=state)
     is_host = viewer.id == plan.created_by
     host = session.get(User, plan.created_by)
 
@@ -103,7 +108,7 @@ def _plan_json(session: Session, plan: Plan, viewer: User, tz_name: str) -> dict
         },
     }
     if is_host:
-        t = plan_tally(session, plan, tz_name)
+        t = plan_tally(session, plan, tz_name, state=state)
         out["host_box"] = {
             "interested": t.interested,
             "not_interested": t.not_interested,

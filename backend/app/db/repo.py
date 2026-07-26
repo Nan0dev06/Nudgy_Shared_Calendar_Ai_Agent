@@ -10,7 +10,7 @@ import secrets
 from datetime import timezone
 
 from sqlalchemy import select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 
 from app.db.models import (
     EventRsvp, Group, GroupEvent, InterestVote, Membership, Plan, PlaceReview,
@@ -269,8 +269,16 @@ def cast_time_vote(session: Session, round_: TimeRound, user: User, yes: bool) -
 
 
 def get_interest_votes(session: Session, plan: Plan) -> dict[str, bool]:
-    """email -> yes/no for everyone who answered the plan's interest question."""
-    rows = session.scalars(select(InterestVote).where(InterestVote.plan_id == plan.id))
+    """email -> yes/no for everyone who answered the plan's interest question.
+
+    joinedload pulls each voter's User in the same query — without it, reading
+    v.user.email lazy-loads one row per vote (N+1), and this runs on the poll
+    page's 5s refresh for every open plan."""
+    rows = session.scalars(
+        select(InterestVote)
+        .where(InterestVote.plan_id == plan.id)
+        .options(joinedload(InterestVote.user))
+    )
     return {v.user.email: v.yes for v in rows}
 
 
@@ -278,7 +286,11 @@ def get_time_votes(session: Session, round_: TimeRound | None) -> dict[str, bool
     """email -> yes/no for everyone who voted on this candidate time."""
     if round_ is None:
         return {}
-    rows = session.scalars(select(TimeVote).where(TimeVote.round_id == round_.id))
+    rows = session.scalars(
+        select(TimeVote)
+        .where(TimeVote.round_id == round_.id)
+        .options(joinedload(TimeVote.user))
+    )
     return {v.user.email: v.yes for v in rows}
 
 
