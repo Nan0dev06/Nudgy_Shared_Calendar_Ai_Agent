@@ -33,7 +33,8 @@ from app.db.models import Plan, User
 from app.db import repo
 from app.db.session import get_session
 from app.tools.plan_service import (
-    day_label, load_plan_state, member_ballot, plan_tally, time_label,
+    advance_to_next_time, confirm_active_time, day_label, load_plan_state,
+    member_ballot, plan_tally, time_label,
 )
 
 log = logging.getLogger("nudgy.agent")
@@ -243,6 +244,58 @@ def add_rounds(
     repo.append_rounds(session, plan, slots)
     log.info("[plan %d] %s appended %d candidate time(s)", plan.id, user.email, len(slots))
     return _plan_json(session, plan, user, user.timezone)
+
+
+def _host_open_plan(session: Session, user: User, plan_id: int) -> Plan:
+    """Resolve a plan for a HOST-ONLY move: it must exist, be in the user's
+    group, the user must be its host, and it must still be open."""
+    plan = repo.get_plan(session, plan_id)
+    if plan is None:
+        raise HTTPException(status_code=404, detail="No such plan.")
+    _require_membership(session, user, plan.group_id)
+    if user.id != plan.created_by:
+        raise HTTPException(status_code=403, detail="Only the host who suggested this plan can do that.")
+    if plan.status != "open":
+        raise HTTPException(status_code=400, detail=f"This plan is already {plan.status}.")
+    return plan
+
+
+@router.post("/plans/{plan_id}/lock-in")
+def lock_in_time(
+    plan_id: int,
+    user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+):
+    """Host move — commit the active time and book ONLY its yes-voters. This is a
+    direct, deterministic path to the calendar; the agent can also do it via chat,
+    but a real booking should never hinge on the model interpreting a sentence.
+    The host guard + revert-on-failure live in plan_service.confirm_active_time."""
+    plan = _host_open_plan(session, user, plan_id)
+    result = confirm_active_time(session, plan, user, user.timezone)
+    if result.get("error"):
+        raise HTTPException(status_code=400, detail=result["error"])
+    if result.get("action") == "book_failed":
+        # Google refused/threw; the round was reverted to active so the host retries.
+        raise HTTPException(status_code=502,
+                            detail=result.get("error") or "The calendar booking failed — try again.")
+    log.info("[plan %d] host %s locked in via API", plan.id, user.email)
+    return {"action": result.get("action"), "plan": _plan_json(session, plan, user, user.timezone)}
+
+
+@router.post("/plans/{plan_id}/next-time")
+def next_time(
+    plan_id: int,
+    user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+):
+    """Host move — drop the active time and ask the next queued one to the whole
+    interested cohort. Out of times -> the plan closes (dead)."""
+    plan = _host_open_plan(session, user, plan_id)
+    result = advance_to_next_time(session, plan, user, user.timezone)
+    if result.get("error"):
+        raise HTTPException(status_code=400, detail=result["error"])
+    log.info("[plan %d] host %s advanced time via API (%s)", plan.id, user.email, result.get("action"))
+    return {"action": result.get("action"), "plan": _plan_json(session, plan, user, user.timezone)}
 
 
 @router.post("/plans/{plan_id}/interest")
