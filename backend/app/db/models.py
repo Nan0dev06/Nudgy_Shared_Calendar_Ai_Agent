@@ -40,6 +40,12 @@ class User(Base):
     # token into a CalendarAccount; nothing writes it after that. A later
     # migration drops it. Read calendars via `calendar_accounts`, never here.
     token_json: Mapped[str | None] = mapped_column(EncryptedString, default=None)
+    # Email/password login (Phase 1): scrypt-encoded hash (see core/passwords.py).
+    # None for identities that only sign in via Google/Microsoft — a user can have
+    # both. email_verified gates password login (a social login sets it True, since
+    # the provider already verified the address).
+    password_hash: Mapped[str | None] = mapped_column(String, default=None)
+    email_verified: Mapped[bool] = mapped_column(default=False)
     timezone: Mapped[str] = mapped_column(String, default="Asia/Beirut")
     # optional user-chosen name; UI falls back to deriving one from the email
     display_name: Mapped[str | None] = mapped_column(String, default=None)

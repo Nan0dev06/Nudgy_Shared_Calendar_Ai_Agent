@@ -88,14 +88,39 @@ def set_account_token(session: Session, account: CalendarAccount, token_json: st
 def login_with_google(session: Session, email: str, token_json: str) -> User:
     """Google sign-in: find-or-create the identity, then attach or refresh its
     Google calendar account. Identity (User.email) is decoupled from the
-    calendar; for a Google login the two addresses currently coincide."""
+    calendar; for a Google login the two addresses currently coincide. Google has
+    already verified the address, so the identity counts as email-verified."""
     user = get_user_by_email(session, email)
     if user is None:
-        user = User(email=email)
+        user = User(email=email, email_verified=True)
         session.add(user)
+        session.commit()
+    elif not user.email_verified:
+        user.email_verified = True
         session.commit()
     upsert_calendar_account(session, user, "google", email, token_json)
     return user
+
+
+# ------------------------------------------------------------- email/password
+
+def create_password_user(session: Session, email: str, password_hash: str) -> User:
+    """A new email/password identity — no calendar, unverified until they click
+    the verification link."""
+    user = User(email=email, password_hash=password_hash, email_verified=False)
+    session.add(user)
+    session.commit()
+    return user
+
+
+def set_password(session: Session, user: User, password_hash: str) -> None:
+    user.password_hash = password_hash
+    session.commit()
+
+
+def mark_email_verified(session: Session, user: User) -> None:
+    user.email_verified = True
+    session.commit()
 
 
 # ----------------------------------------------------------------- groups
