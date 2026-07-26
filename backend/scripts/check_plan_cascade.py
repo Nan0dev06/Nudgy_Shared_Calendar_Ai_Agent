@@ -89,7 +89,8 @@ def main() -> None:
         assert result.get("action") == "booked", result
         print(f"[7] host locked it in -> BOOKED for {result['attendees']}\n    {result['event_link']}")
 
-        creds, _ = credentials_from_json(host.token_json)
+        account = repo.get_primary_calendar_account(session, host)
+        creds, _ = credentials_from_json(account.token_json)
         service = build("calendar", "v3", credentials=creds, cache_discovery=False)
         service.events().delete(calendarId="primary", eventId=result["event_id"],
                                 sendUpdates="all").execute()

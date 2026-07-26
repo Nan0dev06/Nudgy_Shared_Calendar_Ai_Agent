@@ -64,7 +64,7 @@ def google_callback(request: Request, session: Session = Depends(get_session)):
     flow.fetch_token(code=code)
     creds = flow.credentials
     email = get_account_email(creds)
-    user = repo.upsert_user_token(session, email, creds.to_json())
+    user = repo.login_with_google(session, email, creds.to_json())
 
     # logged in — back to the app with the signed cookie set. max_age makes the
     # browser drop it at the same TTL the server enforces (see deps.SESSION_TTL_SECONDS).

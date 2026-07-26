@@ -13,8 +13,8 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session, joinedload
 
 from app.db.models import (
-    EventRsvp, Group, GroupEvent, InterestVote, Membership, Plan, PlaceReview,
-    TimeRound, TimeVote, User,
+    CalendarAccount, EventRsvp, Group, GroupEvent, InterestVote, Membership,
+    Plan, PlaceReview, TimeRound, TimeVote, User,
 )
 
 
@@ -24,26 +24,78 @@ def get_user_by_email(session: Session, email: str) -> User | None:
     return session.scalar(select(User).where(User.email == email))
 
 
-def upsert_user_token(session: Session, email: str, token_json: str) -> User:
-    """Create the user if new, and store/refresh their OAuth token."""
-    user = get_user_by_email(session, email)
-    if user is None:
-        user = User(email=email, token_json=token_json)
-        session.add(user)
-    else:
-        user.token_json = token_json
-    session.commit()
-    return user
-
-
-def set_user_token(session: Session, user: User, token_json: str) -> None:
-    """Persist a refreshed token back to the DB (used after a silent refresh)."""
-    user.token_json = token_json
-    session.commit()
-
-
 def get_user(session: Session, user_id: int) -> User | None:
     return session.get(User, user_id)
+
+
+# ------------------------------------------------------------- calendar accounts
+# Identity is decoupled from calendars (Phase 1): OAuth tokens live on
+# CalendarAccount, one per connected calendar, not on the User.
+
+def get_calendar_accounts(session: Session, user: User) -> list[CalendarAccount]:
+    """A user's connected calendar accounts — those actually holding a token.
+
+    Availability reads union across ALL of these (one person = one free/busy
+    truth). A row with no token is a stub and is skipped."""
+    return [a for a in user.calendar_accounts if a.token_json]
+
+
+def get_primary_calendar_account(session: Session, user: User) -> CalendarAccount | None:
+    """The user's default WRITABLE calendar — where bookings and synced events
+    land. The account flagged primary, else the earliest-connected one."""
+    accounts = get_calendar_accounts(session, user)
+    if not accounts:
+        return None
+    for a in accounts:
+        if a.is_primary:
+            return a
+    return accounts[0]  # calendar_accounts is ordered by created_at
+
+
+def upsert_calendar_account(
+    session: Session, user: User, provider: str, external_email: str, token_json: str,
+) -> CalendarAccount:
+    """Create or refresh a user's connection for (provider, external_email).
+
+    The user's first connected calendar becomes the primary (default writable)
+    one; reconnecting an existing calendar just refreshes its token.
+
+    Mutates through the `calendar_accounts` relationship (not a bare add) so the
+    user's in-memory collection stays in sync — with expire_on_commit=False a
+    freshly-created user would otherwise keep a cached-empty collection and reads
+    right after the write would miss the new account."""
+    for account in user.calendar_accounts:  # loads the collection if needed
+        if account.provider == provider and account.external_email == external_email:
+            account.token_json = token_json
+            session.commit()
+            return account
+    account = CalendarAccount(
+        provider=provider, external_email=external_email, token_json=token_json,
+        is_primary=not user.calendar_accounts,  # first one connected = default
+    )
+    user.calendar_accounts.append(account)  # back_populates sets user_id on flush
+    session.commit()
+    return account
+
+
+def set_account_token(session: Session, account: CalendarAccount, token_json: str) -> None:
+    """Persist a refreshed OAuth token back to the account (after a silent
+    refresh), so a token expired mid-session never goes stale on disk."""
+    account.token_json = token_json
+    session.commit()
+
+
+def login_with_google(session: Session, email: str, token_json: str) -> User:
+    """Google sign-in: find-or-create the identity, then attach or refresh its
+    Google calendar account. Identity (User.email) is decoupled from the
+    calendar; for a Google login the two addresses currently coincide."""
+    user = get_user_by_email(session, email)
+    if user is None:
+        user = User(email=email)
+        session.add(user)
+        session.commit()
+    upsert_calendar_account(session, user, "google", email, token_json)
+    return user
 
 
 # ----------------------------------------------------------------- groups

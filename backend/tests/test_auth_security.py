@@ -59,7 +59,7 @@ def test_matching_state_is_allowed_through(monkeypatch):
 
     monkeypatch.setattr(auth_routes, "build_web_flow", lambda uri: FakeFlow())
     monkeypatch.setattr(auth_routes, "get_account_email", lambda c: "sam@x.com")
-    monkeypatch.setattr(auth_routes.repo, "upsert_user_token",
+    monkeypatch.setattr(auth_routes.repo, "login_with_google",
                         lambda s, e, t: FakeUser())
     monkeypatch.setattr(FakeFlow, "credentials",
                         type("C", (), {"to_json": lambda self: "{}"})())

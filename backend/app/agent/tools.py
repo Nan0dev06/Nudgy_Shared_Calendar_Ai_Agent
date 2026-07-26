@@ -283,14 +283,18 @@ def _suggest_venues(ctx: ToolContext, args: dict) -> dict:
     start, end = slot
 
     # A user-named area needs nobody's calendar, so don't touch their tokens.
+    # Location anchoring reads each member's PRIMARY calendar (one "where is this
+    # person" signal per member); availability is the place that unions all their
+    # calendars, not this.
     members_with_creds = []
     if not args.get("near"):
         for m in repo.get_group_members(ctx.session, ctx.group.id):
-            if not m.calendar_connected:
+            account = repo.get_primary_calendar_account(ctx.session, m)
+            if account is None:
                 continue
-            creds, refreshed = credentials_from_json(m.token_json)
+            creds, refreshed = credentials_from_json(account.token_json)
             if refreshed:
-                repo.set_user_token(ctx.session, m, refreshed)
+                repo.set_account_token(ctx.session, account, refreshed)
             members_with_creds.append((m.email, creds))
 
     return suggest_venues_for_slot(

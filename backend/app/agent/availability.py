@@ -69,16 +69,25 @@ def fetch_busy_for_group(
     members = repo.get_group_members(session, group.id)
     results: list[MemberBusy] = []
     for user in members:
-        if not user.calendar_connected:
+        accounts = repo.get_calendar_accounts(session, user)
+        if not accounts:
             log.info("[freebusy] %s — NOT connected, skipping", user.email)
             results.append(MemberBusy(email=user.email, connected=False))
             continue
-        creds, refreshed = credentials_from_json(user.token_json)
-        if refreshed:  # token was expired and we refreshed it — persist it
-            repo.set_user_token(session, user, refreshed)
-            log.info("[freebusy] %s — token refreshed & saved", user.email)
-        busy = query_busy(creds, now, window_end)
-        log.info("[freebusy] %s — %d busy block(s)", user.email, len(busy))
+        # Union busy across EVERY calendar this person connected — being busy on
+        # any one of them (personal, work, …) makes them busy. This is what keeps
+        # one user = one free/busy truth across all their calendars.
+        busy: list[Interval] = []
+        for account in accounts:
+            creds, refreshed = credentials_from_json(account.token_json)
+            if refreshed:  # token was expired and we refreshed it — persist it
+                repo.set_account_token(session, account, refreshed)
+                log.info("[freebusy] %s/%s — token refreshed & saved",
+                         user.email, account.external_email)
+            busy += query_busy(creds, now, window_end)
+        busy = merge_intervals(busy)
+        log.info("[freebusy] %s — %d busy block(s) across %d calendar(s)",
+                 user.email, len(busy), len(accounts))
         results.append(MemberBusy(email=user.email, connected=True, busy=busy))
     return results
 

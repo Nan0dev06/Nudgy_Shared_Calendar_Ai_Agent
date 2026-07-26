@@ -67,6 +67,31 @@ def init_db() -> None:
     for name, table, column in _LATE_INDEXES:
         with engine.begin() as conn:
             conn.execute(text(f"CREATE INDEX IF NOT EXISTS {name} ON {table} ({column})"))
+    _backfill_calendar_accounts(engine)
+
+
+def _backfill_calendar_accounts(engine) -> None:
+    """Identity/calendar split (Phase 1): move each pre-split user's Google token
+    into a CalendarAccount row. Idempotent — the NOT EXISTS guard makes it a
+    no-op once a user's account exists, so it's safe on every startup.
+
+    The token value is copied VERBATIM (still ciphertext, same key), so it reads
+    back through EncryptedString exactly as before — no re-encryption, no
+    decrypt/re-encrypt round-trip. TRUE / CURRENT_TIMESTAMP are portable across
+    SQLite and Postgres.
+    """
+    with engine.begin() as conn:
+        conn.execute(text(
+            "INSERT INTO calendar_accounts "
+            "  (user_id, provider, external_email, token_json, color, "
+            "   sync_setting, is_primary, created_at) "
+            "SELECT u.id, 'google', u.email, u.token_json, NULL, 'two_way', "
+            "       TRUE, CURRENT_TIMESTAMP "
+            "  FROM users u "
+            " WHERE u.token_json IS NOT NULL "
+            "   AND NOT EXISTS (SELECT 1 FROM calendar_accounts ca "
+            "                    WHERE ca.user_id = u.id AND ca.provider = 'google')"
+        ))
 
 
 def get_session() -> Iterator[Session]:
