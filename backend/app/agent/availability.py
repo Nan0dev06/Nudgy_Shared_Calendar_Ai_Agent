@@ -19,6 +19,7 @@ from zoneinfo import ZoneInfo
 from sqlalchemy.orm import Session
 
 from app.calendars import provider_for_account
+from app.calendars.cache import freebusy_cache
 from app.db.models import Group, User
 from app.db import repo
 from app.tools.slots import (
@@ -75,12 +76,18 @@ def fetch_busy_for_group(
             continue
         # Union busy across EVERY calendar this person connected — being busy on
         # any one of them (personal, work, …) makes them busy. This is what keeps
-        # one user = one free/busy truth across all their calendars. Each provider
-        # persists its own silent token refresh (see from_account).
+        # one user = one free/busy truth across all their calendars. Reads go
+        # through the short-TTL cache; the provider (and its silent token refresh)
+        # is built only on a cache miss.
         busy: list[Interval] = []
         for account in accounts:
-            provider = provider_for_account(session, account)
-            busy += provider.get_busy(now, window_end)
+            busy += freebusy_cache.get_busy(
+                account.id,
+                lambda tmin, tmax, acct=account: (
+                    provider_for_account(session, acct).get_busy(tmin, tmax)
+                ),
+                now, window_end,
+            )
         busy = merge_intervals(busy)
         log.info("[freebusy] %s — %d busy block(s) across %d calendar(s)",
                  user.email, len(busy), len(accounts))

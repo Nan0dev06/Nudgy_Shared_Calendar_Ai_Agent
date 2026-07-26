@@ -21,6 +21,7 @@ import logging
 from sqlalchemy.orm import Session
 
 from app.calendars import provider_for_account
+from app.calendars.cache import freebusy_cache
 from app.db.models import Plan, TimeRound, User
 from app.db import repo
 
@@ -55,6 +56,10 @@ def book_round_event(
         description="Scheduled by Nudgy — the people here said this time works.",
     )
     repo.mark_round_booked(session, round_, created.link)
+    # The organizer's calendar just gained this event — drop their cached busy so
+    # the next availability read reflects it immediately (attendees' entries age
+    # out via TTL). Booking itself never reads the cache.
+    freebusy_cache.invalidate(account.id)
     log.info("[booking] plan %d time %d booked -> %s", plan.id, round_.ordinal, created.link)
     return {
         "booked": True,
