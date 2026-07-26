@@ -44,6 +44,11 @@ GOOGLE_REDIRECT_URI = os.getenv(
     "GOOGLE_REDIRECT_URI", "http://localhost:8000/auth/google/callback"
 )
 
+# Public origin of the app, used to build links in transactional email
+# (verification, magic-link, password reset). Same origin the frontend is served
+# from; override in production to the real domain.
+APP_BASE_URL = os.getenv("APP_BASE_URL", "http://localhost:8000").rstrip("/")
+
 # --- LLM provider -----------------------------------------------------------
 # Which model backend Nudgy talks to. Default is Groq (free tier, fast).
 #   groq      -> free cloud, needs GROQ_API_KEY   (recommended for the demo)
