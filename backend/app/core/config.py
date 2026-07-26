@@ -68,6 +68,13 @@ LLM_BASE_URL = os.getenv("LLM_BASE_URL", _cfg["base_url"])
 # overrides, else fall back to the provider-specific key.
 LLM_API_KEY = os.getenv("LLM_API_KEY") or GROQ_API_KEY or "ollama"
 
+# Short-TTL display cache for member busy ranges (see calendars/cache.py). A
+# person's free/busy doesn't change second-to-second, so caching it briefly cuts
+# redundant calendar-API calls on group loads / the 5s poll / multi-step agent
+# runs, and stays inside free API quotas. 90s sits in the v1-decided 60–120s
+# band. This is a DISPLAY cache only — booking always reads live.
+FREEBUSY_CACHE_TTL_SECONDS = float(os.getenv("FREEBUSY_CACHE_TTL_SECONDS", "90"))
+
 # Big-intake guard: if an estimated request would exceed this many input
 # tokens, the agent asks the user to narrow the request instead of firing a
 # call that the model would reject. 0 disables the check. Sized to catch

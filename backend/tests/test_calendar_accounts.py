@@ -212,6 +212,8 @@ def test_busy_unions_across_a_members_calendars(Session, monkeypatch):
 
         monkeypatch.setattr(availability, "provider_for_account",
                             lambda session, account: FakeProvider(account.token_json))
+        from app.calendars.cache import freebusy_cache
+        freebusy_cache.clear()  # singleton persists across tests — isolate
 
         now = base.replace(hour=8)
         members = availability.fetch_busy_for_group(s, group, now, days_ahead=1)
