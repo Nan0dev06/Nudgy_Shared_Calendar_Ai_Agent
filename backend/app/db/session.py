@@ -42,6 +42,17 @@ _LATE_COLUMNS = [
     ("events", "anonymous", "BOOLEAN DEFAULT TRUE NOT NULL"),
 ]
 
+# indexes on hot foreign keys, added after a DB existed. create_all only builds
+# indexes for tables it CREATES, not existing ones, so these need an explicit
+# pass. CREATE INDEX IF NOT EXISTS is idempotent on both SQLite and Postgres, so
+# it's safe to run on every startup (and a no-op once the index is there).
+_LATE_INDEXES = [
+    ("ix_plans_group_id", "plans", "group_id"),
+    ("ix_events_group_id", "events", "group_id"),
+    ("ix_events_created_by", "events", "created_by"),
+    ("ix_memberships_group_id", "memberships", "group_id"),
+]
+
 
 def init_db() -> None:
     Base.metadata.create_all(engine)
@@ -53,6 +64,9 @@ def init_db() -> None:
         if column not in cols:
             with engine.begin() as conn:
                 conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}"))
+    for name, table, column in _LATE_INDEXES:
+        with engine.begin() as conn:
+            conn.execute(text(f"CREATE INDEX IF NOT EXISTS {name} ON {table} ({column})"))
 
 
 def get_session() -> Iterator[Session]:

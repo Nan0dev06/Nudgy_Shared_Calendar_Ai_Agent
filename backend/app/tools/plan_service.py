@@ -19,6 +19,7 @@ human in the loop before anything is written to a calendar.
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 from zoneinfo import ZoneInfo
 
 from sqlalchemy.orm import Session
@@ -48,25 +49,49 @@ def day_label(plan: Plan, tz_name: str) -> str:
 
 # ----------------------------------------------------------------- reading
 
-def plan_tally(session: Session, plan: Plan, tz_name: str) -> Tally:
-    """The host's summary box for the plan's active time."""
+@dataclass
+class PlanState:
+    """A plan's live vote state, fetched once and reused. GET /plans builds both
+    the member ballot AND (for the host) the tally per plan; without this each
+    did its own round-trips for the active round + both vote sets — doubled up,
+    every 5s, for every open plan. Load once, pass to both."""
+    active: TimeRound | None
+    member_emails: list[str]
+    interest_votes: dict[str, bool]
+    time_votes: dict[str, bool]
+    times_left: int
+
+
+def load_plan_state(session: Session, plan: Plan) -> PlanState:
     active = repo.get_active_round(session, plan)
-    return tally(
-        [m.email for m in repo.get_group_members(session, plan.group_id)],
-        repo.get_interest_votes(session, plan),
-        repo.get_time_votes(session, active),
-        active_time_label=time_label(active, tz_name) if active else None,
+    return PlanState(
+        active=active,
+        member_emails=[m.email for m in repo.get_group_members(session, plan.group_id)],
+        interest_votes=repo.get_interest_votes(session, plan),
+        time_votes=repo.get_time_votes(session, active),
         times_left=repo.count_queued_rounds(session, plan),
     )
 
 
-def member_ballot(session: Session, plan: Plan, user: User) -> Ballot:
+def plan_tally(session: Session, plan: Plan, tz_name: str, *, state: PlanState | None = None) -> Tally:
+    """The host's summary box for the plan's active time."""
+    st = state or load_plan_state(session, plan)
+    return tally(
+        st.member_emails,
+        st.interest_votes,
+        st.time_votes,
+        active_time_label=time_label(st.active, tz_name) if st.active else None,
+        times_left=st.times_left,
+    )
+
+
+def member_ballot(session: Session, plan: Plan, user: User, *, state: PlanState | None = None) -> Ballot:
     """What this member should be answering right now — their step of the cascade."""
-    active = repo.get_active_round(session, plan)
+    st = state or load_plan_state(session, plan)
     return ballot_for(
-        interest=repo.get_interest_votes(session, plan).get(user.email),
-        time_vote=repo.get_time_votes(session, active).get(user.email),
-        has_active_time=active is not None,
+        interest=st.interest_votes.get(user.email),
+        time_vote=st.time_votes.get(user.email),
+        has_active_time=st.active is not None,
         plan_status=plan.status,
     )
 
