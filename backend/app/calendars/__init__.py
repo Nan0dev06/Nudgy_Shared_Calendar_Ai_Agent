@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session
 
 from app.calendars.base import CalendarProvider, CreatedEvent, Interval
 from app.calendars.google import GoogleCalendarProvider
+from app.calendars.microsoft import MicrosoftCalendarProvider
 from app.db.models import CalendarAccount
 
 __all__ = [
@@ -24,8 +25,5 @@ def provider_for_account(session: Session, account: CalendarAccount) -> Calendar
     if account.provider == "google":
         return GoogleCalendarProvider.from_account(session, account)
     if account.provider == "microsoft":
-        raise NotImplementedError(
-            "Microsoft/Outlook calendars land in Phase 1 Branch 4 "
-            "(needs an Azure app registration)."
-        )
+        return MicrosoftCalendarProvider.from_account(session, account)
     raise ValueError(f"Unknown calendar provider: {account.provider!r}")

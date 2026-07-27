@@ -85,21 +85,39 @@ def set_account_token(session: Session, account: CalendarAccount, token_json: st
     session.commit()
 
 
-def login_with_google(session: Session, email: str, token_json: str) -> User:
-    """Google sign-in: find-or-create the identity, then attach or refresh its
-    Google calendar account. Identity (User.email) is decoupled from the
-    calendar; for a Google login the two addresses currently coincide. Google has
-    already verified the address, so the identity counts as email-verified."""
+def _login_with_provider(
+    session: Session, provider: str, email: str, token_json: str,
+) -> User:
+    """Social sign-in (Google/Microsoft): find-or-create the identity, then
+    attach or refresh its calendar account for this provider. Identity
+    (User.email) is decoupled from calendars; a social login also grants a
+    calendar in one step. The provider already verified the address, so the
+    identity counts as email-verified. If the same email already exists (e.g. a
+    Google user now adding Microsoft), both calendars hang off the one identity."""
     user = get_user_by_email(session, email)
     if user is None:
         user = User(email=email, email_verified=True)
         session.add(user)
         session.commit()
     elif not user.email_verified:
+        # The email owner is proving control now (the provider verified the
+        # address). Any password sitting on this NOT-yet-verified row was set by
+        # someone who never confirmed the address — possibly an attacker who
+        # pre-registered the email to hijack it later. Discard that unproven
+        # credential; the real owner can set a fresh password via reset.
+        user.password_hash = None
         user.email_verified = True
         session.commit()
-    upsert_calendar_account(session, user, "google", email, token_json)
+    upsert_calendar_account(session, user, provider, email, token_json)
     return user
+
+
+def login_with_google(session: Session, email: str, token_json: str) -> User:
+    return _login_with_provider(session, "google", email, token_json)
+
+
+def login_with_microsoft(session: Session, email: str, token_json: str) -> User:
+    return _login_with_provider(session, "microsoft", email, token_json)
 
 
 # ------------------------------------------------------------- email/password

@@ -33,10 +33,12 @@ def test_google_account_yields_google_provider(monkeypatch):
     assert isinstance(provider, CalendarProvider)
 
 
-def test_microsoft_is_not_wired_yet():
-    account = CalendarAccount(provider="microsoft", external_email="a@out.com", token_json="{}")
-    with pytest.raises(NotImplementedError):
-        provider_for_account(None, account)
+def test_microsoft_account_yields_microsoft_provider():
+    from app.calendars.microsoft import MicrosoftCalendarProvider
+    # a non-expired token so from_account returns without any network refresh
+    token = '{"access_token":"t","refresh_token":"r","expires_at":9999999999}'
+    account = CalendarAccount(provider="microsoft", external_email="a@out.com", token_json=token)
+    assert isinstance(provider_for_account(None, account), MicrosoftCalendarProvider)
 
 
 def test_unknown_provider_raises():

@@ -49,6 +49,28 @@ GOOGLE_REDIRECT_URI = os.getenv(
 # from; override in production to the real domain.
 APP_BASE_URL = os.getenv("APP_BASE_URL", "http://localhost:8000").rstrip("/")
 
+# --- Microsoft / Outlook OAuth (Azure app registration) ----------------------
+# Optional: unset -> Microsoft sign-in + Outlook calendars are simply unavailable
+# (auth/microsoft.py raises a clear error if invoked without them). "common"
+# tenant lets BOTH personal (Outlook.com) and work/school accounts sign in.
+MS_CLIENT_ID = os.getenv("MS_CLIENT_ID", "")
+MS_CLIENT_SECRET = os.getenv("MS_CLIENT_SECRET", "")
+MS_TENANT = os.getenv("MS_TENANT", "common")
+MS_REDIRECT_URI = os.getenv(
+    "MS_REDIRECT_URI", "http://localhost:8000/auth/microsoft/callback"
+)
+# Delegated Graph scopes. offline_access -> refresh_token; Calendars.ReadWrite ->
+# read busy time (calendarView) + write events; User.Read -> the account email;
+# openid/profile/email -> identity. Space-joined at request time.
+MS_SCOPES = [
+    "offline_access",
+    "openid",
+    "profile",
+    "email",
+    "User.Read",
+    "Calendars.ReadWrite",
+]
+
 # --- LLM provider -----------------------------------------------------------
 # Which model backend Nudgy talks to. Default is Groq (free tier, fast).
 #   groq      -> free cloud, needs GROQ_API_KEY   (recommended for the demo)
