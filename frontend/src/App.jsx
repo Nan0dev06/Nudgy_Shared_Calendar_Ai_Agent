@@ -145,6 +145,16 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Landing from the "Connect another calendar" OAuth round-trip: the backend
+  // redirects to /?tab=calendars — open Settings → Calendars so the user sees
+  // the calendar they just connected. CalendarsSection strips the query itself.
+  useEffect(() => {
+    if (new URLSearchParams(window.location.search).get("tab") === "calendars") {
+      setPage("settings");
+      setSettingsTab("Calendars");
+    }
+  }, []);
+
   // push draft changes to the server (debounced; skip the initial mount)
   const draftsBooted = useRef(false);
   useEffect(() => {

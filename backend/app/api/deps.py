@@ -55,3 +55,17 @@ def get_current_user(
     if user is None:
         raise HTTPException(status_code=401, detail="Unknown user.")
     return user
+
+
+def resolve_session_user(cookie_value: str | None, session: Session) -> User | None:
+    """Non-raising twin of get_current_user for places that can't use Depends and
+    must tolerate a missing/expired cookie — e.g. the OAuth callback deciding
+    whether it's a *connect* (attach a calendar to the already-logged-in user) or
+    a plain *login*. Returns None instead of raising when there's no valid session."""
+    if not cookie_value:
+        return None
+    try:
+        data = _signer.loads(cookie_value, max_age=SESSION_TTL_SECONDS)
+    except (BadSignature, SignatureExpired):
+        return None
+    return repo.get_user(session, data.get("user_id"))

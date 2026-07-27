@@ -19,7 +19,7 @@ from sqlalchemy.orm import Session
 
 from app.api.deps import (
     COOKIE_KWARGS, COOKIE_NAME, SESSION_TTL_SECONDS, get_current_user,
-    make_session_cookie,
+    make_session_cookie, resolve_session_user,
 )
 from app.auth import tokens
 from app.auth.google import build_web_flow, get_account_email
@@ -30,7 +30,7 @@ from app.auth.microsoft import (
 )
 from app.core.config import APP_BASE_URL, GOOGLE_REDIRECT_URI
 from app.core.passwords import hash_password, verify_password
-from app.db.models import User
+from app.db.models import CalendarAccount, User
 from app.db import repo
 from app.db.session import get_session
 from app.mailer import send_email
@@ -45,6 +45,14 @@ router = APIRouter(prefix="/auth", tags=["auth"])
 STATE_COOKIE = "nudgy_oauth_state"
 STATE_TTL_SECONDS = 600
 
+# Marks an OAuth round-trip started from "Connect another calendar" (a logged-in
+# user adding a calendar) rather than "Sign in". The callback reuses the SAME
+# provider redirect URI for both — the URI is fixed in the provider console — so
+# this cookie is how the one callback tells the two flows apart. In connect mode
+# the callback attaches the calendar to the CURRENT session user and does NOT
+# issue a new session (no identity switch).
+CONNECT_COOKIE = "nudgy_oauth_connect"
+
 
 @router.get("/google/login")
 def google_login():
@@ -53,6 +61,19 @@ def google_login():
     response = RedirectResponse(url)
     # SameSite=Lax still sends this on Google's top-level redirect back to us.
     response.set_cookie(STATE_COOKIE, state, max_age=STATE_TTL_SECONDS, **COOKIE_KWARGS)
+    return response
+
+
+@router.get("/google/connect")
+def google_connect(user: User = Depends(get_current_user)):
+    """Add a Google calendar to the ALREADY-logged-in user (not a login). Same
+    consent screen as sign-in; the CONNECT_COOKIE tells the shared callback to
+    attach it to this user instead of switching identity."""
+    flow = build_web_flow(GOOGLE_REDIRECT_URI)
+    url, state = flow.authorization_url(access_type="offline", prompt="consent")
+    response = RedirectResponse(url)
+    response.set_cookie(STATE_COOKIE, state, max_age=STATE_TTL_SECONDS, **COOKIE_KWARGS)
+    response.set_cookie(CONNECT_COOKIE, "1", max_age=STATE_TTL_SECONDS, **COOKIE_KWARGS)
     return response
 
 
@@ -73,8 +94,17 @@ def google_callback(request: Request, session: Session = Depends(get_session)):
     flow.fetch_token(code=code)
     creds = flow.credentials
     email = get_account_email(creds)
-    user = repo.login_with_google(session, email, creds.to_json())
 
+    # Connect mode: attach this calendar to the current user and keep their
+    # session as-is — never find-or-create by the provider's email (that's login,
+    # and here it would silently switch identity).
+    if request.cookies.get(CONNECT_COOKIE):
+        current = resolve_session_user(request.cookies.get(COOKIE_NAME), session)
+        if current is not None:
+            repo.upsert_calendar_account(session, current, "google", email, creds.to_json())
+            return _finish_connect("google")
+
+    user = repo.login_with_google(session, email, creds.to_json())
     # logged in — back to the app with the signed cookie set. max_age makes the
     # browser drop it at the same TTL the server enforces (see deps.SESSION_TTL_SECONDS).
     response = RedirectResponse("/")
@@ -83,6 +113,7 @@ def google_callback(request: Request, session: Session = Depends(get_session)):
         max_age=SESSION_TTL_SECONDS, **COOKIE_KWARGS,
     )
     response.delete_cookie(STATE_COOKIE)  # single use
+    response.delete_cookie(CONNECT_COOKIE)  # clean up if it lingered
     return response
 
 
@@ -96,6 +127,17 @@ def microsoft_login():
     state = secrets.token_urlsafe(32)
     response = RedirectResponse(build_authorize_url(state))
     response.set_cookie(STATE_COOKIE, state, max_age=STATE_TTL_SECONDS, **COOKIE_KWARGS)
+    return response
+
+
+@router.get("/microsoft/connect")
+def microsoft_connect(user: User = Depends(get_current_user)):
+    """Add a Microsoft/Outlook calendar to the already-logged-in user (see
+    google_connect — same connect-vs-login machinery)."""
+    state = secrets.token_urlsafe(32)
+    response = RedirectResponse(build_authorize_url(state))
+    response.set_cookie(STATE_COOKIE, state, max_age=STATE_TTL_SECONDS, **COOKIE_KWARGS)
+    response.set_cookie(CONNECT_COOKIE, "1", max_age=STATE_TTL_SECONDS, **COOKIE_KWARGS)
     return response
 
 
@@ -114,10 +156,17 @@ def microsoft_callback(request: Request, session: Session = Depends(get_session)
         raise HTTPException(status_code=400, detail="Missing ?code from Microsoft.")
     token_json = exchange_code(code)
     email = ms_get_account_email(token_json)
-    user = repo.login_with_microsoft(session, email, token_json)
 
+    if request.cookies.get(CONNECT_COOKIE):
+        current = resolve_session_user(request.cookies.get(COOKIE_NAME), session)
+        if current is not None:
+            repo.upsert_calendar_account(session, current, "microsoft", email, token_json)
+            return _finish_connect("microsoft")
+
+    user = repo.login_with_microsoft(session, email, token_json)
     response = _issue_session(user)          # signed session cookie -> "/"
     response.delete_cookie(STATE_COOKIE)     # single use
+    response.delete_cookie(CONNECT_COOKIE)
     return response
 
 
@@ -227,6 +276,77 @@ def logout():
     return response
 
 
+# ============================================================ calendar accounts
+# Identity is decoupled from calendars: one User can have several CalendarAccounts
+# (Google/Outlook, one per connection). These endpoints manage the connected set
+# — colour, sync mode, which is primary (writable), and disconnect. Adding a new
+# one goes through the OAuth *connect* flow above, not here.
+
+_SYNC_SETTINGS = {"none", "one_way", "two_way"}
+
+
+def _calendar_json(a: CalendarAccount) -> dict:
+    return {
+        "id": a.id,
+        "provider": a.provider,
+        "external_email": a.external_email,
+        "color": a.color,
+        "sync_setting": a.sync_setting,
+        "is_primary": a.is_primary,
+    }
+
+
+@router.get("/me/calendars")
+def list_calendars(
+    user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+):
+    """The user's connected calendars (those holding a token)."""
+    return [_calendar_json(a) for a in repo.get_calendar_accounts(session, user)]
+
+
+class PatchCalendarBody(BaseModel):
+    color: str | None = Field(default=None, max_length=32)
+    sync_setting: str | None = Field(default=None, max_length=20)
+    # only `true` is meaningful — you PROMOTE a calendar to primary; there's always
+    # exactly one, so it isn't something you toggle off directly.
+    is_primary: bool | None = None
+
+
+@router.patch("/me/calendars/{account_id}")
+def patch_calendar(
+    account_id: int,
+    body: PatchCalendarBody,
+    user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+):
+    account = repo.get_calendar_account(session, user, account_id)
+    if account is None:
+        raise HTTPException(status_code=404, detail="No such calendar.")
+    if body.sync_setting is not None:
+        if body.sync_setting not in _SYNC_SETTINGS:
+            raise HTTPException(status_code=400, detail="sync_setting must be none, one_way, or two_way.")
+        repo.set_account_sync_setting(session, account, body.sync_setting)
+    if body.color is not None:
+        repo.set_account_color(session, account, body.color or None)  # "" clears it
+    if body.is_primary:
+        repo.set_primary_calendar_account(session, user, account)
+    return _calendar_json(account)
+
+
+@router.delete("/me/calendars/{account_id}")
+def disconnect_calendar(
+    account_id: int,
+    user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+):
+    account = repo.get_calendar_account(session, user, account_id)
+    if account is None:
+        raise HTTPException(status_code=404, detail="No such calendar.")
+    repo.disconnect_calendar_account(session, user, account)
+    return {"ok": True}
+
+
 # ============================================================ email / password
 # Identity decoupled from calendars: a person can sign in with email + password
 # (or a magic-link) and use Nudgy with NO external calendar connected. Google
@@ -254,6 +374,15 @@ def _issue_session(user: User, redirect_to: str = "/") -> RedirectResponse:
         COOKIE_NAME, make_session_cookie(user.id),
         max_age=SESSION_TTL_SECONDS, **COOKIE_KWARGS,
     )
+    return response
+
+
+def _finish_connect(provider: str) -> RedirectResponse:
+    """End a successful *connect* round-trip: back to the app's Calendars settings
+    (the SPA reads ?tab=calendars), single-use cookies cleared, session untouched."""
+    response = RedirectResponse(f"/?tab=calendars&connected={provider}")
+    response.delete_cookie(STATE_COOKIE)
+    response.delete_cookie(CONNECT_COOKIE)
     return response
 
 
@@ -375,7 +504,10 @@ def request_password_reset(body: EmailBody, session: Session = Depends(get_sessi
             tokens.PASSWORD_RESET,
             {"uid": user.id, "stamp": tokens.password_stamp(user.password_hash)},
         )
-        link = f"{APP_BASE_URL}/auth/reset?token={token}"
+        # Land on the SPA (served at "/"), which reads ?mode=reset&token and shows
+        # the reset form. `/auth/reset` has no route — it would 404 before the app
+        # ever loaded. (verify/magic differ: those ARE backend GETs that redirect.)
+        link = f"{APP_BASE_URL}/?mode=reset&token={token}"
         send_email(
             email, "Reset your Nudgy password",
             f"Reset your password here:\n\n{link}\n\nExpires in 1 hour. "

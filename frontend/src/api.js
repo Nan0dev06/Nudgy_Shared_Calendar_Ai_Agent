@@ -26,6 +26,19 @@ export const api = {
   me: () => req("/auth/me"),
   patchMe: (body) => req("/auth/me", { method: "PATCH", body }),
   logout: () => req("/auth/logout", { method: "POST" }),
+  // email / password identity (decoupled from calendars). register / magicLink /
+  // requestReset intentionally return a generic message whether or not the email
+  // exists — the UI shows it verbatim and never reveals which case it hit.
+  login: (email, password) =>
+    req("/auth/login", { method: "POST", body: { email, password } }),
+  register: (email, password) =>
+    req("/auth/register", { method: "POST", body: { email, password } }),
+  magicLink: (email) =>
+    req("/auth/magic-link", { method: "POST", body: { email } }),
+  requestReset: (email) =>
+    req("/auth/password/reset-request", { method: "POST", body: { email } }),
+  resetPassword: (token, password) =>
+    req("/auth/password/reset", { method: "POST", body: { token, password } }),
   groups: () => req("/groups"),
   createGroup: (name) => req("/groups", { method: "POST", body: { name } }),
   joinGroup: (invite_code) =>
@@ -51,6 +64,14 @@ export const api = {
   putDrafts: (drafts) => req("/auth/me/drafts", { method: "PUT", body: { drafts } }),
   getMemory: () => req("/auth/me/memory"),
   putMemory: (memory) => req("/auth/me/memory", { method: "PUT", body: { memory } }),
+  // connected calendars (identity/calendar split): list + manage color / sync
+  // mode / which is primary / disconnect. Adding one goes via the OAuth connect
+  // URLs below, not here.
+  calendars: () => req("/auth/me/calendars"),
+  patchCalendar: (id, body) =>
+    req(`/auth/me/calendars/${id}`, { method: "PATCH", body }),
+  disconnectCalendar: (id) =>
+    req(`/auth/me/calendars/${id}`, { method: "DELETE" }),
   events: (groupId) => req(`/groups/${groupId}/events`),
   createEvent: (groupId, body) =>
     req(`/groups/${groupId}/events`, { method: "POST", body }),
@@ -63,4 +84,14 @@ export const api = {
     req("/chat", { method: "POST", body: { group_id, message, history } }),
 };
 
+// Social sign-in: the same OAuth consent that logs the user in also connects
+// their calendar in one step. Both are full-page redirects (backend sets the
+// session cookie on the callback and redirects back to "/").
 export const loginUrl = "/auth/google/login";
+export const msLoginUrl = "/auth/microsoft/login";
+
+// Connect an ADDITIONAL calendar to the already-logged-in account (vs. the login
+// URLs above, which sign you in). The backend attaches it to the current session
+// user and redirects to /?tab=calendars&connected=<provider>.
+export const googleConnectUrl = "/auth/google/connect";
+export const msConnectUrl = "/auth/microsoft/connect";
