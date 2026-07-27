@@ -41,8 +41,10 @@ export function colorForMember(email, index) {
 
 export function decorateMembers(rawMembers, myEmail) {
   return (rawMembers || []).map((m, i) => ({
+    id: m.id,
     email: m.email,
     connected: m.calendar_connected,
+    isOwner: m.is_owner,
     name: nameFromEmail(m.email),
     initials: initials(m.email),
     color: colorForMember(m.email, i),

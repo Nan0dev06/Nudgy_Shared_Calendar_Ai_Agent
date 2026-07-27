@@ -8,6 +8,7 @@ POST  /auth/logout          -> clears the cookie
 """
 from __future__ import annotations
 
+import logging
 import re
 import secrets
 from zoneinfo import ZoneInfo
@@ -36,6 +37,7 @@ from app.db.session import get_session
 from app.mailer import send_email
 
 router = APIRouter(prefix="/auth", tags=["auth"])
+log = logging.getLogger("nudgy.auth")
 
 # Ties a callback back to the /login that started it. Without this, anyone can
 # feed a victim's browser an authorization code of their choosing and silently
@@ -90,21 +92,28 @@ def google_callback(request: Request, session: Session = Depends(get_session)):
     code = request.query_params.get("code")
     if not code:
         raise HTTPException(status_code=400, detail="Missing ?code from Google.")
-    flow = build_web_flow(GOOGLE_REDIRECT_URI)
-    flow.fetch_token(code=code)
-    creds = flow.credentials
-    email = get_account_email(creds)
+    try:
+        flow = build_web_flow(GOOGLE_REDIRECT_URI)
+        flow.fetch_token(code=code)
+        creds = flow.credentials
+        email = get_account_email(creds)
 
-    # Connect mode: attach this calendar to the current user and keep their
-    # session as-is — never find-or-create by the provider's email (that's login,
-    # and here it would silently switch identity).
-    if request.cookies.get(CONNECT_COOKIE):
-        current = resolve_session_user(request.cookies.get(COOKIE_NAME), session)
-        if current is not None:
-            repo.upsert_calendar_account(session, current, "google", email, creds.to_json())
-            return _finish_connect("google")
+        # Connect mode: attach this calendar to the current user and keep their
+        # session as-is — never find-or-create by the provider's email (that's
+        # login, and here it would silently switch identity).
+        if request.cookies.get(CONNECT_COOKIE):
+            current = resolve_session_user(request.cookies.get(COOKIE_NAME), session)
+            if current is not None:
+                repo.upsert_calendar_account(session, current, "google", email, creds.to_json())
+                return _finish_connect("google")
 
-    user = repo.login_with_google(session, email, creds.to_json())
+        user = repo.login_with_google(session, email, creds.to_json())
+    except Exception:
+        # e.g. Google Calendar API not enabled on the Cloud project, a reused
+        # code (invalid_grant), or a bad client secret — a clear retry beats a 500.
+        log.exception("Google sign-in callback failed")
+        return _auth_error_redirect("google")
+
     # logged in — back to the app with the signed cookie set. max_age makes the
     # browser drop it at the same TTL the server enforces (see deps.SESSION_TTL_SECONDS).
     response = RedirectResponse("/")
@@ -154,16 +163,23 @@ def microsoft_callback(request: Request, session: Session = Depends(get_session)
     code = request.query_params.get("code")
     if not code:
         raise HTTPException(status_code=400, detail="Missing ?code from Microsoft.")
-    token_json = exchange_code(code)
-    email = ms_get_account_email(token_json)
+    try:
+        token_json = exchange_code(code)
+        email = ms_get_account_email(token_json)
 
-    if request.cookies.get(CONNECT_COOKIE):
-        current = resolve_session_user(request.cookies.get(COOKIE_NAME), session)
-        if current is not None:
-            repo.upsert_calendar_account(session, current, "microsoft", email, token_json)
-            return _finish_connect("microsoft")
+        if request.cookies.get(CONNECT_COOKIE):
+            current = resolve_session_user(request.cookies.get(COOKIE_NAME), session)
+            if current is not None:
+                repo.upsert_calendar_account(session, current, "microsoft", email, token_json)
+                return _finish_connect("microsoft")
 
-    user = repo.login_with_microsoft(session, email, token_json)
+        user = repo.login_with_microsoft(session, email, token_json)
+    except Exception:
+        # e.g. a bad/expired MS_CLIENT_SECRET (401 from the token endpoint) or a
+        # Graph hiccup — recoverable retry beats a 500.
+        log.exception("Microsoft sign-in callback failed")
+        return _auth_error_redirect("microsoft")
+
     response = _issue_session(user)          # signed session cookie -> "/"
     response.delete_cookie(STATE_COOKIE)     # single use
     response.delete_cookie(CONNECT_COOKIE)
@@ -381,6 +397,17 @@ def _finish_connect(provider: str) -> RedirectResponse:
     """End a successful *connect* round-trip: back to the app's Calendars settings
     (the SPA reads ?tab=calendars), single-use cookies cleared, session untouched."""
     response = RedirectResponse(f"/?tab=calendars&connected={provider}")
+    response.delete_cookie(STATE_COOKIE)
+    response.delete_cookie(CONNECT_COOKIE)
+    return response
+
+
+def _auth_error_redirect(provider: str) -> RedirectResponse:
+    """A provider call blew up mid-callback (bad creds, an API not enabled on the
+    Google Cloud/Azure side, a network hiccup). Send the user back to the sign-in
+    screen with a clear, recoverable message instead of a raw 500. The real cause
+    is logged server-side (log.exception) for the operator to read."""
+    response = RedirectResponse(f"/?auth_error={provider}")
     response.delete_cookie(STATE_COOKIE)
     response.delete_cookie(CONNECT_COOKIE)
     return response

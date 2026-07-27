@@ -13,7 +13,7 @@ const TABS = ["Account", "Calendars", "Memory", "Reviews", "Groups"];
 export default function SettingsPage() {
   const {
     me, displayName, saveProfile, memory, setMemory,
-    groups, members, activeGroup, setModal, logout, setSettingsTab, settingsTab,
+    groups, setModal, setSettingsTab, settingsTab, logout,
     reviews, removeReview, setPage,
   } = useApp();
 
@@ -300,28 +300,8 @@ export default function SettingsPage() {
               </div>
             </div>
             {groups.map((g) => (
-              <div key={g.id} style={prefCard}>
-                <div style={{ flex: 1 }}>
-                  <div style={{ fontSize: 14.5, fontWeight: 600 }}>{g.name}</div>
-                  <div style={{ fontSize: 12, color: "#8c8577", marginTop: 2 }}>
-                    Invite code: <b style={{ letterSpacing: ".08em" }}>{g.invite_code}</b>
-                  </div>
-                </div>
-                {g.id === activeGroup?.id && (
-                  <div style={{ display: "flex" }}>
-                    {members.map((m, i) => (
-                      <div key={m.email} title={m.name} style={{ ...avatar(m.color, 24), marginRight: i < members.length - 1 ? -7 : 0 }} />
-                    ))}
-                  </div>
-                )}
-                <CopyChip text={g.invite_code} />
-              </div>
+              <GroupCard key={g.id} group={g} />
             ))}
-            {activeGroup && (
-              <div className="hov-glass" style={{ ...gpill(true), alignSelf: "flex-start" }} onClick={() => setModal({ type: "invite" })}>
-                Invite people to {activeGroup.name}
-              </div>
-            )}
           </>
         )}
 
@@ -532,6 +512,137 @@ function ColorSwatch({ value, onPick }) {
           </div>
         </>
       )}
+    </div>
+  );
+}
+
+// ---- one group's card: rename, invite code, members, leave/delete ----------
+function GroupCard({ group }) {
+  const {
+    members, me, activeGroupId, setActiveGroupId, setModal,
+    renameGroup, regenerateCode, deleteGroup, leaveGroup, removeMember,
+  } = useApp();
+  const [editing, setEditing] = useState(false);
+  const [nameDraft, setNameDraft] = useState(group.name);
+  const [busy, setBusy] = useState(false);
+  const isActive = group.id === activeGroupId;
+  const owner = group.is_owner;
+
+  const saveName = async () => {
+    const n = nameDraft.trim();
+    if (n && n !== group.name) await renameGroup(group.id, n);
+    setEditing(false);
+  };
+  const roll = async () => {
+    if (window.confirm("Roll a new invite code? The current link stops working."))
+      await regenerateCode(group.id);
+  };
+  const guarded = (fn) => async () => {
+    setBusy(true);
+    try { await fn(); } finally { setBusy(false); }
+  };
+  const del = guarded(async () => {
+    if (window.confirm(`Delete “${group.name}”? Its plans and events are removed for everyone. This can't be undone.`))
+      await deleteGroup(group.id);
+  });
+  const leave = guarded(async () => {
+    if (window.confirm(`Leave “${group.name}”?`)) await leaveGroup(group.id);
+  });
+
+  return (
+    <div style={{ ...prefCard, flexDirection: "column", alignItems: "stretch", gap: 10 }}>
+      <div style={{ display: "flex", alignItems: "flex-start", gap: 10 }}>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          {editing ? (
+            <div style={{ display: "flex", gap: 8 }}>
+              <input
+                autoFocus value={nameDraft}
+                onChange={(e) => setNameDraft(e.target.value)}
+                onKeyDown={(e) => e.key === "Enter" && saveName()}
+                style={fieldStyle}
+              />
+              <div className="hov-lift-sm" style={dpill(true)} onClick={saveName}>Save</div>
+            </div>
+          ) : (
+            <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+              <span style={{ fontSize: 14.5, fontWeight: 600 }}>{group.name}</span>
+              {isActive && <span style={{ fontSize: 10.5, fontWeight: 600, color: SAGE }}>active</span>}
+              {owner && (
+                <span
+                  style={{ fontSize: 11, color: "#a49c8c", cursor: "pointer" }}
+                  onClick={() => { setNameDraft(group.name); setEditing(true); }}
+                >
+                  · rename
+                </span>
+              )}
+            </div>
+          )}
+          <div style={{ fontSize: 12, color: "#8c8577", marginTop: 3 }}>
+            Invite code: <b style={{ letterSpacing: ".08em" }}>{group.invite_code}</b>
+            {owner && (
+              <span
+                style={{ marginLeft: 8, color: "#2B5B84", fontWeight: 600, cursor: "pointer" }}
+                onClick={roll}
+              >
+                regenerate
+              </span>
+            )}
+          </div>
+        </div>
+        <CopyChip text={group.invite_code} />
+      </div>
+
+      {isActive && members.length > 0 && (
+        <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
+          {members.map((m) => (
+            <div key={m.email} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12.5 }}>
+              <div style={avatar(m.color, 18)} />
+              <span style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                {m.name || m.email}
+                {m.email === me?.email ? " (you)" : ""}
+                {m.isOwner ? " · owner" : ""}
+              </span>
+              {owner && !m.isOwner && m.email !== me?.email && m.id != null && (
+                <span
+                  style={{ fontSize: 11.5, color: "#b08a80", fontWeight: 600, cursor: "pointer", flex: "none" }}
+                  onClick={() =>
+                    window.confirm(`Remove ${m.name || m.email} from ${group.name}?`) &&
+                    removeMember(group.id, m.id)
+                  }
+                >
+                  remove
+                </span>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+
+      <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+        {isActive ? (
+          <span className="hov-glass" style={gpill(true)} onClick={() => setModal({ type: "invite" })}>
+            Invite people
+          </span>
+        ) : (
+          <span className="hov-glass" style={gpill(true)} onClick={() => setActiveGroupId(group.id)}>
+            Switch to this
+          </span>
+        )}
+        <span
+          style={{ marginLeft: "auto", fontSize: 12, fontWeight: 600, color: "#b08a80", cursor: busy ? "default" : "pointer", opacity: busy ? 0.5 : 1 }}
+          onClick={leave}
+        >
+          Leave
+        </span>
+        {owner && (
+          <span
+            style={{ fontSize: 12, fontWeight: 600, color: "#c0392b", cursor: busy ? "default" : "pointer", opacity: busy ? 0.5 : 1 }}
+            onClick={del}
+          >
+            Delete
+          </span>
+        )}
+      </div>
     </div>
   );
 }

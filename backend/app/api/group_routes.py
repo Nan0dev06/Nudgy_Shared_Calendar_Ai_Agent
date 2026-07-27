@@ -34,8 +34,30 @@ class JoinGroupBody(BaseModel):
     invite_code: str = Field(min_length=6, max_length=6)
 
 
-def _group_json(group: Group) -> dict:
-    return {"id": group.id, "name": group.name, "invite_code": group.invite_code}
+def _group_json(group: Group, user: User) -> dict:
+    return {
+        "id": group.id,
+        "name": group.name,
+        "invite_code": group.invite_code,
+        "is_owner": group.created_by == user.id,
+    }
+
+
+def _get_group_or_404(session: Session, group_id: int) -> Group:
+    group = session.get(Group, group_id)
+    if group is None:
+        raise HTTPException(status_code=404, detail="No such group.")
+    return group
+
+
+def _require_member(session: Session, group_id: int, user: User) -> None:
+    if repo.get_membership(session, group_id, user.id) is None:
+        raise HTTPException(status_code=403, detail="You are not in this group.")
+
+
+def _require_owner(group: Group, user: User) -> None:
+    if group.created_by != user.id:
+        raise HTTPException(status_code=403, detail="Only the group owner can do that.")
 
 
 @router.post("")
@@ -45,7 +67,7 @@ def create_group(
     session: Session = Depends(get_session),
 ):
     group = repo.create_group(session, body.name, user)
-    return _group_json(group)
+    return _group_json(group, user)
 
 
 @router.post("/join")
@@ -58,7 +80,7 @@ def join_group(
     if group is None:
         raise HTTPException(status_code=404, detail="No group with that invite code.")
     repo.add_member(session, group, user)
-    return _group_json(group)
+    return _group_json(group, user)
 
 
 @router.get("")
@@ -66,7 +88,105 @@ def my_groups(
     user: User = Depends(get_current_user),
     session: Session = Depends(get_session),
 ):
-    return [_group_json(g) for g in repo.get_user_groups(session, user)]
+    return [_group_json(g, user) for g in repo.get_user_groups(session, user)]
+
+
+class RenameGroupBody(BaseModel):
+    name: str = Field(min_length=1, max_length=80)
+
+
+@router.patch("/{group_id}")
+def rename_group(
+    group_id: int,
+    body: RenameGroupBody,
+    user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+):
+    group = _get_group_or_404(session, group_id)
+    _require_owner(group, user)
+    repo.rename_group(session, group, body.name.strip())
+    return _group_json(group, user)
+
+
+@router.post("/{group_id}/regenerate-code")
+def regenerate_code(
+    group_id: int,
+    user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+):
+    """Roll a new invite code — the old shared link stops working."""
+    group = _get_group_or_404(session, group_id)
+    _require_owner(group, user)
+    repo.regenerate_invite_code(session, group)
+    return _group_json(group, user)
+
+
+@router.delete("/{group_id}")
+def delete_group(
+    group_id: int,
+    user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+):
+    group = _get_group_or_404(session, group_id)
+    _require_owner(group, user)
+    repo.delete_group(session, group)
+    return {"ok": True}
+
+
+@router.delete("/{group_id}/members/{member_id}")
+def remove_member(
+    group_id: int,
+    member_id: int,
+    user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+):
+    """Leave (member_id == you) or kick (owner removing someone else). When the
+    OWNER leaves, ownership passes to the earliest-joined remaining member, or the
+    group is deleted if they were the last one."""
+    group = _get_group_or_404(session, group_id)
+    _require_member(session, group_id, user)
+    is_self = member_id == user.id
+    is_owner = group.created_by == user.id
+    # kicking anyone but yourself requires ownership. (A non-owner therefore can
+    # never remove the owner — this gate stops them first. The owner removing
+    # themselves is a leave, handled below.)
+    if not is_self and not is_owner:
+        raise HTTPException(status_code=403, detail="Only the owner can remove members.")
+
+    if not repo.remove_membership(session, group_id, member_id):
+        raise HTTPException(status_code=404, detail="That person isn't in this group.")
+
+    if is_self and is_owner:
+        return _handle_owner_departure(session, group)
+    return {"ok": True}
+
+
+@router.post("/{group_id}/leave")
+def leave_group(
+    group_id: int,
+    user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+):
+    """Self-service leave (the frontend needn't know its own member id). When the
+    owner leaves, ownership transfers to the earliest survivor, or the group is
+    deleted if they were the last one."""
+    group = _get_group_or_404(session, group_id)
+    _require_member(session, group_id, user)
+    repo.remove_membership(session, group_id, user.id)
+    if group.created_by == user.id:
+        return _handle_owner_departure(session, group)
+    return {"ok": True}
+
+
+def _handle_owner_departure(session: Session, group: Group) -> dict:
+    """The owner just left: hand the group to the earliest-joined survivor, or
+    delete it if nobody remains."""
+    remaining = repo.get_group_members(session, group.id)  # ordered by joined_at
+    if remaining:
+        repo.transfer_ownership(session, group, remaining[0].id)
+        return {"ok": True}
+    repo.delete_group(session, group)
+    return {"ok": True, "deleted": True}
 
 
 @router.get("/{group_id}/members")
@@ -75,12 +195,16 @@ def group_members(
     user: User = Depends(get_current_user),
     session: Session = Depends(get_session),
 ):
-    groups = {g.id for g in repo.get_user_groups(session, user)}
-    if group_id not in groups:
-        raise HTTPException(status_code=403, detail="You are not in this group.")
+    _require_member(session, group_id, user)
+    group = _get_group_or_404(session, group_id)
     members = repo.get_group_members(session, group_id)
     return [
-        {"email": m.email, "calendar_connected": m.calendar_connected}
+        {
+            "id": m.id,
+            "email": m.email,
+            "calendar_connected": m.calendar_connected,
+            "is_owner": m.id == group.created_by,
+        }
         for m in members
     ]
 
