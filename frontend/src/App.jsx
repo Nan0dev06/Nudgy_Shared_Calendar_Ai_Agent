@@ -321,6 +321,57 @@ export default function App() {
     [loadGroups, pushActivity, setActiveGroupId]
   );
 
+  // ---- group lifecycle (owner-gated server-side) ---------------------------
+  const renameGroup = useCallback(
+    async (groupId, name) => {
+      await api.renameGroup(groupId, name);
+      await loadGroups();
+    },
+    [loadGroups]
+  );
+
+  const regenerateCode = useCallback(
+    async (groupId) => {
+      const g = await api.regenerateCode(groupId);
+      await loadGroups();
+      return g;
+    },
+    [loadGroups]
+  );
+
+  // after leaving/deleting, fall back to another group (or none -> the gate)
+  const afterGroupRemoved = useCallback(
+    async (groupId) => {
+      const gs = await loadGroups();
+      if (activeGroupId === groupId) setActiveGroupId(gs[0]?.id ?? null);
+    },
+    [loadGroups, activeGroupId, setActiveGroupId]
+  );
+
+  const deleteGroup = useCallback(
+    async (groupId) => {
+      await api.deleteGroup(groupId);
+      await afterGroupRemoved(groupId);
+    },
+    [afterGroupRemoved]
+  );
+
+  const leaveGroup = useCallback(
+    async (groupId) => {
+      await api.leaveGroup(groupId);
+      await afterGroupRemoved(groupId);
+    },
+    [afterGroupRemoved]
+  );
+
+  const removeMember = useCallback(
+    async (groupId, memberId) => {
+      await api.removeMember(groupId, memberId);
+      await refreshGroupData();
+    },
+    [refreshGroupData]
+  );
+
   const createEvent = useCallback(
     async (body) => {
       const out = await api.createEvent(activeGroupId, body);
@@ -730,6 +781,7 @@ export default function App() {
     friendReviews, placeFocus, setPlaceFocus,
     drafts: groupDrafts, addDraft, removeDraft,
     voteInterest, voteTime, createGroup, joinGroup, logout, refreshGroupData,
+    renameGroup, regenerateCode, deleteGroup, leaveGroup, removeMember,
     createEvent, setTaskDone, removeEvent, createPlanDirect, addTimesToPlan,
     removePlan, saveProfile,
     displayName:

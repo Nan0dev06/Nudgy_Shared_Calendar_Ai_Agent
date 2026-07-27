@@ -271,6 +271,64 @@ def get_user_groups(session: Session, user: User) -> list[Group]:
     return list(rows)
 
 
+# --------------------------------------------------------- group lifecycle ops
+# Ownership = Group.created_by. The API layer gates owner-only ops (rename,
+# regenerate code, kick, delete); any member may leave.
+
+def get_membership(session: Session, group_id: int, user_id: int) -> Membership | None:
+    return session.scalar(
+        select(Membership).where(
+            Membership.group_id == group_id, Membership.user_id == user_id
+        )
+    )
+
+
+def rename_group(session: Session, group: Group, name: str) -> Group:
+    group.name = name
+    session.commit()
+    return group
+
+
+def regenerate_invite_code(session: Session, group: Group) -> Group:
+    """Roll a fresh unique invite code — invalidates the old shared link."""
+    code = _new_invite_code()
+    while session.scalar(select(Group).where(Group.invite_code == code)):
+        code = _new_invite_code()
+    group.invite_code = code
+    session.commit()
+    return group
+
+
+def transfer_ownership(session: Session, group: Group, new_owner_id: int) -> None:
+    group.created_by = new_owner_id
+    session.commit()
+
+
+def remove_membership(session: Session, group_id: int, user_id: int) -> bool:
+    """Drop a user's membership (leave or kick). Returns False if they weren't a
+    member. The caller handles owner-departure (transfer or delete) separately."""
+    m = get_membership(session, group_id, user_id)
+    if m is None:
+        return False
+    session.delete(m)
+    session.commit()
+    return True
+
+
+def delete_group(session: Session, group: Group) -> None:
+    """Delete a group and everything scoped to it: plans (with their rounds +
+    votes, via cascade), the group's own events (with their RSVPs, via cascade),
+    and memberships (Group.memberships delete-orphan cascade). Any Google Calendar
+    events already booked stay on attendees' calendars — same as delete_plan."""
+    for plan in get_group_plans(session, group.id):
+        session.delete(plan)
+    events = session.scalars(select(GroupEvent).where(GroupEvent.group_id == group.id))
+    for event in events:
+        session.delete(event)
+    session.delete(group)  # memberships cascade with the group
+    session.commit()
+
+
 # ----------------------------------------------------------------- plans
 
 def create_plan(

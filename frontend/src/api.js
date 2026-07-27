@@ -44,6 +44,16 @@ export const api = {
   joinGroup: (invite_code) =>
     req("/groups/join", { method: "POST", body: { invite_code } }),
   members: (groupId) => req(`/groups/${groupId}/members`),
+  // group lifecycle (owner-gated on the server): rename, roll invite code,
+  // delete; leave is self-service; removeMember is the owner kicking someone.
+  renameGroup: (groupId, name) =>
+    req(`/groups/${groupId}`, { method: "PATCH", body: { name } }),
+  regenerateCode: (groupId) =>
+    req(`/groups/${groupId}/regenerate-code`, { method: "POST" }),
+  deleteGroup: (groupId) => req(`/groups/${groupId}`, { method: "DELETE" }),
+  leaveGroup: (groupId) => req(`/groups/${groupId}/leave`, { method: "POST" }),
+  removeMember: (groupId, memberId) =>
+    req(`/groups/${groupId}/members/${memberId}`, { method: "DELETE" }),
   availability: (groupId, days = 14) =>
     req(`/groups/${groupId}/availability?days_ahead=${days}`),
   plans: (groupId) => req(`/groups/${groupId}/plans`),
