@@ -46,6 +46,20 @@ def book_round_event(
     if account is None:
         return {"error": "Host has no connected calendar."}
 
+    # The host opted their primary calendar out of outbound sync ("none"): the
+    # group's decision still stands (the round is booked in Nudgy), but we write
+    # no calendar event and send no Google invites. Booking never re-decides —
+    # it honors the host's calendar preference.
+    if not repo.account_syncs_out(account):
+        repo.mark_round_booked(session, round_, None)
+        log.info("[booking] plan %d time %d booked WITHOUT calendar sync (sync=none)", plan.id, round_.ordinal)
+        return {
+            "booked": True,
+            "event_link": None,
+            "sync_skipped": True,
+            "attendees": attendee_emails,
+        }
+
     provider = provider_for_account(session, account)
     created = provider.create_event(
         summary=plan.title,
