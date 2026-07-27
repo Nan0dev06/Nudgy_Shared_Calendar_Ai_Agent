@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { heavy, gpill, dpill, fieldStyle, fieldLabel, SAGE } from "../theme.js";
 import { OrbLogo } from "../components/OrbLogo.jsx";
 import { api, loginUrl, msLoginUrl } from "../api.js";
@@ -23,6 +23,15 @@ const COPY = {
 function readResetToken() {
   const p = new URLSearchParams(window.location.search);
   return p.get("mode") === "reset" ? p.get("token") : null;
+}
+
+// The OAuth callback redirects here with ?auth_error=<provider> when a sign-in
+// fails on the provider side (see auth_routes._auth_error_redirect).
+function readAuthError() {
+  const p = new URLSearchParams(window.location.search).get("auth_error");
+  if (!p) return "";
+  const name = p === "microsoft" ? "Microsoft" : "Google";
+  return `We couldn't finish signing in with ${name}. Please try again.`;
 }
 
 // A labelled glass input matching the rest of the app's fields.
@@ -59,8 +68,15 @@ export default function SignIn() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
-  const [err, setErr] = useState("");
+  const [err, setErr] = useState(readAuthError);
   const [notice, setNotice] = useState(""); // generic success/info banner
+
+  // drop ?auth_error= from the URL so a refresh doesn't keep showing the banner
+  useEffect(() => {
+    if (new URLSearchParams(window.location.search).has("auth_error")) {
+      window.history.replaceState({}, "", window.location.pathname);
+    }
+  }, []);
 
   const go = (m) => {
     setMode(m);
