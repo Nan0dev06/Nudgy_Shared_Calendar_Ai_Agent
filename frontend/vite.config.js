@@ -13,10 +13,15 @@ export default defineConfig({
     emptyOutDir: true,
   },
   server: {
+    // Every backend prefix the frontend actually calls must be proxied, or the
+    // request hits Vite (which serves index.html) and the JSON parse fails.
+    // `/polls` was the pre-rename name and is dead — the API is `/plans` now.
     proxy: {
       "/auth": "http://localhost:8000",
       "/groups": "http://localhost:8000",
-      "/polls": "http://localhost:8000",
+      "/plans": "http://localhost:8000",
+      "/events": "http://localhost:8000",
+      "/reviews": "http://localhost:8000",
       "/chat": "http://localhost:8000",
     },
   },

@@ -1,13 +1,14 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useApp } from "../ctx.js";
 import {
   glass, gpill, dpill, dashPill, avatar, fieldStyle, fieldRead, fieldLabel,
-  prefCard,
+  prefCard, SAGE, SLATE, TERRACOTTA, ROSE, MUSTARD, LILAC, AMBER,
 } from "../theme.js";
 import { StarRow, PlacePicker } from "../components/Fields.jsx";
+import { api, googleConnectUrl, msConnectUrl } from "../api.js";
 import { relTime } from "../dates.js";
 
-const TABS = ["Account", "Memory", "Reviews", "Groups"];
+const TABS = ["Account", "Calendars", "Memory", "Reviews", "Groups"];
 
 export default function SettingsPage() {
   const {
@@ -191,6 +192,8 @@ export default function SettingsPage() {
           </>
         )}
 
+        {settingsTab === "Calendars" && <CalendarsSection />}
+
         {settingsTab === "Reviews" && (
           <>
             <div style={{ fontSize: 13, color: "#8c8577", marginTop: -6, lineHeight: 1.5 }}>
@@ -323,6 +326,212 @@ export default function SettingsPage() {
         )}
 
       </div>
+    </div>
+  );
+}
+
+// ---- connected calendars ---------------------------------------------------
+const SWATCHES = [SAGE, SLATE, TERRACOTTA, ROSE, MUSTARD, LILAC, AMBER];
+const SYNC_MODES = [
+  { key: "two_way", label: "Two-way" },
+  { key: "one_way", label: "One-way" },
+  { key: "none", label: "Off" },
+];
+const PROVIDER_LABEL = { google: "Google Calendar", microsoft: "Outlook / Microsoft" };
+
+function ProviderMark({ provider }) {
+  if (provider === "microsoft")
+    return (
+      <svg width="15" height="15" viewBox="0 0 23 23" style={{ flex: "none" }}>
+        <path fill="#f25022" d="M1 1h10v10H1z" />
+        <path fill="#7fba00" d="M12 1h10v10H12z" />
+        <path fill="#00a4ef" d="M1 12h10v10H1z" />
+        <path fill="#ffb900" d="M12 12h10v10H12z" />
+      </svg>
+    );
+  return (
+    <svg width="15" height="15" viewBox="0 0 24 24" style={{ flex: "none" }}>
+      <path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92a5.06 5.06 0 0 1-2.2 3.32v2.77h3.57c2.08-1.92 3.27-4.74 3.27-8.1z" />
+      <path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" />
+      <path fill="#FBBC05" d="M5.84 14.1c-.22-.66-.35-1.36-.35-2.1s.13-1.44.35-2.1V7.06H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.94l3.66-2.84z" />
+      <path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.06l3.66 2.84c.87-2.6 3.3-4.52 6.16-4.52z" />
+    </svg>
+  );
+}
+
+function CalendarsSection() {
+  const [cals, setCals] = useState(null); // null = loading
+  const [err, setErr] = useState("");
+
+  const load = () =>
+    api.calendars().then(setCals).catch((e) => setErr(e.message || "Couldn't load calendars."));
+
+  useEffect(() => {
+    load();
+    // strip the ?tab=calendars&connected=… the connect redirect left on the URL
+    if (window.location.search) window.history.replaceState({}, "", window.location.pathname);
+  }, []);
+
+  // optimistic patch: reflect locally, persist, reconcile with the server row
+  const patch = async (id, body) => {
+    setCals((cs) => cs.map((c) => (c.id === id ? { ...c, ...body } : c)));
+    try {
+      const updated = await api.patchCalendar(id, body);
+      setCals((cs) => cs.map((c) => (c.id === id ? updated : c)));
+    } catch {
+      load();
+    }
+  };
+
+  const makePrimary = async (id) => {
+    setCals((cs) => cs.map((c) => ({ ...c, is_primary: c.id === id })));
+    try {
+      await api.patchCalendar(id, { is_primary: true });
+    } catch {
+      load();
+    }
+  };
+
+  const disconnect = async (id) => {
+    const prev = cals;
+    setCals((cs) => cs.filter((c) => c.id !== id));
+    try {
+      await api.disconnectCalendar(id);
+      load(); // a disconnect can promote a new primary — resync to see it
+    } catch {
+      setCals(prev);
+    }
+  };
+
+  return (
+    <>
+      <div style={{ fontSize: 13, color: "#8c8577", marginTop: -6, lineHeight: 1.5 }}>
+        Calendars you've connected. Nudgy reads free/busy across all of them so it
+        never double-books you; new events and bookings are written to your{" "}
+        <b>primary</b> one. Colors tell them apart on your calendar.
+      </div>
+
+      {err && <div style={{ fontSize: 12.5, color: "#D95D39" }}>{err}</div>}
+      {cals === null && !err && (
+        <div style={{ fontSize: 12.5, color: "#a09889" }}>Loading…</div>
+      )}
+      {cals && cals.length === 0 && (
+        <div style={{ fontSize: 12.5, color: "#a09889" }}>
+          No calendars connected yet. You can use Nudgy without one, or connect
+          your Google/Outlook calendar below so it can see your availability.
+        </div>
+      )}
+
+      {(cals || []).map((c) => (
+        <div key={c.id} style={{ ...prefCard, flexDirection: "column", alignItems: "stretch", gap: 12 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 11 }}>
+            <ColorSwatch value={c.color} onPick={(color) => patch(c.id, { color })} />
+            <ProviderMark provider={c.provider} />
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ fontSize: 13.5, fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                {c.external_email}
+              </div>
+              <div style={{ fontSize: 11, color: "#a09889" }}>{PROVIDER_LABEL[c.provider] || c.provider}</div>
+            </div>
+            {c.is_primary ? (
+              <span style={{ ...gpill(true), background: "rgba(42,157,143,.14)", color: SAGE, cursor: "default", boxShadow: "none", border: "none" }}>
+                Primary
+              </span>
+            ) : (
+              <span
+                className="hov-glass"
+                style={{ ...gpill(true) }}
+                onClick={() => makePrimary(c.id)}
+              >
+                Make primary
+              </span>
+            )}
+          </div>
+
+          <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+            <span style={fieldLabel}>Sync</span>
+            <div style={{ display: "flex", gap: 6 }}>
+              {SYNC_MODES.map((m) => {
+                const on = c.sync_setting === m.key;
+                return (
+                  <span
+                    key={m.key}
+                    onClick={() => !on && patch(c.id, { sync_setting: m.key })}
+                    style={{
+                      ...gpill(true),
+                      cursor: on ? "default" : "pointer",
+                      background: on ? "linear-gradient(160deg, #2A9D8F, #237c72)" : undefined,
+                      color: on ? "#F7F2EA" : "#2D2D2D",
+                      border: on ? "1px solid rgba(255,255,255,.2)" : undefined,
+                    }}
+                  >
+                    {m.label}
+                  </span>
+                );
+              })}
+            </div>
+            <span
+              style={{ marginLeft: "auto", fontSize: 12, fontWeight: 600, color: "#b08a80", cursor: "pointer" }}
+              onClick={() => disconnect(c.id)}
+            >
+              Disconnect
+            </span>
+          </div>
+        </div>
+      ))}
+
+      <div style={{ height: 1, background: "rgba(150,142,128,.22)" }} />
+      <span style={fieldLabel}>Connect another calendar</span>
+      <div style={{ display: "flex", gap: 10 }}>
+        <div className="hov-glass" style={{ ...gpill(false) }} onClick={() => (window.location.href = googleConnectUrl)}>
+          <ProviderMark provider="google" /> Google
+        </div>
+        <div className="hov-glass" style={{ ...gpill(false) }} onClick={() => (window.location.href = msConnectUrl)}>
+          <ProviderMark provider="microsoft" /> Outlook
+        </div>
+      </div>
+    </>
+  );
+}
+
+function ColorSwatch({ value, onPick }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div style={{ position: "relative", flex: "none" }}>
+      <div
+        onClick={() => setOpen((o) => !o)}
+        title="Pick a color"
+        style={{
+          width: 20, height: 20, borderRadius: 7, cursor: "pointer",
+          background: value || "rgba(150,142,128,.35)",
+          border: "2px solid rgba(255,253,247,.9)",
+          boxShadow: "0 1px 3px rgba(96,78,54,.25)",
+        }}
+      />
+      {open && (
+        <>
+          <div style={{ position: "fixed", inset: 0, zIndex: 30 }} onClick={() => setOpen(false)} />
+          <div
+            style={{
+              position: "absolute", top: "calc(100% + 6px)", left: 0, zIndex: 40,
+              display: "flex", gap: 6, padding: 8, borderRadius: 12,
+              background: "rgba(255,253,247,.92)", backdropFilter: "blur(20px)",
+              border: "1px solid rgba(255,255,255,.8)", boxShadow: "0 12px 30px rgba(45,45,45,.18)",
+            }}
+          >
+            {SWATCHES.map((s) => (
+              <div
+                key={s}
+                onClick={() => { onPick(s); setOpen(false); }}
+                style={{
+                  width: 20, height: 20, borderRadius: 6, background: s, cursor: "pointer",
+                  border: value === s ? "2px solid #2D2D2D" : "2px solid transparent",
+                }}
+              />
+            ))}
+          </div>
+        </>
+      )}
     </div>
   );
 }

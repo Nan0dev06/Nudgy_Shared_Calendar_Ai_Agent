@@ -85,6 +85,64 @@ def set_account_token(session: Session, account: CalendarAccount, token_json: st
     session.commit()
 
 
+def get_calendar_account(
+    session: Session, user: User, account_id: int,
+) -> CalendarAccount | None:
+    """One of the user's OWN connected calendars by id — the ownership check for
+    the management endpoints. Scans the relationship (not a global lookup) so one
+    user can never read or mutate another's account. Stubs (no token) are skipped,
+    matching get_calendar_accounts."""
+    for a in user.calendar_accounts:
+        if a.id == account_id and a.token_json:
+            return a
+    return None
+
+
+def set_account_color(session: Session, account: CalendarAccount, color: str | None) -> None:
+    """Set (or clear, with None) the display color that tells this calendar's
+    events apart from another's in the multi-calendar UI."""
+    account.color = color
+    session.commit()
+
+
+def set_account_sync_setting(
+    session: Session, account: CalendarAccount, sync_setting: str,
+) -> None:
+    """Store how in-app events flow to this calendar (none|one_way|two_way).
+    Stored only for now — the sync path doesn't yet read it (v1 decision)."""
+    account.sync_setting = sync_setting
+    session.commit()
+
+
+def set_primary_calendar_account(
+    session: Session, user: User, account: CalendarAccount,
+) -> None:
+    """Make `account` the user's primary (default writable) calendar, clearing the
+    flag on every other so exactly one stays primary — writes (bookings, synced
+    events) always have a single unambiguous target."""
+    for a in user.calendar_accounts:
+        a.is_primary = a.id == account.id
+    session.commit()
+
+
+def disconnect_calendar_account(
+    session: Session, user: User, account: CalendarAccount,
+) -> None:
+    """Remove a connected calendar. If it was primary and other connected calendars
+    remain, promote the earliest-connected survivor so writes still have a target
+    (calendar_accounts is ordered by created_at, so survivors[0] is earliest)."""
+    was_primary = account.is_primary
+    user.calendar_accounts.remove(account)  # delete-orphan cascade deletes the row
+    session.flush()
+    if was_primary:
+        survivors = [a for a in user.calendar_accounts if a.token_json]
+        if survivors:
+            for a in survivors:
+                a.is_primary = False
+            survivors[0].is_primary = True
+    session.commit()
+
+
 def _login_with_provider(
     session: Session, provider: str, email: str, token_json: str,
 ) -> User:
