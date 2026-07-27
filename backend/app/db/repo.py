@@ -100,6 +100,12 @@ def _login_with_provider(
         session.add(user)
         session.commit()
     elif not user.email_verified:
+        # The email owner is proving control now (the provider verified the
+        # address). Any password sitting on this NOT-yet-verified row was set by
+        # someone who never confirmed the address — possibly an attacker who
+        # pre-registered the email to hijack it later. Discard that unproven
+        # credential; the real owner can set a fresh password via reset.
+        user.password_hash = None
         user.email_verified = True
         session.commit()
     upsert_calendar_account(session, user, provider, email, token_json)

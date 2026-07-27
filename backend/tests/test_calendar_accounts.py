@@ -75,6 +75,34 @@ def test_login_with_google_creates_identity_and_primary_account(Session):
         assert user.calendar_connected is True
 
 
+def test_social_login_clears_an_unverified_password(Session):
+    """Account pre-hijacking defense: if an attacker pre-registered the email with
+    a password but never verified it, a later social login by the real owner wipes
+    that unproven password so it can't be used to log in."""
+    from app.core.passwords import hash_password, verify_password
+    with Session() as s:
+        victim = repo.create_password_user(s, "victim@x.com", hash_password("attacker-knows-this"))
+        assert victim.email_verified is False
+        # the real owner signs in with Google (proving they control the address)
+        repo.login_with_google(s, "victim@x.com", '{"token":"g"}')
+        s.refresh(victim)
+        assert victim.email_verified is True
+        assert victim.password_hash is None
+        assert verify_password("attacker-knows-this", victim.password_hash) is False
+
+
+def test_social_login_keeps_an_already_verified_password(Session):
+    """A password the owner already verified is genuine — a later social login
+    must NOT wipe it."""
+    from app.core.passwords import hash_password, verify_password
+    with Session() as s:
+        user = repo.create_password_user(s, "sam@x.com", hash_password("my-real-pw"))
+        repo.mark_email_verified(s, user)  # sam confirmed their email
+        repo.login_with_microsoft(s, "sam@x.com", SECRET)
+        s.refresh(user)
+        assert verify_password("my-real-pw", user.password_hash) is True
+
+
 def test_login_with_google_is_idempotent_and_refreshes(Session):
     with Session() as s:
         u1 = repo.login_with_google(s, "amir@x.com", SECRET)

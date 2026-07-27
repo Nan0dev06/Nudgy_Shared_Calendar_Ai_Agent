@@ -97,7 +97,9 @@ class MicrosoftCalendarProvider(CalendarProvider):
         intervals = [
             (_parse_utc(it["start"]), _parse_utc(it["end"]))
             for it in items
-            if str(it.get("showAs", "")).lower() in _BUSY
+            # missing/null showAs -> "unknown" -> busy, so ambiguous data never
+            # causes a double-book (matches the _BUSY note above)
+            if str(it.get("showAs") or "unknown").lower() in _BUSY
         ]
         return merge_intervals(intervals)
 

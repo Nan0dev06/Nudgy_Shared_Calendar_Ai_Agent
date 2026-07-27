@@ -109,17 +109,24 @@ def access_token(token_json: str) -> str:
 
 
 def get_account_email(token_json: str) -> str:
-    """The connected account's address via Graph /me. `mail` for work/school
-    accounts (may be null), `userPrincipalName` for personal ones — read both."""
+    """The connected account's address via Graph /me.
+
+    Uses userPrincipalName, NOT `mail`. On the multi-tenant `common` endpoint the
+    `mail` attribute is free-text and NOT domain-verified — a malicious tenant can
+    set one of its users' `mail` to a victim's address, and because we key identity
+    by email, that would ride into the victim's account (the "nOAuth" flaw).
+    userPrincipalName is bound to a tenant-verified domain (work/school) or an
+    address verified at account creation (personal), so it can't be spoofed to an
+    arbitrary victim domain. (Future hardening: also check the id_token xms_edov
+    verified-domain claim.)"""
     r = httpx.get(
         _GRAPH_ME,
-        params={"$select": "mail,userPrincipalName"},
+        params={"$select": "userPrincipalName"},
         headers={"Authorization": f"Bearer {access_token(token_json)}"},
         timeout=30,
     )
     r.raise_for_status()
-    me = r.json()
-    email = me.get("mail") or me.get("userPrincipalName")
-    if not email:
-        raise RuntimeError("Could not determine the Microsoft account email.")
-    return email.lower()
+    upn = r.json().get("userPrincipalName")
+    if not upn:
+        raise RuntimeError("Could not determine the Microsoft account email (no userPrincipalName).")
+    return upn.lower()

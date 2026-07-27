@@ -92,10 +92,11 @@ def test_get_busy_treats_oof_and_unknown_as_busy_but_working_elsewhere_as_free(m
         {"showAs": "oof", "start": _node(9), "end": _node(10)},
         {"showAs": "workingElsewhere", "start": _node(11), "end": _node(12)},  # free
         {"showAs": "Unknown", "start": _node(13), "end": _node(14)},  # casing-insensitive
+        {"start": _node(15), "end": _node(16)},  # showAs ABSENT -> fail-safe busy
     ]}
     monkeypatch.setattr(ms_cal.httpx, "get", lambda *a, **k: FakeResp(page))
-    busy = MicrosoftCalendarProvider(LIVE_TOKEN).get_busy(_dt(8), _dt(15))
-    assert busy == [(_dt(9), _dt(10)), (_dt(13), _dt(14))]
+    busy = MicrosoftCalendarProvider(LIVE_TOKEN).get_busy(_dt(8), _dt(17))
+    assert busy == [(_dt(9), _dt(10)), (_dt(13), _dt(14)), (_dt(15), _dt(16))]
 
 
 def test_get_busy_follows_paging(monkeypatch):
@@ -290,10 +291,19 @@ def test_exchange_code_packs_the_token(monkeypatch):
     assert d["access_token"] == "AT" and d["refresh_token"] == "RT" and d["expires_at"] > 0
 
 
-def test_get_account_email_prefers_mail_then_upn_and_lowercases(monkeypatch):
+def test_get_account_email_uses_upn_not_the_spoofable_mail(monkeypatch):
+    # `mail` is attacker-settable on work tenants (nOAuth); userPrincipalName is
+    # the verified identity and must win even when mail is present.
+    monkeypatch.setattr(ms_auth.httpx, "get", lambda *a, **k: FakeResp(
+        {"mail": "spoofed@victim.com", "userPrincipalName": "Real@Tenant.com"}))
+    assert get_account_email(LIVE_TOKEN) == "real@tenant.com"
+
+
+def test_get_account_email_raises_without_upn(monkeypatch):
     monkeypatch.setattr(ms_auth.httpx, "get",
-                        lambda *a, **k: FakeResp({"mail": None, "userPrincipalName": "Person@Outlook.com"}))
-    assert get_account_email(LIVE_TOKEN) == "person@outlook.com"
+                        lambda *a, **k: FakeResp({"mail": "x@y.com"}))  # mail alone is not trusted
+    with pytest.raises(RuntimeError):
+        get_account_email(LIVE_TOKEN)
 
 
 # ======================================================================= routes
