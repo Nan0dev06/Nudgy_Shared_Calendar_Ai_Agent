@@ -167,6 +167,9 @@ def _sync_to_google(
     account = repo.get_primary_calendar_account(session, creator)
     if account is None:
         return {"ok": False, "reason": "Your Google Calendar isn't connected."}
+    # Respect the calendar's sync setting: "none" opts it out of outbound writes.
+    if not repo.account_syncs_out(account):
+        return {"ok": False, "reason": "Sync is off for your primary calendar (change it in Settings → Calendars)."}
 
     member_emails = {m.email for m in repo.get_group_members(session, group_id)}
     attendees = [e for e in invite_emails if e in member_emails] or sorted(member_emails)

@@ -52,6 +52,17 @@ def get_primary_calendar_account(session: Session, user: User) -> CalendarAccoun
     return accounts[0]  # calendar_accounts is ordered by created_at
 
 
+def account_syncs_out(account: CalendarAccount) -> bool:
+    """Whether Nudgy should WRITE in-app events / bookings to this calendar.
+
+    sync_setting "none" opts the calendar out of outbound sync; "one_way" and
+    "two_way" both write out. (The inbound half of two_way is the freebusy
+    availability read, which is independent of this and always happens.) The write
+    paths — event_routes._sync_to_google and tools.booking — consult this before
+    creating a calendar event."""
+    return account.sync_setting != "none"
+
+
 def upsert_calendar_account(
     session: Session, user: User, provider: str, external_email: str, token_json: str,
 ) -> CalendarAccount:
