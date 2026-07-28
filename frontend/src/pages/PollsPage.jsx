@@ -5,9 +5,12 @@ import { CheckIcon, PinIcon, ClockIcon } from "../Icons.jsx";
 import { nameFromEmail } from "../people.js";
 
 // Two-stage plan cascade. Stage 1 asks "are you in for this at all?"; a yes
-// immediately opens stage 2 — "does the active candidate time work?". Nothing
-// auto-books: the HOST reads the tally and (through Nudgy) locks a time in or
-// moves to the next one.
+// immediately opens stage 2 — "does the active candidate time work?". The HOST
+// reads the tally and either locks a time in or moves to the next one, and both
+// go straight at the deterministic endpoints (POST /plans/{id}/lock-in and
+// /next-time) — never through the agent, so a calendar booking never rides on
+// the model interpreting a sentence. The one exception to "a human decides" is
+// opt-in auto-book, which only fires on a unanimous yes.
 
 // host_box fields are lists of emails — show a count plus the names
 const tallyLine = (list, word) => {
@@ -38,9 +41,30 @@ const EXTENSIONS = [
 ];
 export default function PollsPage() {
   const {
-    plans, activeGroup, voteInterest, voteTime, setModal, setPage, setView, doSend,
+    plans, activeGroup, voteInterest, voteTime, setModal, setPage, setView,
     removePlan, updatePlanSettings, sharePlanLink, unsharePlanLink,
+    lockInPlan, nextPlanTime,
   } = useApp();
+
+  // A host move can legitimately fail — nobody said yes (400), or the calendar
+  // refused and the time was put back so it can be retried (502). Both are
+  // things the host must SEE; the old chat route buried them in the agent's
+  // reply. { [planId]: message }
+  const [hostErr, setHostErr] = useState({});
+  const [hostBusy, setHostBusy] = useState(null);
+
+  const hostMove = async (planId, fn) => {
+    if (hostBusy) return;
+    setHostBusy(planId);
+    setHostErr((e) => ({ ...e, [planId]: null }));
+    try {
+      await fn(planId);
+    } catch (e) {
+      setHostErr((prev) => ({ ...prev, [planId]: e.message || "That didn't go through." }));
+    } finally {
+      setHostBusy(null);
+    }
+  };
 
   // which poll (if any) is showing its "Delete? Yes / Cancel" inline confirm —
   // delete is permanent, so never one-click
@@ -282,13 +306,18 @@ export default function PollsPage() {
                   <span style={{ fontSize: 12, lineHeight: 1.5, color: "#8c8577" }}>{hb.note}</span>
                 )}
                 <div style={{ display: "flex", gap: 8, marginTop: 4, flexWrap: "wrap" }}>
+                  {/* Straight at POST /plans/{id}/lock-in — a booking must not
+                      depend on the model reading a sentence correctly. */}
                   {times.length > 0 && (
                     <div
                       className="hov-lift-sm"
-                      style={{ ...sagePill(true), padding: "5px 13px", fontSize: 11.5 }}
-                      onClick={() => doSend(`Lock in the active time for the plan "${p.title}"`)}
+                      style={{
+                        ...sagePill(true), padding: "5px 13px", fontSize: 11.5,
+                        opacity: hostBusy === p.id ? 0.55 : 1,
+                      }}
+                      onClick={() => hostMove(p.id, lockInPlan)}
                     >
-                      Lock it in
+                      {hostBusy === p.id ? "Booking…" : "Lock it in"}
                     </div>
                   )}
                   {/* putting a NEW time up asks people to vote, so it's gone
@@ -296,8 +325,11 @@ export default function PollsPage() {
                   {times.length > 0 && p.voting_open && (
                     <div
                       className="hov-glass"
-                      style={{ ...gpill(true), padding: "5px 13px", fontSize: 11.5 }}
-                      onClick={() => doSend(`The current time doesn't work — move to the next candidate time for the plan "${p.title}"`)}
+                      style={{
+                        ...gpill(true), padding: "5px 13px", fontSize: 11.5,
+                        opacity: hostBusy === p.id ? 0.55 : 1,
+                      }}
+                      onClick={() => hostMove(p.id, nextPlanTime)}
                     >
                       Try the next time
                     </div>
@@ -320,6 +352,12 @@ export default function PollsPage() {
                     </div>
                   )}
                 </div>
+
+                {hostErr[p.id] && (
+                  <div style={{ fontSize: 12, color: "#D95D39", lineHeight: 1.5 }}>
+                    {hostErr[p.id]}
+                  </div>
+                )}
 
                 {/* ---- inviting people who aren't in the app ------------ */}
                 <div style={{ display: "flex", flexDirection: "column", gap: 7, marginTop: 8, paddingTop: 10, borderTop: "1px solid rgba(160,152,137,.16)" }}>

@@ -419,12 +419,15 @@ def lock_in_time(
     The host guard + revert-on-failure live in plan_service.confirm_active_time."""
     plan = _host_open_plan(session, user, plan_id)
     result = confirm_active_time(session, plan, user, user.timezone)
-    if result.get("error"):
-        raise HTTPException(status_code=400, detail=result["error"])
+    # book_failed FIRST: those results carry an "error" too, so checking the
+    # generic error branch first made every calendar failure a 400 and left the
+    # 502 unreachable — i.e. "you asked wrong" for something that was a
+    # retry-able upstream problem, with the round already put back to active.
     if result.get("action") == "book_failed":
-        # Google refused/threw; the round was reverted to active so the host retries.
         raise HTTPException(status_code=502,
                             detail=result.get("error") or "The calendar booking failed — try again.")
+    if result.get("error"):
+        raise HTTPException(status_code=400, detail=result["error"])
     log.info("[plan %d] host %s locked in via API", plan.id, user.email)
     return {"action": result.get("action"), "plan": _plan_json(session, plan, user, user.timezone)}
 
