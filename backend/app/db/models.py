@@ -29,6 +29,13 @@ def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def _as_utc(dt: datetime | None) -> datetime | None:
+    """Re-attach UTC to a timestamp SQLite handed back naive."""
+    if dt is None:
+        return None
+    return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+
+
 class User(Base):
     __tablename__ = "users"
 
@@ -149,7 +156,19 @@ class Plan(Base):
     rule — no majority, no unanimity, no auto-booking on silence. The HOST
     (created_by) reads the tally and either confirms the active time or moves
     to the next one, which re-asks the whole interested cohort.
-    Status: open -> scheduled | dead (all candidate times used up).
+    Status: open -> scheduled | dead (all candidate times used up) | expired
+    (the vote deadline passed — see below).
+
+    ASYNC CONVERGENCE. Groups are not all in the app at once, so a plan can
+    carry a `deadline_utc`: after it, voting closes and the plan goes `expired`
+    — the host can still lock in whatever came in (or push the deadline out to
+    reopen it), but the plan stops hanging around silently forever. Until then a
+    background ticker nudges the people who haven't answered (`reminder_sent_at`
+    rate-limits that). `auto_book` is the opt-in that lets a plan converge with
+    NO host present: the moment every member has answered and every interested
+    member said yes to the active time, it books itself. It is opt-in precisely
+    because the default rule of this app is "a human decides before anything
+    reaches a calendar".
 
     The plan's DAY is not stored — it is derived from the rounds' times in the
     viewer's timezone, so everyone reads the day in their own zone.
@@ -165,6 +184,17 @@ class Plan(Base):
     # optional "aiming for N people" — lets the host (and the agent) see when
     # enough of the group has said yes; None means no target
     expected_count: Mapped[int | None] = mapped_column(default=None)
+    # when voting closes (UTC). None = no deadline, the plan stays open until
+    # the host acts. Read via the `deadline` accessor, never raw.
+    deadline_utc: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), default=None
+    )
+    # opt-in: book the active time by itself once everybody said yes to it
+    auto_book: Mapped[bool] = mapped_column(default=False)
+    # last non-voter nudge, so reminders are rate-limited instead of spammed
+    reminder_sent_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), default=None
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
 
     rounds: Mapped[list["TimeRound"]] = relationship(
@@ -173,6 +203,21 @@ class Plan(Base):
     interest_votes: Mapped[list["InterestVote"]] = relationship(
         back_populates="plan", cascade="all, delete-orphan"
     )
+
+    # SQLite drops tzinfo on read (same guard as TimeRound.start/end). The
+    # deadline math compares these against an aware "now", and naive-vs-aware
+    # comparison raises — so every read of a plan timestamp goes through here.
+    @property
+    def deadline(self) -> datetime | None:
+        return _as_utc(self.deadline_utc)
+
+    @property
+    def reminded_at(self) -> datetime | None:
+        return _as_utc(self.reminder_sent_at)
+
+    @property
+    def created(self) -> datetime:
+        return _as_utc(self.created_at)
 
 
 class InterestVote(Base):

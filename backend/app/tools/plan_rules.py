@@ -68,6 +68,10 @@ def ballot_for(
     second poll" means. It is evaluated per member, so one person's yes opens
     their own time question regardless of what anyone else has done.
     """
+    if plan_status == "expired":
+        # not settled — the vote deadline simply ran out. Worth its own wording:
+        # "settled" would read as a decision nobody actually made.
+        return Ballot(CLOSED, "The deadline passed — voting is closed on this one.")
     if plan_status != "open":
         return Ballot(CLOSED, "This plan is settled — nothing to vote on.")
     if interest is None:

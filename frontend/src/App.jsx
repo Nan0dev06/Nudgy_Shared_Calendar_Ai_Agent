@@ -449,6 +449,16 @@ export default function App() {
     [activeGroupId, pushActivity]
   );
 
+  // host changing how a poll converges on its own: when voting closes, and
+  // whether a unanimous poll may book itself. The server can act on this
+  // immediately (a fresh deadline reopens an expired poll; switching auto-book
+  // on when everyone already said yes books it), so take its plan back whole.
+  const updatePlanSettings = useCallback(async (planId, body) => {
+    const out = await api.patchPlan(planId, body);
+    setPlans((ps) => ps.map((p) => (p.id === planId ? out : p)));
+    return out;
+  }, []);
+
   // host appending candidate times to an existing (usually timeless) poll —
   // grows the same plan instead of spawning a second one
   const addTimesToPlan = useCallback(
@@ -783,7 +793,7 @@ export default function App() {
     voteInterest, voteTime, createGroup, joinGroup, logout, refreshGroupData,
     renameGroup, regenerateCode, deleteGroup, leaveGroup, removeMember,
     createEvent, setTaskDone, removeEvent, createPlanDirect, addTimesToPlan,
-    removePlan, saveProfile,
+    removePlan, updatePlanSettings, saveProfile,
     displayName:
       me?.display_name || profile.name || (me ? nameFromEmail(me.email) : ""),
   };

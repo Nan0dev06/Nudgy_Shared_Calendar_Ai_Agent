@@ -39,6 +39,11 @@ _LATE_COLUMNS = [
     ("users", "password_hash", "VARCHAR"),
     ("users", "email_verified", "BOOLEAN DEFAULT FALSE NOT NULL"),
     ("plans", "expected_count", "INTEGER"),
+    # WITH TIME ZONE matches DateTime(timezone=True) on Postgres; SQLite treats
+    # any type name as an affinity hint, so the same DDL is portable
+    ("plans", "deadline_utc", "TIMESTAMP WITH TIME ZONE"),
+    ("plans", "auto_book", "BOOLEAN DEFAULT FALSE NOT NULL"),
+    ("plans", "reminder_sent_at", "TIMESTAMP WITH TIME ZONE"),
     # TRUE/FALSE literals work on both SQLite (>=3.23) and Postgres
     ("events", "personal", "BOOLEAN DEFAULT FALSE NOT NULL"),
     ("events", "anonymous", "BOOLEAN DEFAULT TRUE NOT NULL"),

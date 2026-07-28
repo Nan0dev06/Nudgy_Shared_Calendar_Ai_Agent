@@ -4,7 +4,7 @@ import {
   heavy, gpill, dpill, catChip, avatar, agentBox, fieldStyle, fieldRead,
   fieldLabel, toggleStyle, knobStyle,
 } from "../theme.js";
-import { ClockIcon, PinIcon, PlusIcon, XIcon, ChevronLeft } from "../Icons.jsx";
+import { CheckIcon, ClockIcon, PinIcon, PlusIcon, XIcon, ChevronLeft } from "../Icons.jsx";
 import { fmtDayLong, fmtRange } from "../dates.js";
 import {
   PlacePicker, GlassDatePicker, GlassTimePicker, StarRow, rememberPlace,
@@ -580,6 +580,10 @@ function NewPollModal() {
   });
   const [expected, setExpected] = useState(draft.expected || null); // people count
   const [customN, setCustomN] = useState("");
+  // async convergence: hours until voting closes (null = stays open until the
+  // host acts) and whether a poll everyone says yes to may book itself
+  const [closesIn, setClosesIn] = useState(null);
+  const [autoBook, setAutoBook] = useState(false);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
   const [dupLink, setDupLink] = useState(null);
@@ -664,6 +668,10 @@ function NewPollModal() {
         location: where.trim() || null,
         slots: bodySlots,
         expected_count: n || null,
+        deadline_iso: closesIn
+          ? new Date(Date.now() + closesIn * 3600e3).toISOString()
+          : null,
+        auto_book: autoBook,
       });
       if (where.trim()) rememberPlace(where.trim());
       if (draft.id) removeDraft(draft.id);
@@ -817,6 +825,46 @@ function NewPollModal() {
               </div>
             )}
           </div>
+
+          {/* Async convergence: a deadline so a quiet poll doesn't drift, and
+              auto-book so a unanimous one doesn't wait on the host. */}
+          {!appendTo && (
+            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+              <span style={fieldLabel}>Voting closes</span>
+              <div style={{ display: "flex", gap: 7, flexWrap: "wrap" }}>
+                {closesChip(null, "Open-ended", closesIn, setClosesIn)}
+                {closesChip(24, "In a day", closesIn, setClosesIn)}
+                {closesChip(72, "In 3 days", closesIn, setClosesIn)}
+                {closesChip(168, "In a week", closesIn, setClosesIn)}
+              </div>
+              <div
+                className="hov-row"
+                onClick={() => setAutoBook((v) => !v)}
+                style={{
+                  display: "flex", alignItems: "center", gap: 9, cursor: "pointer",
+                  padding: "7px 9px", borderRadius: 12,
+                  background: autoBook ? "rgba(42,157,143,.12)" : "transparent",
+                }}
+              >
+                <div style={{
+                  width: 17, height: 17, borderRadius: 6, flex: "none",
+                  display: "flex", alignItems: "center", justifyContent: "center",
+                  background: autoBook ? "#2A9D8F" : "rgba(255,253,247,.6)",
+                  border: autoBook ? "none" : "1.4px solid rgba(160,152,137,.5)",
+                }}>
+                  {autoBook && <CheckIcon size={11} color="#fff" sw={3} />}
+                </div>
+                <span style={{ fontSize: 12.5, color: autoBook ? "#2A9D8F" : "#5c564b", fontWeight: autoBook ? 600 : 400 }}>
+                  Book it for us if everyone says yes
+                </span>
+              </div>
+              <span style={{ fontSize: 11, color: "#a09889", lineHeight: 1.5 }}>
+                {autoBook
+                  ? "Only on a full yes — one no, or one person who hasn't answered, and it waits for you."
+                  : "Nudgy reminds whoever hasn't answered; you decide when to lock a time in."}
+              </span>
+            </div>
+          )}
           {err && stage === 1 && errText(err)}
           {dupLink && stage === 1 && dupJump(dupLink, setModal, setPage)}
           <div style={{ display: "flex", gap: 9, marginTop: "auto" }}>
@@ -843,6 +891,21 @@ function NewPollModal() {
           </div>
         </div>
       </div>
+    </div>
+  );
+}
+
+// "voting closes in N hours" chip. null is a real value here (open-ended), so
+// selection compares identity, not truthiness.
+function closesChip(hours, label, current, setCurrent) {
+  const on = current === hours;
+  return (
+    <div
+      key={label}
+      onClick={() => setCurrent(hours)}
+      style={{ ...(on ? dpill(true) : gpill(true)), padding: "6px 13px", fontSize: 12 }}
+    >
+      {label}
     </div>
   );
 }

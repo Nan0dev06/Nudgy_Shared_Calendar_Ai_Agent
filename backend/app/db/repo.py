@@ -7,7 +7,7 @@ exist, and a single place to debug when a query misbehaves.
 from __future__ import annotations
 
 import secrets
-from datetime import timezone
+from datetime import datetime, timezone
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session, joinedload
@@ -339,6 +339,8 @@ def create_plan(
     slots: list[tuple],          # ordered [(start_utc, end_utc), ...] candidate times
     location: str | None = None,
     expected_count: int | None = None,
+    deadline: datetime | None = None,
+    auto_book: bool = False,
 ) -> Plan:
     """Create a plan with its candidate times queued in order.
 
@@ -346,9 +348,13 @@ def create_plan(
     the interest question they have a time to answer. The host suggested the
     plan, so their interest is recorded as yes up front — they still vote on
     the times themselves.
+
+    `deadline` (UTC) closes voting at a fixed instant and `auto_book` lets a
+    unanimous plan book itself — see tools/plan_deadlines.py.
     """
     plan = Plan(group_id=group.id, created_by=host.id, title=title,
-                location=location, expected_count=expected_count)
+                location=location, expected_count=expected_count,
+                deadline_utc=deadline, auto_book=auto_book)
     session.add(plan)
     session.flush()  # assign plan.id
     for i, (start, end) in enumerate(slots):
@@ -519,6 +525,47 @@ def get_time_votes(session: Session, round_: TimeRound | None) -> dict[str, bool
 def set_plan_status(session: Session, plan: Plan, status: str) -> None:
     plan.status = status
     session.commit()
+
+
+# ------------------------------------------------------- plan deadlines / async
+
+def set_plan_deadline(session: Session, plan: Plan, deadline: datetime | None) -> None:
+    """Set or clear a plan's vote deadline (UTC).
+
+    Giving an expired plan a fresh deadline REOPENS it: the host is saying "I'm
+    giving you more time", and a closed plan nobody can vote in would make that
+    a lie. The reminder stamp resets with it so the extra window gets its own
+    nudge instead of inheriting a spent one.
+    """
+    plan.deadline_utc = deadline
+    if deadline is not None and plan.status == "expired":
+        plan.status = "open"
+        plan.reminder_sent_at = None
+    session.commit()
+
+
+def set_plan_auto_book(session: Session, plan: Plan, auto_book: bool) -> None:
+    plan.auto_book = auto_book
+    session.commit()
+
+
+def mark_plan_reminded(session: Session, plan: Plan, when: datetime) -> None:
+    plan.reminder_sent_at = when
+    session.commit()
+
+
+def get_open_plans(session: Session) -> list[Plan]:
+    """Every open plan across every group — the ticker's work queue.
+
+    Deliberately unfiltered by deadline: plans with no deadline still need
+    reminders. The set is small (open plans only) and this runs once a minute in
+    a background job, not on a request path. If it ever stops being small, the
+    fix is to filter on `deadline_utc <= now OR reminder_sent_at IS NULL` here
+    rather than to make the ticker smarter.
+    """
+    return list(session.scalars(
+        select(Plan).where(Plan.status == "open").order_by(Plan.id)
+    ))
 
 
 def set_round_status(session: Session, round_: TimeRound, status: str) -> None:
