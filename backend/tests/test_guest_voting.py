@@ -14,7 +14,7 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from app.api import plan_routes, share_routes
-from app.api.deps import get_current_user
+from app.api.deps import COOKIE_NAME, get_current_user, make_session_cookie
 from app.db.models import Base, User
 from app.db import repo
 from app.db.session import get_session
@@ -266,6 +266,39 @@ def test_a_cookie_from_another_plan_does_not_carry_over(ctx):
     # same browser, different plan: the cookie names a guest of the FIRST plan
     r = guest.post(f"/share/{other_token}/interest", json={"yes": True})
     assert r.status_code == 401
+
+
+def test_a_member_of_the_group_cannot_take_a_second_ballot_as_a_guest(ctx):
+    """Otherwise opening your own group's link would give you two votes and
+    quietly skew the tally you're reading."""
+    client, _, ids, _ = ctx
+    token = _token(client, ids["plan"])
+
+    # a REAL session cookie, not the dependency override — the guard reads the
+    # cookie itself, since the share routes have no auth dependency to override
+    amy = TestClient(client.app)
+    amy.cookies.set(COOKIE_NAME, make_session_cookie(ids["amy"]))
+
+    r = amy.post(f"/share/{token}/join", json={"name": "Amy"})
+    assert r.status_code == 409
+    assert "already" in r.json()["detail"]
+
+
+def test_a_signed_in_outsider_can_still_vote_as_a_guest(ctx):
+    """Having an account isn't the same as being in this group — someone from a
+    different group who was sent the link is exactly who this is for."""
+    client, _, ids, TS = ctx
+    token = _token(client, ids["plan"])
+    s = TS()
+    outsider = User(email="zoe@elsewhere.com")
+    s.add(outsider)
+    s.commit()
+    outsider_id = outsider.id
+    s.close()
+
+    zoe = TestClient(client.app)
+    zoe.cookies.set(COOKIE_NAME, make_session_cookie(outsider_id))
+    assert zoe.post(f"/share/{token}/join", json={"name": "Zoe"}).status_code == 200
 
 
 def test_the_guest_cap_holds(ctx, monkeypatch):

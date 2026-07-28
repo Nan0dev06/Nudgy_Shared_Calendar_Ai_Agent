@@ -39,12 +39,27 @@ const EXTENSIONS = [
 export default function PollsPage() {
   const {
     plans, activeGroup, voteInterest, voteTime, setModal, setPage, setView, doSend,
-    removePlan, updatePlanSettings,
+    removePlan, updatePlanSettings, sharePlanLink, unsharePlanLink,
   } = useApp();
 
   // which poll (if any) is showing its "Delete? Yes / Cancel" inline confirm —
   // delete is permanent, so never one-click
   const [confirmingDelete, setConfirmingDelete] = useState(null);
+  // per-poll "Copied!" flash after the share link goes to the clipboard
+  const [copied, setCopied] = useState(null);
+
+  const copyShareLink = async (planId, url) => {
+    const link = url || (await sharePlanLink(planId));
+    try {
+      await navigator.clipboard.writeText(link);
+      setCopied(planId);
+      setTimeout(() => setCopied((c) => (c === planId ? null : c)), 1800);
+    } catch {
+      // clipboard blocked (insecure origin, denied permission) — the link is
+      // live either way, so show it rather than failing silently
+      window.prompt("Copy this link:", link);
+    }
+  };
 
   // expected_count now lives on the plan itself; the localStorage map only
   // covers polls created before the backend column existed
@@ -304,6 +319,44 @@ export default function PollsPage() {
                       Add times now
                     </div>
                   )}
+                </div>
+
+                {/* ---- inviting people who aren't in the app ------------ */}
+                <div style={{ display: "flex", flexDirection: "column", gap: 7, marginTop: 8, paddingTop: 10, borderTop: "1px solid rgba(160,152,137,.16)" }}>
+                  <span style={{ fontSize: 11, color: "#a09889", lineHeight: 1.5 }}>
+                    {p.share_url
+                      ? "Anyone with the link can vote — no account needed. Their answers show up here as guests."
+                      : "Want someone outside the group in on this? Share a link they can vote on without signing up."}
+                  </span>
+                  <div style={{ display: "flex", gap: 7, flexWrap: "wrap", alignItems: "center" }}>
+                    <div
+                      className="hov-glass"
+                      style={{ ...gpill(true), padding: "4px 11px", fontSize: 11 }}
+                      onClick={() => copyShareLink(p.id, p.share_url)}
+                    >
+                      {copied === p.id ? "Copied!" : p.share_url ? "Copy vote link" : "Get a vote link"}
+                    </div>
+                    {p.share_url && (
+                      <>
+                        <div
+                          className="hov-glass"
+                          style={{ ...gpill(true), padding: "4px 11px", fontSize: 11 }}
+                          title="Mint a new link — every copy of the old one stops working"
+                          onClick={() => sharePlanLink(p.id, true).catch(() => {})}
+                        >
+                          New link
+                        </div>
+                        <div
+                          className="hov-glass"
+                          style={{ ...gpill(true), padding: "4px 11px", fontSize: 11 }}
+                          title="Turn the link off. Votes already cast stay."
+                          onClick={() => unsharePlanLink(p.id).catch(() => {})}
+                        >
+                          Turn off
+                        </div>
+                      </>
+                    )}
+                  </div>
                 </div>
 
                 {/* ---- how this poll finishes on its own ---------------- */}

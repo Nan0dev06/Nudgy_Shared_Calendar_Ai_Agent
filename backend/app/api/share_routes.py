@@ -29,7 +29,7 @@ from fastapi import APIRouter, Cookie, Depends, HTTPException, Response
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
-from app.api.deps import COOKIE_KWARGS
+from app.api.deps import COOKIE_KWARGS, COOKIE_NAME, resolve_session_user
 from app.auth.guest_tokens import (
     GUEST_COOKIE, GUEST_TTL_SECONDS, guest_id_for, with_guest,
 )
@@ -168,6 +168,7 @@ def join_shared_plan(
     body: JoinBody,
     response: Response,
     nudgy_guest: str | None = Cookie(default=None, alias=GUEST_COOKIE),
+    nudgy_session: str | None = Cookie(default=None, alias=COOKIE_NAME),
     session: Session = Depends(get_session),
 ):
     """Claim a name on this plan and get the cookie that keeps it.
@@ -178,6 +179,16 @@ def join_shared_plan(
     """
     plan = _plan_for_token(session, token)
     _votable(plan)
+
+    # A member of this group opening the link would otherwise get TWO ballots —
+    # their own and a guest one — and quietly skew the host's tally. They already
+    # have a vote; send them to it.
+    viewer = resolve_session_user(nudgy_session, session)
+    if viewer is not None and repo.get_membership(session, plan.group_id, viewer.id):
+        raise HTTPException(
+            status_code=409,
+            detail="You're in this group already — open Nudgy and vote there.",
+        )
 
     name = body.name.strip()
     if not name:
