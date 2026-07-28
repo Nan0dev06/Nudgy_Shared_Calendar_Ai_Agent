@@ -8,6 +8,7 @@ Interactive API docs (for the frontend dev): http://localhost:8000/docs
 from __future__ import annotations
 
 import logging
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI
@@ -21,10 +22,24 @@ from app.api.group_routes import router as group_router
 from app.api.plan_routes import router as plan_router
 from app.api.review_routes import router as review_router
 from app.db.session import init_db
+from app.jobs.plan_ticker import start_ticker, stop_ticker
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(message)s")
 
-app = FastAPI(title="Nudgy", description="Agentic group scheduling assistant")
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Own the background plan ticker for exactly as long as the app runs —
+    started here so a reload/shutdown cancels it instead of leaking a task."""
+    ticker = start_ticker()
+    try:
+        yield
+    finally:
+        await stop_ticker(ticker)
+
+
+app = FastAPI(title="Nudgy", description="Agentic group scheduling assistant",
+              lifespan=lifespan)
 init_db()
 
 app.include_router(auth_router)

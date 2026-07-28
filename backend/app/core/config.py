@@ -102,6 +102,27 @@ LLM_API_KEY = os.getenv("LLM_API_KEY") or GROQ_API_KEY or "ollama"
 # band. This is a DISPLAY cache only — booking always reads live.
 FREEBUSY_CACHE_TTL_SECONDS = float(os.getenv("FREEBUSY_CACHE_TTL_SECONDS", "90"))
 
+# --- async plan convergence (jobs/plan_ticker.py) ---------------------------
+# How often the background job looks for plans whose deadline has passed or
+# whose non-voters need a nudge. A minute is plenty: deadlines are set in hours,
+# and every tick is a handful of cheap queries over OPEN plans only.
+PLAN_TICK_SECONDS = float(os.getenv("PLAN_TICK_SECONDS", "60"))
+
+# Kill switch for that job. Off in tests (they call run_tick directly with a
+# frozen clock) and useful if the app is ever run as several processes, where a
+# ticker per process would nudge people once per process.
+PLAN_TICKER_ENABLED = os.getenv("PLAN_TICKER_ENABLED", "1").lower() not in (
+    "0", "false", "no",
+)
+
+# Minimum gap between nudges to the same plan's non-voters. 12h means a plan
+# that sits unanswered for a day pings you twice — enough to converge, not
+# enough to feel like spam. Short-fused plans get one earlier nudge instead
+# (see tools/plan_deadlines.next_reminder_at).
+PLAN_REMINDER_INTERVAL_SECONDS = float(
+    os.getenv("PLAN_REMINDER_INTERVAL_SECONDS", str(12 * 3600))
+)
+
 # Big-intake guard: if an estimated request would exceed this many input
 # tokens, the agent asks the user to narrow the request instead of firing a
 # call that the model would reject. 0 disables the check. Sized to catch

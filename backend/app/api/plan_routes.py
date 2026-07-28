@@ -7,6 +7,9 @@ POST /groups/{group_id}/plans      -> create a plan directly from the app UI
                                       (title required; candidate times and
                                       location optional — an empty slot list is
                                       a pure "who's in?" interest check)
+PATCH /plans/{plan_id}             {"deadline_iso": ..., "auto_book": true}
+                                   -> host: when voting closes, and whether a
+                                      unanimous plan may book itself
 POST /plans/{plan_id}/interest     {"yes": true}  -> stage 1 answer
 POST /plans/{plan_id}/time-vote    {"yes": true, "round_id": 3} -> stage 2 answer
 
@@ -14,10 +17,12 @@ The cascade is visible in the responses: answering interest=yes comes straight
 back with `ballot.stage == "time"` — that one yes opened the time question for
 that member, without waiting on anybody else.
 
-Note what is NOT here: no rule fires on a vote. Voting never books, never
-rejects, never advances a time. Those are host moves and they go through the
-agent (see agent/tools.py -> use_next_time / lock_in_time), which is what keeps
-a human in the loop before anything reaches a calendar.
+Note what is NOT here: no rule fires on a vote. Voting never rejects and never
+advances a time; those are host moves (deterministic endpoints below, or the
+agent's use_next_time / lock_in_time), which is what keeps a human in the loop
+before anything reaches a calendar. The single exception is opt-in auto-book,
+and it only fires on unanimity — when there was nothing left for a human to
+decide. See tools/plan_deadlines.py.
 """
 from __future__ import annotations
 
@@ -33,8 +38,8 @@ from app.db.models import Plan, User
 from app.db import repo
 from app.db.session import get_session
 from app.tools.plan_service import (
-    advance_to_next_time, confirm_active_time, day_label, load_plan_state,
-    member_ballot, plan_tally, time_label,
+    HOST_DECIDABLE, advance_to_next_time, confirm_active_time, day_label,
+    load_plan_state, maybe_auto_book, member_ballot, plan_tally, time_label,
 )
 
 log = logging.getLogger("nudgy.agent")
@@ -61,6 +66,18 @@ class CreatePlanBody(BaseModel):
     location: str | None = Field(default=None, max_length=200)
     slots: list[SlotBody] = Field(default_factory=list, max_length=6)
     expected_count: int | None = Field(default=None, ge=1, le=100)
+    # async convergence, both optional — a plan with neither behaves exactly as
+    # it did before this existed
+    deadline_iso: str | None = None
+    auto_book: bool = False
+
+
+class PlanSettingsBody(BaseModel):
+    """Host edits to how a plan converges. Every field is optional AND
+    nullable-meaningful, so `unset` (leave alone) has to be distinguishable from
+    `null` (clear the deadline) — hence the sentinel default on deadline_iso."""
+    deadline_iso: str | None = Field(default="__unset__")
+    auto_book: bool | None = None
 
 
 class AddRoundsBody(BaseModel):
@@ -85,6 +102,12 @@ def _plan_json(session: Session, plan: Plan, viewer: User, tz_name: str) -> dict
         "host": host.email if host else None,
         "is_host": is_host,
         "expected_count": plan.expected_count,
+        # async convergence: the deadline instant (UTC, the frontend renders the
+        # countdown in local time), whether the plan may book itself, and whether
+        # the ballot is still answerable at all
+        "deadline_iso": plan.deadline.isoformat() if plan.deadline else None,
+        "auto_book": plan.auto_book,
+        "voting_open": plan.status == "open",
         "times": [
             {
                 "round_id": r.id,
@@ -132,8 +155,17 @@ def _get_plan_for_member(session: Session, user: User, plan_id: int) -> Plan:
     if plan is None:
         raise HTTPException(status_code=404, detail="No such plan.")
     _require_membership(session, user, plan.group_id)
+    if plan.status == "expired":
+        raise HTTPException(status_code=400,
+                            detail="The deadline for this plan has passed; voting is closed.")
     if plan.status != "open":
         raise HTTPException(status_code=400, detail=f"This plan is {plan.status}; voting is closed.")
+    # The ticker flips a plan to `expired` within a minute of its deadline, so
+    # for up to a minute an open plan can be past it. Enforce the deadline here
+    # too — the instant the host set is the promise, not when the job wakes up.
+    if plan.deadline is not None and datetime.now(timezone.utc) >= plan.deadline:
+        raise HTTPException(status_code=400,
+                            detail="The deadline for this plan has passed; voting is closed.")
     return plan
 
 
@@ -158,6 +190,17 @@ def _parse_iso_utc(value: str, name: str) -> datetime:
     return dt.astimezone(timezone.utc)
 
 
+def _parse_deadline(value: str | None) -> datetime | None:
+    """A vote deadline from the client: ISO-8601 with an offset, in the future."""
+    if value is None:
+        return None
+    deadline = _parse_iso_utc(value, "deadline_iso")
+    if deadline <= datetime.now(timezone.utc):
+        raise HTTPException(status_code=400,
+                            detail="The vote deadline has to be in the future.")
+    return deadline
+
+
 @router.post("/groups/{group_id}/plans")
 def create_plan(
     group_id: int,
@@ -177,6 +220,7 @@ def create_plan(
             raise HTTPException(status_code=400, detail=f"slots[{i}]: end must be after start.")
         slots.append((start, end))
 
+    deadline = _parse_deadline(body.deadline_iso)
     group = next(g for g in repo.get_user_groups(session, user) if g.id == group_id)
     location = (body.location or "").strip() or None
 
@@ -193,9 +237,50 @@ def create_plan(
         session, group, user, title=body.title.strip(),
         slots=slots, location=location,
         expected_count=body.expected_count,
+        deadline=deadline, auto_book=body.auto_book,
     )
-    log.info("[plan %d] %s created it directly from the app (%d candidate times)",
-             plan.id, user.email, len(slots))
+    log.info("[plan %d] %s created it directly from the app (%d candidate times%s%s)",
+             plan.id, user.email, len(slots),
+             f", closes {deadline:%Y-%m-%d %H:%M}Z" if deadline else "",
+             ", auto-book" if body.auto_book else "")
+    return _plan_json(session, plan, user, user.timezone)
+
+
+@router.patch("/plans/{plan_id}")
+def update_plan_settings(
+    plan_id: int,
+    body: PlanSettingsBody,
+    user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+):
+    """Host-only: set/move/clear the vote deadline and toggle auto-book.
+
+    Works on an EXPIRED plan too — that's the point. Giving a plan that ran out
+    of time a fresh deadline reopens voting (repo.set_plan_deadline), which is
+    how a host says "a couple of you never answered, take another day" instead
+    of rebuilding the plan from scratch.
+    """
+    plan = repo.get_plan(session, plan_id)
+    if plan is None:
+        raise HTTPException(status_code=404, detail="No such plan.")
+    _require_membership(session, user, plan.group_id)
+    if user.id != plan.created_by:
+        raise HTTPException(status_code=403,
+                            detail="Only the host who suggested this plan can change it.")
+    if plan.status in ("scheduled", "dead"):
+        raise HTTPException(status_code=400, detail=f"This plan is {plan.status}.")
+
+    if body.auto_book is not None:
+        repo.set_plan_auto_book(session, plan, body.auto_book)
+    if body.deadline_iso != "__unset__":
+        repo.set_plan_deadline(session, plan, _parse_deadline(body.deadline_iso))
+        log.info("[plan %d] host %s set the vote deadline to %s",
+                 plan.id, user.email, body.deadline_iso or "none")
+
+    # Turning auto-book ON can land on an already-unanimous plan — book it now
+    # rather than making the host wait for a vote that may never come.
+    if plan.status == "open" and plan.auto_book:
+        maybe_auto_book(session, plan, user.timezone)
     return _plan_json(session, plan, user, user.timezone)
 
 
@@ -248,14 +333,18 @@ def add_rounds(
 
 def _host_open_plan(session: Session, user: User, plan_id: int) -> Plan:
     """Resolve a plan for a HOST-ONLY move: it must exist, be in the user's
-    group, the user must be its host, and it must still be open."""
+    group, the user must be its host, and it must still be decidable.
+
+    `expired` counts as decidable: the deadline closes VOTING, not the host's
+    ability to act on the votes that did arrive. plan_service draws the finer
+    line — lock-in works on an expired plan, putting a new time up doesn't."""
     plan = repo.get_plan(session, plan_id)
     if plan is None:
         raise HTTPException(status_code=404, detail="No such plan.")
     _require_membership(session, user, plan.group_id)
     if user.id != plan.created_by:
         raise HTTPException(status_code=403, detail="Only the host who suggested this plan can do that.")
-    if plan.status != "open":
+    if plan.status not in HOST_DECIDABLE:
         raise HTTPException(status_code=400, detail=f"This plan is already {plan.status}.")
     return plan
 
@@ -311,6 +400,7 @@ def vote_interest(
     repo.cast_interest(session, plan, user, body.yes)
     log.info("[plan %d] %s is %s for the plan", plan.id, user.email,
              "IN" if body.yes else "OUT")
+    maybe_auto_book(session, plan, user.timezone)
     return _plan_json(session, plan, user, user.timezone)
 
 
@@ -342,4 +432,7 @@ def vote_time(
     repo.cast_time_vote(session, active, user, body.yes)
     log.info("[plan %d] %s said %s to %s", plan.id, user.email,
              "YES" if body.yes else "NO", time_label(active, user.timezone))
+    # The vote that completes a unanimous plan is the one that books it (opt-in
+    # only) — see plan_service.maybe_auto_book. A no-op for everything else.
+    maybe_auto_book(session, plan, user.timezone)
     return _plan_json(session, plan, user, user.timezone)

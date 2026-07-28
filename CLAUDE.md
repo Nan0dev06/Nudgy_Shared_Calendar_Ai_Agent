@@ -26,3 +26,8 @@ decides. Privacy by design: only `freebusy` ranges — never event details.
 ## Gotchas
 - Chat needs a working `NUDGY_MODEL`; `llama-3.3-70b-versatile` is current.
 - Render only runs `pip install` — it serves the **committed** static bundle.
+
+## Session startup
+This is a multi-phase SaaS build. Before starting work, read
+`.claude/startup.md` — it points to the roadmap, architecture map, and current
+phase/branch state so each session doesn't need to be re-briefed.
