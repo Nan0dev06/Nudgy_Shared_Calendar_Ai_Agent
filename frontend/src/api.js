@@ -82,6 +82,13 @@ export const api = {
     req(`/plans/${planId}/interest`, { method: "POST", body: { yes } }),
   voteTime: (planId, yes, round_id) =>
     req(`/plans/${planId}/time-vote`, { method: "POST", body: { yes, round_id } }),
+  // Host moves, straight at the deterministic endpoints. These used to go
+  // through the agent as an English sentence ("Lock in the active time for the
+  // plan X"), which meant a real calendar booking depended on the model picking
+  // the right tool AND matching the plan by its TITLE. Same moves, same
+  // server-side guards, no model in the path.
+  lockInPlan: (planId) => req(`/plans/${planId}/lock-in`, { method: "POST" }),
+  nextPlanTime: (planId) => req(`/plans/${planId}/next-time`, { method: "POST" }),
   addRounds: (planId, slots) =>
     req(`/plans/${planId}/rounds`, { method: "POST", body: { slots } }),
   myReviews: () => req("/reviews"),

@@ -454,6 +454,24 @@ export default function App() {
   // whether a unanimous poll may book itself. The server can act on this
   // immediately (a fresh deadline reopens an expired poll; switching auto-book
   // on when everyone already said yes books it), so take its plan back whole.
+  // The two host decisions, taken directly rather than asked of the agent. Both
+  // endpoints answer with the refreshed plan, so the card re-renders from the
+  // server's truth instead of an optimistic guess about what booking did.
+  const lockInPlan = useCallback(async (planId) => {
+    const out = await api.lockInPlan(planId);
+    setPlans((ps) => ps.map((p) => (p.id === planId ? out.plan : p)));
+    pushActivity({
+      dot: "#2A9D8F", pre: "You locked in ", bold: out.plan.title, post: "",
+    });
+    return out;
+  }, [pushActivity]);
+
+  const nextPlanTime = useCallback(async (planId) => {
+    const out = await api.nextPlanTime(planId);
+    setPlans((ps) => ps.map((p) => (p.id === planId ? out.plan : p)));
+    return out;
+  }, []);
+
   const updatePlanSettings = useCallback(async (planId, body) => {
     const out = await api.patchPlan(planId, body);
     setPlans((ps) => ps.map((p) => (p.id === planId ? out : p)));
@@ -807,7 +825,8 @@ export default function App() {
     voteInterest, voteTime, createGroup, joinGroup, logout, refreshGroupData,
     renameGroup, regenerateCode, deleteGroup, leaveGroup, removeMember,
     createEvent, setTaskDone, removeEvent, createPlanDirect, addTimesToPlan,
-    removePlan, updatePlanSettings, sharePlanLink, unsharePlanLink, saveProfile,
+    removePlan, updatePlanSettings, sharePlanLink, unsharePlanLink,
+    lockInPlan, nextPlanTime, saveProfile,
     displayName:
       me?.display_name || profile.name || (me ? nameFromEmail(me.email) : ""),
   };

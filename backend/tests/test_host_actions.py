@@ -86,6 +86,28 @@ def test_lock_in_refuses_when_nobody_said_yes(ctx):
     assert "nobody" in r.json()["detail"].lower()
 
 
+def test_a_calendar_failure_is_a_502_not_a_400(ctx, monkeypatch):
+    """A refused booking is a retry-able upstream problem, not a bad request —
+    and the round goes back on the table so the host CAN retry."""
+    client, current, ids, TS = ctx
+    s = TS()
+    plan = repo.get_plan(s, ids["plan"])
+    repo.cast_time_vote(s, repo.get_active_round(s, plan), s.get(User, ids["host"]), True)
+    s.close()
+    monkeypatch.setattr(
+        "app.tools.booking.book_round_event",
+        lambda *a, **k: {"error": "Host has no connected calendar."},
+    )
+
+    r = client.post(f"/plans/{ids['plan']}/lock-in")
+
+    assert r.status_code == 502
+    assert "calendar" in r.json()["detail"].lower()
+    s = TS()
+    assert repo.get_active_round(s, repo.get_plan(s, ids["plan"])) is not None
+    s.close()
+
+
 def test_lock_in_books_the_yes_voters(ctx, monkeypatch):
     client, current, ids, TS = ctx
     # host votes the active time works, then booking is stubbed (no Google)
