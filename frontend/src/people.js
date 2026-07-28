@@ -13,6 +13,10 @@ const ACCENTS = [
 ];
 
 export function nameFromEmail(email) {
+  // Vote tallies mix members (emails) with share-link guests, who arrive as
+  // "Sam (guest)". That's already a display name AND the "(guest)" part is
+  // information the host needs — deriving a name from it would throw it away.
+  if (/\(guest\)$/.test(email || "")) return email;
   const raw = (email || "").split("@")[0];
   // first alphabetic run reads best: "hussein2008yassine" -> "Hussein"
   const first = (raw.match(/[a-zA-Z]+/) || [raw.split(/[._\-+]/)[0] || raw])[0];

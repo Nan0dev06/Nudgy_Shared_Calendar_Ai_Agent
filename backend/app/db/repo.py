@@ -13,8 +13,9 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session, joinedload
 
 from app.db.models import (
-    CalendarAccount, EventRsvp, Group, GroupEvent, InterestVote, Membership,
-    Plan, PlaceReview, TimeRound, TimeVote, User,
+    CalendarAccount, EventRsvp, Group, GroupEvent, GuestInterestVote,
+    GuestTimeVote, InterestVote, Membership, Plan, PlaceReview, PlanGuest,
+    TimeRound, TimeVote, User,
 )
 
 
@@ -229,6 +230,10 @@ def create_group(session: Session, name: str, creator: User) -> Group:
     session.add(Membership(user_id=creator.id, group_id=group.id))
     session.commit()
     return group
+
+
+def get_group(session: Session, group_id: int) -> Group | None:
+    return session.get(Group, group_id)
 
 
 def get_group_by_code(session: Session, code: str) -> Group | None:
@@ -552,6 +557,124 @@ def set_plan_auto_book(session: Session, plan: Plan, auto_book: bool) -> None:
 def mark_plan_reminded(session: Session, plan: Plan, when: datetime) -> None:
     plan.reminder_sent_at = when
     session.commit()
+
+
+# ------------------------------------------------- share links & guest voters
+
+# A hard ceiling on how many people can pile in through a link. The token is a
+# bearer credential: whoever holds it can add voters, and a plan with 200 "yes"
+# from strangers is worse than useless to the host. High enough that no real
+# friend group hits it, low enough that a leaked link can't drown the group.
+MAX_GUESTS_PER_PLAN = 25
+
+
+def ensure_share_token(session: Session, plan: Plan) -> str:
+    """The plan's public vote link token, minting one on first use."""
+    if not plan.share_token:
+        plan.share_token = secrets.token_urlsafe(16)
+        session.commit()
+    return plan.share_token
+
+
+def regenerate_share_token(session: Session, plan: Plan) -> str:
+    """Mint a new token, which instantly kills every copy of the old link.
+
+    Guests who already voted keep their votes — they were invited in good faith.
+    Revoking a link is about who can join from here on, not about erasing people.
+    """
+    plan.share_token = secrets.token_urlsafe(16)
+    session.commit()
+    return plan.share_token
+
+
+def revoke_share_token(session: Session, plan: Plan) -> None:
+    plan.share_token = None
+    session.commit()
+
+
+def get_plan_by_share_token(session: Session, token: str) -> Plan | None:
+    if not token:
+        return None
+    return session.scalar(select(Plan).where(Plan.share_token == token))
+
+
+def get_plan_guests(session: Session, plan: Plan) -> list[PlanGuest]:
+    return list(session.scalars(
+        select(PlanGuest).where(PlanGuest.plan_id == plan.id)
+        .order_by(PlanGuest.created_at)
+    ))
+
+
+def get_guest(session: Session, guest_id: int | None) -> PlanGuest | None:
+    return session.get(PlanGuest, guest_id) if guest_id else None
+
+
+def find_guest_by_name(session: Session, plan: Plan, name: str) -> PlanGuest | None:
+    """Case-insensitive, because "sam" and "Sam" are the same person to everyone
+    reading the tally."""
+    key = name.strip().casefold()
+    return next((g for g in get_plan_guests(session, plan)
+                 if g.name.casefold() == key), None)
+
+
+def create_guest(session: Session, plan: Plan, name: str,
+                 email: str | None = None) -> PlanGuest:
+    guest = PlanGuest(plan_id=plan.id, name=name.strip(), email=email)
+    session.add(guest)
+    session.commit()
+    return guest
+
+
+def cast_guest_interest(session: Session, guest: PlanGuest, yes: bool) -> GuestInterestVote:
+    vote = session.scalar(
+        select(GuestInterestVote).where(GuestInterestVote.guest_id == guest.id)
+    )
+    if vote is None:
+        vote = GuestInterestVote(guest_id=guest.id, yes=yes)
+        session.add(vote)
+    else:
+        vote.yes = yes
+    session.commit()
+    return vote
+
+
+def cast_guest_time_vote(session: Session, round_: TimeRound, guest: PlanGuest,
+                         yes: bool) -> GuestTimeVote:
+    vote = session.scalar(
+        select(GuestTimeVote).where(
+            GuestTimeVote.round_id == round_.id, GuestTimeVote.guest_id == guest.id
+        )
+    )
+    if vote is None:
+        vote = GuestTimeVote(round_id=round_.id, guest_id=guest.id, yes=yes)
+        session.add(vote)
+    else:
+        vote.yes = yes
+    session.commit()
+    return vote
+
+
+def get_guest_interest_votes(session: Session, plan: Plan) -> dict[str, bool]:
+    """guest label -> yes/no, in the same shape as get_interest_votes so the
+    cascade rules never have to know a guest from a member."""
+    rows = session.scalars(
+        select(GuestInterestVote)
+        .join(PlanGuest, PlanGuest.id == GuestInterestVote.guest_id)
+        .where(PlanGuest.plan_id == plan.id)
+        .options(joinedload(GuestInterestVote.guest))
+    )
+    return {v.guest.label: v.yes for v in rows}
+
+
+def get_guest_time_votes(session: Session, round_: TimeRound | None) -> dict[str, bool]:
+    if round_ is None:
+        return {}
+    rows = session.scalars(
+        select(GuestTimeVote)
+        .where(GuestTimeVote.round_id == round_.id)
+        .options(joinedload(GuestTimeVote.guest))
+    )
+    return {v.guest.label: v.yes for v in rows}
 
 
 def get_open_plans(session: Session) -> list[Plan]:

@@ -126,8 +126,11 @@ def _announce_booking(session: Session, plan: Plan, outcome: dict) -> None:
     The time reads in the HOST's zone for everyone (that's the label the booking
     came back with, and the round is no longer 'active' to re-label per reader).
     The calendar invite that lands beside this mail shows each person their own
-    zone, so nobody has to do the arithmetic from here."""
-    for email in outcome.get("attendees", []):
+    zone, so nobody has to do the arithmetic from here.
+
+    Goes to `invited`, not `attendees`: the attendee list carries guests under a
+    display label, and a label is not an address."""
+    for email in outcome.get("invited", []):
         notify_plan_auto_booked(plan, email, outcome.get("time", ""),
                                 outcome.get("event_link"))
 

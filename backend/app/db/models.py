@@ -195,6 +195,10 @@ class Plan(Base):
     reminder_sent_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), default=None
     )
+    # bearer token for the public vote link (see PlanGuest). None = not shared.
+    # Revoking is setting it back to None; regenerating mints a new one, which
+    # kills every copy of the old link.
+    share_token: Mapped[str | None] = mapped_column(String, default=None)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
 
     rounds: Mapped[list["TimeRound"]] = relationship(
@@ -202,6 +206,10 @@ class Plan(Base):
     )
     interest_votes: Mapped[list["InterestVote"]] = relationship(
         back_populates="plan", cascade="all, delete-orphan"
+    )
+    guests: Mapped[list["PlanGuest"]] = relationship(
+        back_populates="plan", cascade="all, delete-orphan",
+        order_by="PlanGuest.created_at",
     )
 
     # SQLite drops tzinfo on read (same guard as TimeRound.start/end). The
@@ -260,6 +268,9 @@ class TimeRound(Base):
     votes: Mapped[list["TimeVote"]] = relationship(
         back_populates="round", cascade="all, delete-orphan"
     )
+    guest_votes: Mapped[list["GuestTimeVote"]] = relationship(
+        back_populates="round", cascade="all, delete-orphan"
+    )
 
     # SQLite drops tzinfo on read — these accessors re-attach UTC so no naive
     # datetime ever leaves the model. Always use these, never the raw columns.
@@ -291,6 +302,86 @@ class TimeVote(Base):
 
     round: Mapped["TimeRound"] = relationship(back_populates="votes")
     user: Mapped["User"] = relationship()
+
+
+class PlanGuest(Base):
+    """Somebody voting on a plan through its share link, with no Nudgy account.
+
+    The friction that kills group scheduling is "everyone install the app first".
+    A share link removes it: one person in the group shares the link, anyone can
+    open it, give a name, and answer. Guests are attached to ONE plan — this is
+    not a shadow account, it grants nothing beyond that plan's two questions,
+    and it disappears with the plan.
+
+    They are pinned to a browser by a signed cookie (auth/guest_tokens.py), which
+    is what lets someone change their mind later instead of voting twice. A lost
+    cookie means a new guest row, so names are unique per plan — a second "Sam"
+    is asked to distinguish themselves rather than silently landing on the first
+    Sam's ballot.
+
+    `email` is optional and used for exactly one thing: sending the calendar
+    invite if the plan gets booked. No email, no invite — but the vote still
+    counts, because requiring an address would rebuild the friction this removes.
+    """
+    __tablename__ = "plan_guests"
+    __table_args__ = (UniqueConstraint("plan_id", "name", name="uq_plan_guest_name"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    plan_id: Mapped[int] = mapped_column(ForeignKey("plans.id"), index=True)
+    name: Mapped[str] = mapped_column(String)
+    email: Mapped[str | None] = mapped_column(String, default=None)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+
+    plan: Mapped["Plan"] = relationship(back_populates="guests")
+    # so deleting a plan takes its guests' votes with it, the same way a member's
+    # votes go with the plan
+    interest_votes: Mapped[list["GuestInterestVote"]] = relationship(
+        back_populates="guest", cascade="all, delete-orphan"
+    )
+    time_votes: Mapped[list["GuestTimeVote"]] = relationship(
+        back_populates="guest", cascade="all, delete-orphan"
+    )
+
+    @property
+    def label(self) -> str:
+        """How this guest appears in a tally, next to members' emails.
+
+        Unique inside a plan (names are), and can never collide with an email —
+        it has a space in it. The "(guest)" suffix is not decoration: the host
+        reading the box needs to know which of these people they can't chase in
+        the app."""
+        return f"{self.name} (guest)"
+
+
+class GuestInterestVote(Base):
+    """A guest's stage-1 answer. Separate table from InterestVote rather than a
+    nullable user_id on it: a guest is a different kind of participant, and this
+    keeps the members' vote tables exactly as they were — no migration that has
+    to relax a NOT NULL on live data."""
+    __tablename__ = "guest_interest_votes"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    # one plan per guest, so the guest alone identifies the ballot
+    guest_id: Mapped[int] = mapped_column(ForeignKey("plan_guests.id"), unique=True)
+    yes: Mapped[bool] = mapped_column()
+    voted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+
+    guest: Mapped["PlanGuest"] = relationship(back_populates="interest_votes")
+
+
+class GuestTimeVote(Base):
+    """A guest's stage-2 answer on one candidate time. Re-voting replaces."""
+    __tablename__ = "guest_time_votes"
+    __table_args__ = (UniqueConstraint("round_id", "guest_id", name="uq_round_guest"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    round_id: Mapped[int] = mapped_column(ForeignKey("time_rounds.id"), index=True)
+    guest_id: Mapped[int] = mapped_column(ForeignKey("plan_guests.id"), index=True)
+    yes: Mapped[bool] = mapped_column()
+    voted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+
+    guest: Mapped["PlanGuest"] = relationship(back_populates="time_votes")
+    round: Mapped["TimeRound"] = relationship(back_populates="guest_votes")
 
 
 class GroupEvent(Base):

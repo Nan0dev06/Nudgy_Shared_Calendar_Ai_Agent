@@ -91,6 +91,21 @@ frontend. Start here to see the whole route surface.
 > A real free-tier provider (Resend/SMTP) is a later drop-in: new backend class,
 > point the singleton at it. No caller changes.
 
+### `notify/` — what a plan says when it emails somebody
+`plans.py` owns the wording of the vote reminder, the "voting closed" note to
+the host, and the "it booked itself" note to attendees. One recipient per call
+with pre-rendered time labels, because times must read in the reader's zone.
+Sends are best-effort — a dead mailbox must never abort a tick. **This is where
+per-user Settings > Notifications preferences hook in when they land.**
+
+### `jobs/` — work that runs on a clock, not on a request
+`plan_ticker.py`: once a minute, resolve passed deadlines and nudge non-voters.
+`run_tick(session, now)` is plain and synchronous (tests drive months of plan
+life with a frozen clock); the asyncio loop around it is started/stopped by
+`main.py`'s lifespan. In-process on purpose — a broker would be another thing to
+host. Knobs: `PLAN_TICK_SECONDS`, `PLAN_TICKER_ENABLED`,
+`PLAN_REMINDER_INTERVAL_SECONDS`.
+
 ### `tools/` — calendar reads, venue search, slot math, booking, vote rules
 | File | Owns |
 |---|---|
@@ -98,8 +113,9 @@ frontend. Start here to see the whole route surface.
 | `locations.py` | Venue-suggestion pipeline (OpenStreetMap geocode/Overpass) + event-location read. |
 | `slots.py` | **Pure** interval math: `find_common_slots`, `merge_intervals`, `complement`, `intersect`, `reasonable_hours`. No I/O — easy to unit-test. |
 | `booking.py` | Writes a host-confirmed plan time to the calendar (via the provider). |
-| `plan_rules.py` | **Pure** two-stage vote-cascade logic (interest → time). |
-| `plan_service.py` | Host actions: confirm active time / advance to next (orchestrates rules + repo + booking). |
+| `plan_rules.py` | **Pure** two-stage vote-cascade logic (interest → time). Works on *participants* — members and share-link guests alike. |
+| `plan_deadlines.py` | **Pure** async-convergence rules: when to nudge, when a deadline closes/books a plan, what counts as unanimity. |
+| `plan_service.py` | Host actions (confirm / advance) **and** the two async transitions (`maybe_auto_book`, `resolve_deadline`). Also where `PlanState` merges members + guests. |
 
 ### `agent/` — the LLM agent
 | File | Owns |
@@ -116,7 +132,8 @@ frontend. Start here to see the whole route surface.
 | `auth_routes.py` | `/auth/*` — Google OAuth **and** email/password/magic-link/reset + `/auth/me`. |
 | `group_routes.py` | `/groups/*` — create/join, members. |
 | `event_routes.py` | group events & tasks + Google sync. |
-| `plan_routes.py` | `/plans/*` — voting + deterministic host actions. |
+| `plan_routes.py` | `/plans/*` — voting, deterministic host actions, deadline/auto-book settings, share-link on/off. |
+| `share_routes.py` | `/share/{token}/*` — **the only unauthenticated writes in the app.** Guest voting: view, join (name + optional email), interest, time-vote. |
 | `chat_routes.py` | `/chat` — the agent endpoint. |
 | `review_routes.py` | `/reviews` — place reviews. |
 
@@ -156,6 +173,13 @@ frontend. Start here to see the whole route surface.
 - **Plans / voting / host actions:** `tools/plan_rules.py`,
   `tools/plan_service.py`, `api/plan_routes.py`, `db/models.py` (`Plan`,
   `TimeRound`, votes), `db/repo.py`.
+- **Deadlines / reminders / auto-book:** `tools/plan_deadlines.py`,
+  `jobs/plan_ticker.py`, `notify/plans.py`, `tools/plan_service.py`
+  (`maybe_auto_book`, `resolve_deadline`), `core/config.py` (PLAN_* knobs).
+- **Guest voting / share links:** `api/share_routes.py`,
+  `auth/guest_tokens.py`, `db/models.py` (`PlanGuest`, `Guest*Vote`,
+  `Plan.share_token`), `db/repo.py` (share + guest section),
+  `frontend/src/screens/SharePage.jsx`.
 - **DB schema change:** `db/models.py` + `db/session.py`
   (`_LATE_COLUMNS`/`_LATE_INDEXES`/backfill).
 - **Config / env:** `core/config.py` + `.env.example`.

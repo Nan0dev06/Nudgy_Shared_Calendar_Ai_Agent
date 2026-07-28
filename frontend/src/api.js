@@ -64,6 +64,20 @@ export const api = {
   // plan everyone said yes to may book itself (auto_book). Omit a field to
   // leave it alone — sending deadline_iso: null actively clears the deadline.
   patchPlan: (planId, body) => req(`/plans/${planId}`, { method: "PATCH", body }),
+  // host-only: the public vote link. sharePlan mints one (or, with regenerate,
+  // replaces it — which kills every copy already sent); unsharePlan turns it off.
+  sharePlan: (planId, regenerate = false) =>
+    req(`/plans/${planId}/share?regenerate=${regenerate}`, { method: "POST" }),
+  unsharePlan: (planId) => req(`/plans/${planId}/share`, { method: "DELETE" }),
+  // ---- the guest side of that link: no session, no account. Identity is a
+  // signed per-plan cookie the join call sets, so these still send credentials.
+  sharedPlan: (token) => req(`/share/${token}`),
+  joinSharedPlan: (token, name, email) =>
+    req(`/share/${token}/join`, { method: "POST", body: { name, email } }),
+  guestInterest: (token, yes) =>
+    req(`/share/${token}/interest`, { method: "POST", body: { yes } }),
+  guestTimeVote: (token, yes, round_id) =>
+    req(`/share/${token}/time-vote`, { method: "POST", body: { yes, round_id } }),
   voteInterest: (planId, yes) =>
     req(`/plans/${planId}/interest`, { method: "POST", body: { yes } }),
   voteTime: (planId, yes, round_id) =>

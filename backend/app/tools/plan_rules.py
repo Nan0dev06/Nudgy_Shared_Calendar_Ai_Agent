@@ -94,9 +94,9 @@ def ballot_for(
 
 
 def tally(
-    member_emails: list[str],
-    interest_votes: dict[str, bool],   # email -> yes/no, only members who answered
-    time_votes: dict[str, bool],       # email -> yes/no on the ACTIVE round
+    participants: list[str],
+    interest_votes: dict[str, bool],   # participant -> yes/no, answered only
+    time_votes: dict[str, bool],       # participant -> yes/no on the ACTIVE round
     *,
     active_time_label: str | None,     # e.g. "Mon 20 Jul 17:00" — None if no active round
     times_left: int,                   # queued times after the active one
@@ -105,9 +105,14 @@ def tally(
 
     Time columns only ever cover the interested cohort — someone who said no to
     the plan is never counted as silent on a time they were never asked.
+
+    A "participant" is whoever the plan is being asked of: group members, keyed
+    by email, plus anyone voting through the share link, keyed by "Name (guest)".
+    The rules deliberately can't tell them apart — a guest's no counts exactly as
+    a member's no, which is the point of letting them vote at all.
     """
     t = Tally()
-    for e in member_emails:
+    for e in participants:
         v = interest_votes.get(e)
         if v is None:
             t.no_interest_answer.append(e)

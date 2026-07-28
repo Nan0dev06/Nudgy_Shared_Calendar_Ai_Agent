@@ -44,6 +44,7 @@ _LATE_COLUMNS = [
     ("plans", "deadline_utc", "TIMESTAMP WITH TIME ZONE"),
     ("plans", "auto_book", "BOOLEAN DEFAULT FALSE NOT NULL"),
     ("plans", "reminder_sent_at", "TIMESTAMP WITH TIME ZONE"),
+    ("plans", "share_token", "VARCHAR"),
     # TRUE/FALSE literals work on both SQLite (>=3.23) and Postgres
     ("events", "personal", "BOOLEAN DEFAULT FALSE NOT NULL"),
     ("events", "anonymous", "BOOLEAN DEFAULT TRUE NOT NULL"),
@@ -55,9 +56,18 @@ _LATE_COLUMNS = [
 # it's safe to run on every startup (and a no-op once the index is there).
 _LATE_INDEXES = [
     ("ix_plans_group_id", "plans", "group_id"),
+    ("ix_plan_guests_plan_id", "plan_guests", "plan_id"),
     ("ix_events_group_id", "events", "group_id"),
     ("ix_events_created_by", "events", "created_by"),
     ("ix_memberships_group_id", "memberships", "group_id"),
+]
+
+
+# Same idea, but UNIQUE. Both SQLite and Postgres treat NULLs as distinct in a
+# unique index, so a nullable column (share_token: most plans have none) is fine
+# here — it enforces "no two plans share a link" without blocking the NULLs.
+_LATE_UNIQUE_INDEXES = [
+    ("ux_plans_share_token", "plans", "share_token"),
 ]
 
 
@@ -74,6 +84,11 @@ def init_db() -> None:
     for name, table, column in _LATE_INDEXES:
         with engine.begin() as conn:
             conn.execute(text(f"CREATE INDEX IF NOT EXISTS {name} ON {table} ({column})"))
+    for name, table, column in _LATE_UNIQUE_INDEXES:
+        with engine.begin() as conn:
+            conn.execute(text(
+                f"CREATE UNIQUE INDEX IF NOT EXISTS {name} ON {table} ({column})"
+            ))
     _backfill_calendar_accounts(engine)
 
 

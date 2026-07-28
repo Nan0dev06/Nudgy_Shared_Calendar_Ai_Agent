@@ -5,6 +5,7 @@ import { decorateMembers, nameFromEmail } from "./people.js";
 import Blobs from "./components/Blobs.jsx";
 import SignIn from "./screens/SignIn.jsx";
 import GroupGate from "./screens/GroupGate.jsx";
+import SharePage, { readShareToken } from "./screens/SharePage.jsx";
 import Shell from "./components/Shell.jsx";
 import { OrbLogo } from "./components/OrbLogo.jsx";
 
@@ -459,6 +460,19 @@ export default function App() {
     return out;
   }, []);
 
+  // host turning the public vote link on/off. The plan feed carries share_url
+  // for the host only, so refresh the poll after either move.
+  const sharePlanLink = useCallback(async (planId, regenerate = false) => {
+    const out = await api.sharePlan(planId, regenerate);
+    setPlans((ps) => ps.map((p) => (p.id === planId ? { ...p, share_url: out.share_url } : p)));
+    return out.share_url;
+  }, []);
+
+  const unsharePlanLink = useCallback(async (planId) => {
+    await api.unsharePlan(planId);
+    setPlans((ps) => ps.map((p) => (p.id === planId ? { ...p, share_url: null } : p)));
+  }, []);
+
   // host appending candidate times to an existing (usually timeless) poll —
   // grows the same plan instead of spawning a second one
   const addTimesToPlan = useCallback(
@@ -793,12 +807,24 @@ export default function App() {
     voteInterest, voteTime, createGroup, joinGroup, logout, refreshGroupData,
     renameGroup, regenerateCode, deleteGroup, leaveGroup, removeMember,
     createEvent, setTaskDone, removeEvent, createPlanDirect, addTimesToPlan,
-    removePlan, updatePlanSettings, saveProfile,
+    removePlan, updatePlanSettings, sharePlanLink, unsharePlanLink, saveProfile,
     displayName:
       me?.display_name || profile.name || (me ? nameFromEmail(me.email) : ""),
   };
 
   // ---- screens -------------------------------------------------------------
+  // A share link ("/?share=<token>") is answered by anyone, account or not, so
+  // it short-circuits BEFORE the auth gate and before we wait on /auth/me —
+  // making a guest sit through a session check they can never pass would be the
+  // exact friction the link exists to remove.
+  if (readShareToken())
+    return (
+      <div style={BG}>
+        <Blobs page="signin" />
+        <SharePage />
+      </div>
+    );
+
   if (!authChecked)
     return (
       <div style={{ ...BG, alignItems: "center", justifyContent: "center" }}>
