@@ -111,7 +111,7 @@ A hackathon proves the idea works once, with everyone in the room. A SaaS has to
 # PART 7 — SEQUENCED ROADMAP
 - **Phase 0 — Foundation (free, invisible):** entitlement/quota skeleton; encrypt tokens + session TTL; managed Postgres + backups; error tracking; per-user LLM quota; DB cleanup. Start OAuth-verification paperwork (domain, draft privacy/ToS) *in parallel* — no code blocked on it.
 - **Phase 1 — Auth & calendars:** identity/calendar split; email magic-link + Google + Microsoft; `CalendarProvider` + Outlook; freebusy cache.
-- **Phase 2 — Agent & mechanism hardening:** model router + fallback; conversation persistence; deterministic host endpoints; injection defense; SSE real-time; vote reminders/deadlines; shareable vote links.
+- **Phase 2 — Agent & mechanism hardening:** model router + fallback; conversation persistence; ~~deterministic host endpoints~~ (done, Phase 0); injection defense; SSE real-time; ~~vote reminders/deadlines~~ + ~~shareable vote links~~ (both DONE — see "Async convergence" below).
 - **Phase 3 — Go-public prep:** privacy/ToS live; submit Google + Microsoft verification; marketing + pricing + account/billing pages; landing site + router.
 - **Phase 4 — Polish & growth:** dark mode, responsive, a11y; wishlist features (notifications, recurring, solo mode, smarter venues, integrations).
 - **Payments:** slot the deferred `BillingProvider` in the moment real demand appears.
@@ -127,7 +127,7 @@ A hackathon proves the idea works once, with everyone in the room. A SaaS has to
 | Token storage | Google refresh tokens saved as plaintext JSON in DB | Real security risk for a product holding calendar access | Encrypt at rest (Fernet), key from secret store |
 | Calendar data | Google `freebusy` (ranges only) + event locations | Excellent privacy design, but Google-only and uncached | `CalendarProvider` abstraction + Microsoft Graph; short-TTL cache |
 | Groups | Invite-code join, flat, no roles | Missing leave/kick/rename/delete; no roles for teams-later | Add lifecycle ops + owner/member role now; optional solo mode |
-| Poll cascade | Two-stage, host-decides, pure + tested | Logic is great; host moves go through the LLM; 5s polling; no reminders | Deterministic host endpoints; SSE; reminders/deadlines; shareable vote links |
+| Poll cascade | Two-stage, host-decides, pure + tested; **+ deadlines, reminders, opt-in auto-book, guest voting by link** | Host moves still go through the LLM from the UI; still 5s polling | SSE next; route the UI's lock-in at the deterministic endpoints |
 | Tasks/Events | Create/delete/toggle; optional one-way Google sync | No edit, no recurrence, no reminders; one-way sync | Full CRUD + recurrence + reminders; two-way resilient sync |
 | Agent AI | 8-step loop, 7 tools, free Groq 8b, prompt resent each step | Fragile model; no persistence; no quota (shared budget); injection-exposed | Model router+fallback; per-user quota; persist transcripts; fence injected text; stream via SSE |
 
@@ -157,8 +157,8 @@ A hackathon proves the idea works once, with everyone in the room. A SaaS has to
 ### Extra features (wishlist)
 | Thing | How it works | Review | How to fix / better way |
 |---|---|---|---|
-| Notifications | Only Google's invite email | Async groups can't converge without nudges | Email (free tier) + reminders; push later |
-| Share links | N/A | Big growth + friction win | Vote-by-link without an account |
+| Notifications | Vote reminders + deadline/booking mail via the mailer seam (console backend in dev) | Wording done, delivery isn't — needs a real provider; no in-app or push channel, no per-user preferences | Wire Resend/SMTP; add Settings > Notifications, gating it in `notify/` |
+| Share links | Per-plan bearer token; guests give a name (+optional email for the invite), vote in the same cascade, counted in the tally | Host can regenerate/revoke; capped per plan; no rate limit on join attempts | Add a join rate limit if links ever leak in the wild |
 | Timezones | Everyone defaults to Beirut | Correctness bug for mixed-tz groups | Auto-detect at signup; per-user tz |
 | Recurring / solo / smarter venues / chat integrations | N/A | High-value differentiators | Build post-core from the wishlist |
 

@@ -14,10 +14,20 @@ Read these before doing anything else this session:
 - **Phase 1** (identity/calendar split, provider abstraction for Google+Microsoft,
   freebusy cache, email+password+magic-link+reset auth, Outlook) — DONE, merged
   (PRs #7, #8, #9, #10, #12; #11 = architecture-map doc).
-- **Next up:** frontend auth UI (login/register/reset pages, connect-calendar
-  management, multi-calendar color UI, fix vite proxy `/polls`→`/plans`) —
-  recommended next so email/Microsoft auth are actually usable in the app.
-  Then Phase 2 (agent/mechanism hardening — see roadmap).
+- **Frontend auth UI** (PR #13) + **sync_setting enforcement** (#14) + **beta
+  hardening / group lifecycle** (#15) — DONE, merged.
+- **Async voting** (deadlines, non-voter reminders, opt-in auto-book) — PR #16,
+  branch `feat/async-voting`. **Open, awaiting merge.**
+- **Guest voting** (shareable vote links, no account needed) — branch
+  `feat/guest-voting`, stacked **on top of** `feat/async-voting`. Merge #16
+  first, then this one.
+- **Next up in Phase 2:** SSE to replace the 5s poll (the poll cadence is
+  visible in the server log — it's the last piece of the async story), then
+  conversation persistence / model router / injection defense.
+- **Known gap worth a small branch:** the poll card's "Lock it in" and "Try the
+  next time" still go through the LLM (`doSend`) even though the deterministic
+  endpoints exist (`POST /plans/{id}/lock-in`, `/next-time`) and `api.js` could
+  call them directly.
 
 ## Working branch
 
