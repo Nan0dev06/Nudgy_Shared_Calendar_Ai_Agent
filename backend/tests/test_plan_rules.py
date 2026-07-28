@@ -54,6 +54,12 @@ def test_settled_plan_has_nothing_to_answer():
     assert _ballot(interest=True, plan_status="dead").stage == CLOSED
 
 
+def test_an_expired_plan_says_the_deadline_passed_not_that_it_was_settled():
+    b = _ballot(interest=None, plan_status="expired")
+    assert b.stage == CLOSED
+    assert "deadline" in b.note
+
+
 # --------------------------------------------------- the host's tally
 
 def test_time_columns_only_ever_cover_the_interested_cohort():

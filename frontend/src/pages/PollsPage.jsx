@@ -16,10 +16,30 @@ const tallyLine = (list, word) => {
     ? `${l.length} ${word} (${l.map(nameFromEmail).join(", ")})`
     : `0 ${word}`;
 };
+
+// "closes in 4 hours" — coarse on purpose. A live-ticking countdown would just
+// be noise for something measured in days, and the list already refreshes.
+const closesLabel = (iso) => {
+  if (!iso) return null;
+  const ms = new Date(iso).getTime() - Date.now();
+  if (ms <= 0) return "voting closed";
+  const mins = Math.round(ms / 60000);
+  if (mins < 60) return `closes in ${mins} min`;
+  const hrs = Math.round(mins / 60);
+  if (hrs < 48) return `closes in ${hrs} ${hrs === 1 ? "hour" : "hours"}`;
+  return `closes in ${Math.round(hrs / 24)} days`;
+};
+
+// how long from now the host is giving the group, in hours
+const EXTENSIONS = [
+  [24, "a day"],
+  [72, "3 days"],
+  [168, "a week"],
+];
 export default function PollsPage() {
   const {
     plans, activeGroup, voteInterest, voteTime, setModal, setPage, setView, doSend,
-    removePlan,
+    removePlan, updatePlanSettings,
   } = useApp();
 
   // which poll (if any) is showing its "Delete? Yes / Cancel" inline confirm —
@@ -57,6 +77,7 @@ export default function PollsPage() {
       open: ["#D95D39", "Poll · open"],
       scheduled: ["#2A9D8F", "Locked in"],
       dead: ["#a09889", "Didn't work out"],
+      expired: ["#b8968c", "Voting closed"],
     };
     const [c, label] = map[p.status] || ["#a09889", p.status];
     return (
@@ -151,6 +172,19 @@ export default function PollsPage() {
                       : `aiming for ${expectedOf(p)} people`}
                   </span>
                 )}
+                {p.deadline_iso && p.status !== "scheduled" && p.status !== "dead" && (
+                  <span style={{ fontSize: 11.5, fontWeight: 600, color: p.voting_open ? "#D95D39" : "#a09889" }}>
+                    {closesLabel(p.deadline_iso)}
+                  </span>
+                )}
+                {p.auto_book && p.voting_open && (
+                  <span
+                    title="If everyone says yes, this books itself — no one has to lock it in"
+                    style={{ fontSize: 11.5, fontWeight: 600, color: "#2A9D8F" }}
+                  >
+                    books itself on a full yes
+                  </span>
+                )}
               </div>
             </div>
 
@@ -182,7 +216,7 @@ export default function PollsPage() {
             )}
 
             {/* ---- candidate times queue -------------------------------- */}
-            {times.length > 0 && p.status === "open" && (
+            {times.length > 0 && (p.status === "open" || p.status === "expired") && (
               <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
                 <span style={{ fontSize: 10.5, fontWeight: 600, letterSpacing: ".07em", textTransform: "uppercase", color: "#a49c8c" }}>
                   Candidate times
@@ -214,7 +248,9 @@ export default function PollsPage() {
             )}
 
             {/* ---- host's decision box ---------------------------------- */}
-            {hb && p.status === "open" && (
+            {/* stays up on an expired poll: the deadline closed VOTING, the
+                host still decides what to do with the votes that landed */}
+            {hb && (p.status === "open" || p.status === "expired") && (
               <div style={agentBox}>
                 <span style={{ fontSize: 12, fontWeight: 600, color: "#2A9D8F" }}>
                   Your host box
@@ -232,22 +268,24 @@ export default function PollsPage() {
                 )}
                 <div style={{ display: "flex", gap: 8, marginTop: 4, flexWrap: "wrap" }}>
                   {times.length > 0 && (
-                    <>
-                      <div
-                        className="hov-lift-sm"
-                        style={{ ...sagePill(true), padding: "5px 13px", fontSize: 11.5 }}
-                        onClick={() => doSend(`Lock in the active time for the plan "${p.title}"`)}
-                      >
-                        Lock it in
-                      </div>
-                      <div
-                        className="hov-glass"
-                        style={{ ...gpill(true), padding: "5px 13px", fontSize: 11.5 }}
-                        onClick={() => doSend(`The current time doesn't work — move to the next candidate time for the plan "${p.title}"`)}
-                      >
-                        Try the next time
-                      </div>
-                    </>
+                    <div
+                      className="hov-lift-sm"
+                      style={{ ...sagePill(true), padding: "5px 13px", fontSize: 11.5 }}
+                      onClick={() => doSend(`Lock in the active time for the plan "${p.title}"`)}
+                    >
+                      Lock it in
+                    </div>
+                  )}
+                  {/* putting a NEW time up asks people to vote, so it's gone
+                      once voting closed — extending the deadline brings it back */}
+                  {times.length > 0 && p.voting_open && (
+                    <div
+                      className="hov-glass"
+                      style={{ ...gpill(true), padding: "5px 13px", fontSize: 11.5 }}
+                      onClick={() => doSend(`The current time doesn't work — move to the next candidate time for the plan "${p.title}"`)}
+                    >
+                      Try the next time
+                    </div>
                   )}
                   {times.length === 0 && (
                     <div
@@ -266,6 +304,59 @@ export default function PollsPage() {
                       Add times now
                     </div>
                   )}
+                </div>
+
+                {/* ---- how this poll finishes on its own ---------------- */}
+                <div style={{ display: "flex", flexDirection: "column", gap: 7, marginTop: 8, paddingTop: 10, borderTop: "1px solid rgba(160,152,137,.16)" }}>
+                  <span style={{ fontSize: 11, color: "#a09889" }}>
+                    {p.status === "expired"
+                      ? "Voting closed. Give the group more time, or lock in what you have."
+                      : p.deadline_iso
+                        ? `Voting ${closesLabel(p.deadline_iso)} — Nudgy nudges whoever hasn't answered.`
+                        : "No deadline — this poll waits for you. Set one and Nudgy chases the stragglers."}
+                  </span>
+                  <div style={{ display: "flex", gap: 7, flexWrap: "wrap", alignItems: "center" }}>
+                    {EXTENSIONS.map(([hours, label]) => (
+                      <div
+                        key={hours}
+                        className="hov-glass"
+                        style={{ ...gpill(true), padding: "4px 11px", fontSize: 11 }}
+                        onClick={() =>
+                          updatePlanSettings(p.id, {
+                            // extend from the existing deadline when it's still
+                            // ahead, so "+ a day" adds a day rather than
+                            // silently shortening a longer window
+                            deadline_iso: new Date(
+                              Math.max(Date.now(), new Date(p.deadline_iso || 0).getTime())
+                              + hours * 3600e3
+                            ).toISOString(),
+                          }).catch(() => {})
+                        }
+                      >
+                        {p.deadline_iso ? `+ ${label}` : `Close in ${label}`}
+                      </div>
+                    ))}
+                    {p.deadline_iso && p.status !== "expired" && (
+                      <div
+                        className="hov-glass"
+                        style={{ ...gpill(true), padding: "4px 11px", fontSize: 11 }}
+                        onClick={() => updatePlanSettings(p.id, { deadline_iso: null }).catch(() => {})}
+                      >
+                        No deadline
+                      </div>
+                    )}
+                    <div
+                      className="hov-glass"
+                      style={{
+                        ...(p.auto_book ? sagePill(true) : gpill(true)),
+                        padding: "4px 11px", fontSize: 11,
+                      }}
+                      title="Book the active time automatically once every single person has said yes to it"
+                      onClick={() => updatePlanSettings(p.id, { auto_book: !p.auto_book }).catch(() => {})}
+                    >
+                      {p.auto_book ? "✓ Books itself on a full yes" : "Book itself on a full yes"}
+                    </div>
+                  </div>
                 </div>
               </div>
             )}
@@ -291,6 +382,15 @@ export default function PollsPage() {
                   )}
                 </div>
               </>
+            )}
+
+            {/* voting closed on time, nothing booked — say what happens next
+                instead of leaving a card that just stopped responding */}
+            {p.status === "expired" && !p.is_host && (
+              <div style={{ fontSize: 12.5, color: "#a09889", lineHeight: 1.5 }}>
+                {nameFromEmail(p.host || "")} can still lock in a time from the
+                answers that came in — or reopen it if the group needs longer.
+              </div>
             )}
 
             {p.status === "dead" && (

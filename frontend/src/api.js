@@ -60,6 +60,10 @@ export const api = {
   deletePlan: (planId) => req(`/plans/${planId}`, { method: "DELETE" }),
   createPlan: (groupId, body) =>
     req(`/groups/${groupId}/plans`, { method: "POST", body }),
+  // host-only: when voting closes (deadline_iso, null clears it) and whether a
+  // plan everyone said yes to may book itself (auto_book). Omit a field to
+  // leave it alone — sending deadline_iso: null actively clears the deadline.
+  patchPlan: (planId, body) => req(`/plans/${planId}`, { method: "PATCH", body }),
   voteInterest: (planId, yes) =>
     req(`/plans/${planId}/interest`, { method: "POST", body: { yes } }),
   voteTime: (planId, yes, round_id) =>
