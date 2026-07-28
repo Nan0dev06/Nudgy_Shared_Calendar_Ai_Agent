@@ -69,22 +69,41 @@ class PlanState:
     """A plan's live vote state, fetched once and reused. GET /plans builds both
     the member ballot AND (for the host) the tally per plan; without this each
     did its own round-trips for the active round + both vote sets — doubled up,
-    every 5s, for every open plan. Load once, pass to both."""
+    every 5s, for every open plan. Load once, pass to both.
+
+    `participants` is members (by email) AND anyone who joined through the share
+    link (by "Name (guest)"), merged here so every consumer downstream — the
+    rules, the tally, unanimity, reminders — sees one list of people who owe an
+    answer. The vote dicts are merged the same way.
+    """
     active: TimeRound | None
-    member_emails: list[str]
+    participants: list[str]
     interest_votes: dict[str, bool]
     time_votes: dict[str, bool]
     times_left: int
+    member_emails: list[str]   # members only — who a reminder can actually reach
 
 
 def load_plan_state(session: Session, plan: Plan) -> PlanState:
     active = repo.get_active_round(session, plan)
+    members = [m.email for m in repo.get_group_members(session, plan.group_id)]
+    # guests count from the moment they JOIN, not from their first vote — a guest
+    # who opened the link and went quiet is someone the plan is waiting on, the
+    # same as a silent member.
+    guests = [g.label for g in repo.get_plan_guests(session, plan)]
     return PlanState(
         active=active,
-        member_emails=[m.email for m in repo.get_group_members(session, plan.group_id)],
-        interest_votes=repo.get_interest_votes(session, plan),
-        time_votes=repo.get_time_votes(session, active),
+        participants=members + guests,
+        interest_votes={
+            **repo.get_interest_votes(session, plan),
+            **repo.get_guest_interest_votes(session, plan),
+        },
+        time_votes={
+            **repo.get_time_votes(session, active),
+            **repo.get_guest_time_votes(session, active),
+        },
         times_left=repo.count_queued_rounds(session, plan),
+        member_emails=members,
     )
 
 
@@ -92,7 +111,7 @@ def plan_tally(session: Session, plan: Plan, tz_name: str, *, state: PlanState |
     """The host's summary box for the plan's active time."""
     st = state or load_plan_state(session, plan)
     return tally(
-        st.member_emails,
+        st.participants,
         st.interest_votes,
         st.time_votes,
         active_time_label=time_label(st.active, tz_name) if st.active else None,
@@ -111,12 +130,26 @@ def member_ballot(session: Session, plan: Plan, user: User, *, state: PlanState 
     )
 
 
+def guest_ballot(plan: Plan, guest, *, state: PlanState) -> Ballot:
+    """The share-link visitor's step of the same cascade the members are in."""
+    return ballot_for(
+        interest=state.interest_votes.get(guest.label),
+        time_vote=state.time_votes.get(guest.label),
+        has_active_time=state.active is not None,
+        plan_status=plan.status,
+    )
+
+
 def pending_voters(state: PlanState) -> list[str]:
     """Members who still owe this plan an answer — who a reminder goes to.
 
     Two ways to be pending: never answered the plan at all, or said you're in
     and haven't answered the time on the table. Someone who said no to the plan
     is done; someone who said no to the time has answered it.
+
+    MEMBERS only, even though guests can be pending too: a nudge needs somewhere
+    to land, and a guest gave us at most an optional address for the calendar
+    invite. Chasing them is whoever shared the link's job.
     """
     waiting = []
     for email in state.member_emails:
@@ -194,20 +227,37 @@ def _confirm(session: Session, plan: Plan, tz_name: str) -> dict:
 
     votes = repo.get_time_votes(session, active)
     going = sorted(e for e, v in votes.items() if v)
+    # Guests count as attending, but their tally key is "Name (guest)", not an
+    # address — only the ones who left an email can be invited. Keeping the two
+    # lists apart is what stops a display label being handed to Google as a
+    # recipient.
+    guest_votes = repo.get_guest_time_votes(session, active)
+    guests_going = [g for g in repo.get_plan_guests(session, plan)
+                    if guest_votes.get(g.label)]
+    going += [g.label for g in guests_going]
     if not going:
         return {"error": f"Nobody has said {time_label(active, tz_name)} works for them "
                          "— there is no one to book it for."}
 
+    invite = sorted(e for e, v in votes.items() if v)
+    invite += [g.email for g in guests_going if g.email]
+    if not invite:
+        # Only email-less guests can make it. The event still belongs on the
+        # host's calendar — they're the organizer and they locked it in — so
+        # book it there and simply send no invites.
+        organizer_email = session.get(User, plan.created_by).email
+        invite = [organizer_email]
+
     repo.set_round_status(session, active, "confirmed")
-    log.info("[decision] plan %d: confirming round %d (%s) for %d member(s)",
-             plan.id, active.ordinal, time_label(active, tz_name), len(going))
+    log.info("[decision] plan %d: confirming round %d (%s) for %d attendee(s), %d invited",
+             plan.id, active.ordinal, time_label(active, tz_name), len(going), len(invite))
 
     # Google can refuse or throw (expired token, network). Either way the time
     # must go back to "active" — a round left "confirmed" with no event would
     # be a dead end: not bookable again, and not skippable to the next time.
     organizer = session.get(User, plan.created_by)
     try:
-        result = book_round_event(session, plan, active, organizer, going)
+        result = book_round_event(session, plan, active, organizer, invite)
     except Exception as exc:
         repo.set_round_status(session, active, "active")
         log.exception("[decision] plan %d booking raised", plan.id)
@@ -221,7 +271,10 @@ def _confirm(session: Session, plan: Plan, tz_name: str) -> dict:
     return {
         "action": "booked",
         "time": time_label(active, tz_name),
+        # who is coming (members by email, guests by label) vs. who we can
+        # actually write to — never assume the first list is mailable
         "attendees": going,
+        "invited": invite,
         "event_link": result["event_link"],
         "event_id": result["event_id"],
     }
@@ -247,7 +300,10 @@ def maybe_auto_book(session: Session, plan: Plan, tz_name: str) -> dict | None:
     st = load_plan_state(session, plan)
     if st.active is None:
         return None
-    t = tally(st.member_emails, st.interest_votes, st.time_votes,
+    # participants, not members: a guest who joined through the share link and
+    # hasn't answered is someone this plan is still waiting on, so unanimity has
+    # to include them. Otherwise sharing a link would make plans book EASIER.
+    t = tally(st.participants, st.interest_votes, st.time_votes,
               active_time_label=None, times_left=st.times_left)
     if not everyone_said_yes(
         interested=len(t.interested),

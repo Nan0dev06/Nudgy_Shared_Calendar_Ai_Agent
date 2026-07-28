@@ -34,6 +34,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_current_user
+from app.core.config import APP_BASE_URL
 from app.db.models import Plan, User
 from app.db import repo
 from app.db.session import get_session
@@ -132,6 +133,9 @@ def _plan_json(session: Session, plan: Plan, viewer: User, tz_name: str) -> dict
         },
     }
     if is_host:
+        # the link itself is host-only: it's a bearer credential, and a member
+        # who wants to invite someone can ask the host for it
+        out["share_url"] = share_url(plan.share_token)
         t = plan_tally(session, plan, tz_name, state=state)
         out["host_box"] = {
             "interested": t.interested,
@@ -284,6 +288,41 @@ def update_plan_settings(
     return _plan_json(session, plan, user, user.timezone)
 
 
+@router.post("/plans/{plan_id}/share")
+def share_plan(
+    plan_id: int,
+    regenerate: bool = False,
+    user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+):
+    """Host-only: get this plan's public vote link, minting one if needed.
+
+    `regenerate=true` mints a fresh token, which kills every copy of the old link
+    at once — the move for "that got forwarded further than I meant". Votes
+    already cast through the old link stay; the people who cast them were
+    invited in good faith.
+    """
+    plan = _host_plan(session, user, plan_id)
+    token = (repo.regenerate_share_token(session, plan) if regenerate
+             else repo.ensure_share_token(session, plan))
+    log.info("[plan %d] host %s %s the share link", plan.id, user.email,
+             "regenerated" if regenerate else "opened")
+    return {"share_url": share_url(token), "share_token": token}
+
+
+@router.delete("/plans/{plan_id}/share")
+def unshare_plan(
+    plan_id: int,
+    user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+):
+    """Host-only: turn the link off. Guest votes already cast are kept."""
+    plan = _host_plan(session, user, plan_id)
+    repo.revoke_share_token(session, plan)
+    log.info("[plan %d] host %s revoked the share link", plan.id, user.email)
+    return {"share_url": None}
+
+
 @router.delete("/plans/{plan_id}")
 def delete_plan(
     plan_id: int,
@@ -329,6 +368,25 @@ def add_rounds(
     repo.append_rounds(session, plan, slots)
     log.info("[plan %d] %s appended %d candidate time(s)", plan.id, user.email, len(slots))
     return _plan_json(session, plan, user, user.timezone)
+
+
+def share_url(token: str | None) -> str | None:
+    """The link a host copies. Lands on the SPA (which has no router), so the
+    token rides in the query string — same shape as the password-reset link."""
+    return f"{APP_BASE_URL}/?share={token}" if token else None
+
+
+def _host_plan(session: Session, user: User, plan_id: int) -> Plan:
+    """Resolve a plan the user hosts, in any status. For host moves that stay
+    valid after the plan settles — sharing, unsharing, deleting."""
+    plan = repo.get_plan(session, plan_id)
+    if plan is None:
+        raise HTTPException(status_code=404, detail="No such plan.")
+    _require_membership(session, user, plan.group_id)
+    if user.id != plan.created_by:
+        raise HTTPException(status_code=403,
+                            detail="Only the host who suggested this plan can do that.")
+    return plan
 
 
 def _host_open_plan(session: Session, user: User, plan_id: int) -> Plan:
