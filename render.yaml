@@ -1,12 +1,10 @@
-# Render Blueprint — provisions the backend + a free Postgres in one step.
+# Render Blueprint — provisions the backend web service in one step.
 # In the Render dashboard: New -> Blueprint -> connect this repo -> Apply.
-# See docs/deploy.md for the full walkthrough (env vars, Google redirect URI).
-databases:
-  - name: nudgy-db
-    plan: free
-    databaseName: nudgy
-    user: nudgy
-
+# See docs/deploy.md for the full walkthrough (database, env vars, redirect URIs).
+#
+# The database is deliberately NOT declared here: Render's free Postgres is
+# deleted 30 days after it is created, which is shorter than a beta. Create a
+# free Neon project instead and paste its connection string as DATABASE_URL.
 services:
   - type: web
     name: nudgy
@@ -14,29 +12,59 @@ services:
     plan: free
     buildCommand: "pip install -r requirements.txt"
     startCommand: "uvicorn app.main:app --app-dir backend --host 0.0.0.0 --port $PORT"
+    # Free instances sleep after 15 minutes idle. This endpoint is DB-free, so an
+    # uptime pinger can keep the service warm without also keeping serverless
+    # Postgres awake (which would eat Neon's free compute hours).
+    healthCheckPath: /healthz
     envVars:
-      # Injected automatically from the Postgres instance above.
-      - key: DATABASE_URL
-        fromDatabase:
-          name: nudgy-db
-          property: connectionString
       - key: PYTHON_VERSION
         value: "3.12.7"
+      # SECRET_KEY signs the session cookie + email links; Render generates it
+      # once and keeps it stable. TOKEN_ENCRYPTION_KEY (a Fernet key) encrypts
+      # stored OAuth tokens — it must be pasted, since changing it later would
+      # orphan every connected calendar.
+      - key: SECRET_KEY
+        generateValue: true
+      - key: TOKEN_ENCRYPTION_KEY
+        sync: false
       # Groq free tier (no card). 8b-instant = 500K tokens/day, never rate-limits
       # in a demo; 70b-versatile is smarter but only 100K/day.
       - key: LLM_PROVIDER
         value: groq
       - key: NUDGY_MODEL
         value: llama-3.1-8b-instant
-      # Render generates a strong value once and keeps it stable.
-      - key: SECRET_KEY
-        generateValue: true
+      - key: SENTRY_ENVIRONMENT
+        value: production
       # sync:false -> you paste these in the dashboard; never stored in git.
+      - key: DATABASE_URL          # Neon connection string
+        sync: false
       - key: GROQ_API_KEY
         sync: false
       - key: GOOGLE_CLIENT_ID
         sync: false
       - key: GOOGLE_CLIENT_SECRET
         sync: false
-      - key: GOOGLE_REDIRECT_URI
+      - key: GOOGLE_REDIRECT_URI   # https://<service>.onrender.com/auth/google/callback
+        sync: false
+      # Public origin used to build verification / magic-link / reset URLs.
+      # A wrong value here means links that 404 or point at localhost.
+      - key: APP_BASE_URL          # https://<service>.onrender.com
+        sync: false
+      # Transactional email. Without these the app falls back to the console
+      # backend and testers never receive their sign-in links.
+      - key: SMTP_HOST
+        sync: false
+      - key: SMTP_USER
+        sync: false
+      - key: SMTP_PASSWORD
+        sync: false
+      # Error tracking. Leave blank to run without it.
+      - key: SENTRY_DSN
+        sync: false
+      # Microsoft sign-in + Outlook calendars. Leave blank to run Google-only.
+      - key: MS_CLIENT_ID
+        sync: false
+      - key: MS_CLIENT_SECRET
+        sync: false
+      - key: MS_REDIRECT_URI       # https://<service>.onrender.com/auth/microsoft/callback
         sync: false

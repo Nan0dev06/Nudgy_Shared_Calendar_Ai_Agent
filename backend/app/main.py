@@ -19,15 +19,21 @@ from app.api.auth_routes import router as auth_router
 from app.api.chat_routes import router as chat_router
 from app.api.event_routes import router as event_router
 from app.api.group_routes import router as group_router
+from app.api.health_routes import router as health_router
 from app.api.plan_routes import router as plan_router
 from app.api.review_routes import router as review_router
 from app.api.share_routes import router as share_router
 from app.api.stream_routes import router as stream_router
+from app.core.observability import init_sentry
 from app.db.session import init_db
 from app.jobs.plan_ticker import start_ticker, stop_ticker
 from app.mailer import configure_from_env as configure_mailer
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(message)s")
+
+# Before the app object exists, so Sentry's ASGI/logging integrations wrap
+# everything that follows — including a failure inside init_db() below.
+init_sentry()
 
 
 @asynccontextmanager
@@ -46,6 +52,7 @@ app = FastAPI(title="Nudgy", description="Agentic group scheduling assistant",
 init_db()
 configure_mailer()  # SMTP if SMTP_* is set, else the console dev backend
 
+app.include_router(health_router)
 app.include_router(auth_router)
 app.include_router(group_router)
 app.include_router(event_router)

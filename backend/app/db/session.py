@@ -1,25 +1,58 @@
 """Engine + session factory + schema creation.
 
 Two backends, chosen by whether DATABASE_URL is set:
-- set  -> Postgres (Render deployment; survives restarts)
+- set  -> Postgres (the deployment; survives restarts)
 - unset-> a local SQLite file at repo-root/nudgy.db (gitignored), for dev
 
 For a hackathon we create tables on startup with create_all — no migrations.
 """
 from collections.abc import Iterator
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.orm import Session, sessionmaker
 
-from app.core.config import DATABASE_URL, ROOT_DIR
+from app.core.config import DATABASE_URL, DB_POOL_SIZE, ROOT_DIR
 from app.db.models import Base
 
+
+def normalize_db_url(raw: str) -> str:
+    """Make a pasted Postgres URL safe and SQLAlchemy-shaped.
+
+    Two fixes, both from real paste-the-connection-string mistakes:
+    - Heroku/Render hand out the legacy `postgres://` scheme, which SQLAlchemy
+      rejects outright.
+    - libpq's default sslmode is `prefer`, which silently falls back to an
+      UNENCRYPTED connection if the TLS handshake fails. Every managed provider
+      (Neon, Supabase, Render) requires TLS anyway, so a URL that arrives
+      without an explicit sslmode gets `require` rather than a mode that can
+      quietly downgrade. An explicit sslmode in the URL is left alone.
+    """
+    url = raw.strip()
+    if url.startswith("postgres://"):
+        url = "postgresql://" + url[len("postgres://"):]
+    if not url.startswith("postgresql"):
+        return url
+    parts = urlsplit(url)
+    query = dict(parse_qsl(parts.query, keep_blank_values=True))
+    query.setdefault("sslmode", "require")
+    return urlunsplit(parts._replace(query=urlencode(query)))
+
+
 if DATABASE_URL:
-    # Render's Postgres URL sometimes uses the legacy "postgres://" scheme,
-    # which SQLAlchemy rejects — normalize it. pool_pre_ping avoids errors
-    # from connections the free DB has idled out.
-    url = DATABASE_URL.replace("postgres://", "postgresql://", 1)
-    engine = create_engine(url, pool_pre_ping=True)
+    # Serverless Postgres (Neon) parks idle connections and can drop them, so:
+    # pool_pre_ping discards a dead connection instead of failing the request,
+    # and pool_recycle retires one before the provider's idle window closes.
+    # The pool is deliberately small — free tiers cap total connections, and a
+    # sleepy web service holding them open helps nobody.
+    engine = create_engine(
+        normalize_db_url(DATABASE_URL),
+        pool_pre_ping=True,
+        pool_recycle=280,
+        pool_size=DB_POOL_SIZE,
+        max_overflow=DB_POOL_SIZE,
+        connect_args={"connect_timeout": 10},
+    )
 else:
     DB_PATH = ROOT_DIR / "nudgy.db"
     # check_same_thread=False so FastAPI's threadpool can share the engine

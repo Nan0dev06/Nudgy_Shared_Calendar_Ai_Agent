@@ -15,10 +15,16 @@ load_dotenv(ROOT_DIR / ".env")
 GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID", "")
 GOOGLE_CLIENT_SECRET = os.getenv("GOOGLE_CLIENT_SECRET", "")
 
-# Database: Postgres when DATABASE_URL is set (Render injects it), else a local
-# SQLite file. Set on the server so connected accounts survive restarts — the
-# free tier wipes the local filesystem, so SQLite would lose data there.
+# Database: Postgres when DATABASE_URL is set (paste a Neon connection string
+# here on the server), else a local SQLite file. Set on the server so connected
+# accounts survive restarts — the free tier wipes the local filesystem, so
+# SQLite would lose data there. See docs/deploy.md.
 DATABASE_URL = os.getenv("DATABASE_URL", "")
+
+# Postgres connection-pool size per process (plus the same again as overflow).
+# Free managed tiers cap total connections in the low double digits, and one
+# sleepy web service should not hoard them; 5 is plenty for beta traffic.
+DB_POOL_SIZE = int(os.getenv("DB_POOL_SIZE", "5"))
 
 # Signs the session cookie. Any random string; regenerating it just logs
 # everyone out. Set SECRET_KEY in .env for stable sessions across restarts.
@@ -85,6 +91,19 @@ SMTP_PASSWORD = os.getenv("SMTP_PASSWORD", "")
 # The visible From: address. Defaults to the SMTP user (Gmail requires From to
 # match the authenticated account anyway).
 SMTP_FROM = os.getenv("SMTP_FROM", "") or SMTP_USER
+
+# --- Error tracking (app/core/observability.py) ------------------------------
+# Sentry DSN. Unset -> error tracking is simply off (the default for local dev
+# and for tests), and nothing leaves the machine. Set it on the server so a
+# 500 a beta tester hits shows up with a stack trace instead of vanishing into
+# a log nobody is reading. The DSN is not a secret in the credential sense (it
+# only allows *sending* events) but is still kept out of git.
+SENTRY_DSN = os.getenv("SENTRY_DSN", "")
+# Tags every event, so beta noise never gets confused with local noise.
+SENTRY_ENVIRONMENT = os.getenv("SENTRY_ENVIRONMENT", "development")
+# Fraction of requests traced for performance. 0 = errors only, which is what
+# the free tier's quota wants; raise it briefly if you need latency data.
+SENTRY_TRACES_SAMPLE_RATE = float(os.getenv("SENTRY_TRACES_SAMPLE_RATE", "0"))
 
 # --- LLM provider -----------------------------------------------------------
 # Which model backend Nudgy talks to. Default is Groq (free tier, fast).
