@@ -25,10 +25,30 @@ Read these before doing anything else this session:
   `app/realtime/` (in-process bus, pokes carry only a group id + kind) +
   `GET /groups/{id}/stream` + `frontend/src/live.js`. The poll survives as a
   backstop: 5s when the stream is down, 60s when it's up.
+- **SMTP email** (real delivery, enumeration-safe sends) — PR #20, merged.
+- **Postgres + observability** — PR #21, merged. Neon-shaped engine (TLS forced
+  via `normalize_db_url`, pooling for idle disconnects), `scripts/check_db.py`,
+  schema portability tested against the PG dialect offline, Sentry behind
+  `SENTRY_DSN` with a credential scrubber, `/healthz` + `/readyz`, `render.yaml`
+  + `docs/deploy.md` rewritten for the beta path.
+- **Auto timezone** — PR #22, merged. `User.timezone_auto`; the browser reports
+  its zone on every boot; typing one in Settings pins it forever.
 - **Next up in Phase 2:** conversation persistence, model router + fallback,
   injection defense.
-- **Email for beta:** Gmail SMTP app-password backend (no domain) — the
-  `EmailSender` seam in `app/mailer/` is where it plugs in.
+
+## Before beta testers (as of 2026-07-31)
+
+Code-side, one item left: **the mobile-responsive pass** (own session — there
+are zero `@media` queries and at 375px the sidebar squeezes the content column
+to ~119px). Then **one full security-review session**, last, after the code
+stops moving.
+
+Everything else is the user's to do, outside the repo: live-test SMTP delivery,
+verify Google + Microsoft calendars actually sync, create the Neon project and
+paste `DATABASE_URL` (verify with `python backend/scripts/check_db.py`),
+optionally a Sentry DSN, then deploy per `docs/deploy.md` (redirect URIs +
+`APP_BASE_URL` + Google consent screen in Testing with each tester's address in
+Test users).
 
 ## Working branch
 
