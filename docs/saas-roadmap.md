@@ -80,7 +80,7 @@ A hackathon proves the idea works once, with everyone in the room. A SaaS has to
 - **Windowed** events fetch (currently returns every personal event, all-time).
 - **FK indexes** (none today beyond unique/email/invite-code).
 - **Freebusy cache** (fewer Google/Graph calls, faster group loads).
-- Replace **5s polling** with **SSE**; add ETag/304 as an interim.
+- ~~Replace **5s polling** with **SSE**~~ (DONE — `realtime/` + `GET /groups/{id}/stream`; the poll stays as a slow backstop). ETag/304 still open as an extra.
 - **Managed Postgres** (Neon/Supabase free tier) with backups instead of SQLite on ephemeral disk.
 - **Error tracking + uptime** (Sentry free tier, a free uptime pinger).
 - Delete dead `polls`/`votes` tables + stray `orbi.db`; reset & reseed local DB.
@@ -111,7 +111,7 @@ A hackathon proves the idea works once, with everyone in the room. A SaaS has to
 # PART 7 — SEQUENCED ROADMAP
 - **Phase 0 — Foundation (free, invisible):** entitlement/quota skeleton; encrypt tokens + session TTL; managed Postgres + backups; error tracking; per-user LLM quota; DB cleanup. Start OAuth-verification paperwork (domain, draft privacy/ToS) *in parallel* — no code blocked on it.
 - **Phase 1 — Auth & calendars:** identity/calendar split; email magic-link + Google + Microsoft; `CalendarProvider` + Outlook; freebusy cache.
-- **Phase 2 — Agent & mechanism hardening:** model router + fallback; conversation persistence; ~~deterministic host endpoints~~ (done, Phase 0); injection defense; SSE real-time; ~~vote reminders/deadlines~~ + ~~shareable vote links~~ (both DONE — see "Async convergence" below).
+- **Phase 2 — Agent & mechanism hardening:** model router + fallback; conversation persistence; ~~deterministic host endpoints~~ (done, Phase 0); injection defense; ~~SSE real-time~~ (DONE); ~~vote reminders/deadlines~~ + ~~shareable vote links~~ (both DONE — see "Async convergence" below).
 - **Phase 3 — Go-public prep:** privacy/ToS live; submit Google + Microsoft verification; marketing + pricing + account/billing pages; landing site + router.
 - **Phase 4 — Polish & growth:** dark mode, responsive, a11y; wishlist features (notifications, recurring, solo mode, smarter venues, integrations).
 - **Payments:** slot the deferred `BillingProvider` in the moment real demand appears.
@@ -127,7 +127,7 @@ A hackathon proves the idea works once, with everyone in the room. A SaaS has to
 | Token storage | Google refresh tokens saved as plaintext JSON in DB | Real security risk for a product holding calendar access | Encrypt at rest (Fernet), key from secret store |
 | Calendar data | Google `freebusy` (ranges only) + event locations | Excellent privacy design, but Google-only and uncached | `CalendarProvider` abstraction + Microsoft Graph; short-TTL cache |
 | Groups | Invite-code join, flat, no roles | Missing leave/kick/rename/delete; no roles for teams-later | Add lifecycle ops + owner/member role now; optional solo mode |
-| Poll cascade | Two-stage, host-decides, pure + tested; **+ deadlines, reminders, opt-in auto-book, guest voting by link** | Host moves still go through the LLM from the UI; still 5s polling | SSE next; route the UI's lock-in at the deterministic endpoints |
+| Poll cascade | Two-stage, host-decides, pure + tested; **+ deadlines, reminders, opt-in auto-book, guest voting by link** | Host moves and live updates both fixed (PR#18 endpoints, SSE feed) | Next: modes (quick / pick-a-time / float-idea), member-proposed times |
 | Tasks/Events | Create/delete/toggle; optional one-way Google sync | No edit, no recurrence, no reminders; one-way sync | Full CRUD + recurrence + reminders; two-way resilient sync |
 | Agent AI | 8-step loop, 7 tools, free Groq 8b, prompt resent each step | Fragile model; no persistence; no quota (shared budget); injection-exposed | Model router+fallback; per-user quota; persist transcripts; fence injected text; stream via SSE |
 
@@ -142,7 +142,7 @@ A hackathon proves the idea works once, with everyone in the room. A SaaS has to
 ### Optimization
 | Thing | How it works | Review | How to fix / better way |
 |---|---|---|---|
-| Plan reads | `GET /plans` recomputes tally twice/plan; N+1 on votes; polled every 5s | Heavy hot path, worst possible cadence | Compute once/plan; join vote reads; SSE + ETag |
+| Plan reads | `GET /plans` computes each tally once; refetched on an SSE poke (slow backstop poll behind it) | Hot path is now event-driven | ETag/304 to make the backstop poll free |
 | Events fetch | Returns every personal event, all time | Unbounded payload as data grows | Window by visible range ± buffer |
 | Indexes | Only unique/email/invite-code | Slow FK filters on Postgres at scale | Add FK indexes |
 | Freebusy | Live Google call per member every group open | Slow, burns quota | Short-TTL per-user cache |

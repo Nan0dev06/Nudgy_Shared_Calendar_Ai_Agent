@@ -23,6 +23,7 @@ from sqlalchemy.orm import Session
 from app.agent.availability import compute_availability
 from app.db.models import Group, User
 from app.db import repo
+from app.realtime import events_changed, plans_changed
 from app.tools.plan_service import day_label, time_label
 
 log = logging.getLogger("nudgy.agent")
@@ -467,6 +468,13 @@ _DISPATCH = {
 }
 
 
+# Tools that change what other members see. The agent runs inside one member's
+# chat request, so without this the group finds out about a plan the agent
+# started only on their next refresh — a poke here covers every mutating path
+# through the model in one place, rather than inside each tool.
+_MUTATING = {"create_plan", "use_next_time", "lock_in_time"}
+
+
 def run_tool(ctx: ToolContext, name: str, args: dict) -> dict:
     """Execute a tool by name. Logs the call (name + args) for live debugging."""
     log.info("[tool] %s(%s)", name, args)
@@ -474,7 +482,12 @@ def run_tool(ctx: ToolContext, name: str, args: dict) -> dict:
     if fn is None:
         return {"error": f"Unknown tool: {name}"}
     try:
-        return fn(ctx, args)
+        out = fn(ctx, args)
     except Exception as exc:  # surface errors to the model instead of crashing
         log.exception("[tool] %s failed", name)
         return {"error": f"{type(exc).__name__}: {exc}"}
+    if name in _MUTATING and ctx.group is not None and not out.get("error"):
+        plans_changed(ctx.group.id)
+        if out.get("action") == "booked":
+            events_changed(ctx.group.id)
+    return out

@@ -36,6 +36,7 @@ from app.auth.guest_tokens import (
 from app.db.models import Plan, PlanGuest, User
 from app.db import repo
 from app.db.session import get_session
+from app.realtime import events_changed, plans_changed
 from app.tools.plan_service import (
     day_label, guest_ballot, load_plan_state, maybe_auto_book, time_label,
 )
@@ -238,6 +239,9 @@ def guest_interest(
     log.info("[plan %d] %s is %s for the plan", plan.id, guest.label,
              "IN" if body.yes else "OUT")
     maybe_auto_book(session, plan, "UTC")
+    # a guest ballot moves the host's tally exactly like a member's does, and
+    # the host is watching the group's live feed
+    _announce(plan)
     return _share_json(session, plan, guest)
 
 
@@ -269,4 +273,14 @@ def guest_time_vote(
     log.info("[plan %d] %s said %s to the active time", plan.id, guest.label,
              "YES" if body.yes else "NO")
     maybe_auto_book(session, plan, "UTC")
+    _announce(plan)
     return _share_json(session, plan, guest)
+
+
+def _announce(plan) -> None:
+    """Tell the group's watchers a guest changed something. Guests themselves
+    get no stream: the share page is a single plan seen through a bearer token,
+    and a token holder has no business hearing about the rest of the group."""
+    plans_changed(plan.group_id)
+    if plan.status == "scheduled":
+        events_changed(plan.group_id)

@@ -26,6 +26,7 @@ from app.calendars import provider_for_account
 from app.db.models import GroupEvent, User
 from app.db import repo
 from app.db.session import get_session
+from app.realtime import events_changed
 
 log = logging.getLogger("nudgy.api")
 
@@ -156,7 +157,16 @@ def create_event(
         out["sync"] = _sync_to_google(session, event, user, body.invite_emails, group_id)
         out["synced"] = event.synced
         out["gcal_link"] = event.gcal_link
+    _announce(event)
     return out
+
+
+def _announce(event: GroupEvent) -> None:
+    """Poke the group's live feed (app/realtime) so everyone's calendar catches
+    up without a refresh. Personal events are skipped on purpose — nobody else
+    can see them, so a poke would only cost every member a pointless refetch."""
+    if not event.personal:
+        events_changed(event.group_id)
 
 
 def _sync_to_google(
@@ -203,6 +213,7 @@ def patch_event(
         raise HTTPException(status_code=404, detail="No such event.")
     _require_membership(session, user, event.group_id)
     repo.set_event_done(session, event, body.done)
+    _announce(event)
     return _event_json(event, user.timezone, viewer_id=user.id)
 
 
@@ -226,6 +237,7 @@ def rsvp_event(
     if event.kind != "event":
         raise HTTPException(status_code=400, detail="Only events take RSVPs.")
     repo.upsert_rsvp(session, event, user, body.status)
+    _announce(event)
 
     members = repo.get_group_members(session, event.group_id)
     email_of = {m.id: m.email for m in members}
@@ -251,7 +263,10 @@ def delete_event(
     gcal_result = None
     if event.synced and event.gcal_event_id:
         gcal_result = _delete_from_google(session, event)
+    personal, group_id = event.personal, event.group_id
     repo.delete_event(session, event)
+    if not personal:  # the row is gone — read what _announce needs before that
+        events_changed(group_id)
     return {"ok": True, "gcal": gcal_result}
 
 

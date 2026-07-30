@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AppCtx } from "./ctx.js";
 import { api } from "./api.js";
+import { LIVE_BACKSTOP_MS, POLL_MS, useGroupLive } from "./live.js";
 import { decorateMembers, nameFromEmail } from "./people.js";
 import Blobs from "./components/Blobs.jsx";
 import SignIn from "./screens/SignIn.jsx";
@@ -225,22 +226,40 @@ export default function App() {
     if (me && activeGroupId) refreshGroupData();
   }, [me, activeGroupId, refreshGroupData]);
 
-  // Live updates: the poll cascade has no WebSocket — the host's decision box and
-  // every member's ballot are kept current by polling GET /plans every 5s while a
-  // plan is open (per spec). Without this the frontend is a frozen snapshot: the
-  // host never sees votes land, and members never see the host lock in or move to
-  // the next time. Plans-only (not the full refresh) so we don't re-hit Google
-  // freebusy every tick. No document.hidden guard on purpose: in webviews /
-  // screen-share it can read hidden even while visible, which would silently
-  // freeze the view — the whole bug this fixes.
+  // Live updates. Without them the frontend is a frozen snapshot: the host never
+  // sees votes land, members never see the host lock in or move to the next
+  // time, and nobody sees the deadline ticker close a plan or book it — that
+  // last one has no request behind it at all.
+  //
+  // The server now says when something moved (SSE, see live.js); these refetch
+  // just the list that changed, never the full refresh, so a poke can't turn
+  // into a round of Google freebusy calls.
+  const refreshPlans = useCallback(() => {
+    if (!activeGroupId) return;
+    api.plans(activeGroupId).then(setPlans).catch(() => {});
+  }, [activeGroupId]);
+
+  const refreshEvents = useCallback(() => {
+    if (!activeGroupId) return;
+    api.events(activeGroupId).then(setGroupEvents).catch(() => {});
+  }, [activeGroupId]);
+
+  const live = useGroupLive({
+    groupId: me && activeGroupId ? activeGroupId : null,
+    onPlans: refreshPlans,
+    onEvents: refreshEvents,
+  });
+
+  // The poll that used to be the only mechanism, now the backstop. Same 5s
+  // cadence when the stream is down, a slow tick when it's up. No
+  // document.hidden guard on purpose: in webviews / screen-share it can read
+  // hidden even while visible, which would silently freeze the view.
   const hasOpenPlan = plans.some((p) => p.status === "open");
   useEffect(() => {
     if (!me || !activeGroupId || !hasOpenPlan) return;
-    const id = setInterval(() => {
-      api.plans(activeGroupId).then(setPlans).catch(() => {});
-    }, 5000);
+    const id = setInterval(refreshPlans, live ? LIVE_BACKSTOP_MS : POLL_MS);
     return () => clearInterval(id);
-  }, [me, activeGroupId, hasOpenPlan]);
+  }, [me, activeGroupId, hasOpenPlan, live, refreshPlans]);
 
   // ---- actions -------------------------------------------------------------
   const pushActivity = useCallback(
