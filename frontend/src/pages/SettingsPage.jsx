@@ -32,6 +32,8 @@ export default function SettingsPage() {
     setEditingName(false);
   };
 
+  // Typing a timezone in is an explicit choice — the backend stops tracking the
+  // device from here on, so the app can't silently undo it later.
   const saveTz = async () => {
     const tz = tzDraft.trim();
     setTzErr("");
@@ -44,6 +46,21 @@ export default function SettingsPage() {
       }
     }
     setEditingTz(false);
+  };
+
+  // ...and this hands it back. One PATCH: the timezone_auto field is applied
+  // after the timezone, so it re-enables detection instead of turning it off.
+  const useDeviceTz = async () => {
+    setTzErr("");
+    let tz = "";
+    try {
+      tz = Intl.DateTimeFormat().resolvedOptions().timeZone || "";
+    } catch { /* ancient browser: just flip the flag back on */ }
+    try {
+      await saveProfile(tz ? { timezone: tz, timezone_auto: true } : { timezone_auto: true });
+    } catch (e) {
+      setTzErr(e.message || "Couldn't read this device's timezone.");
+    }
   };
 
   const addMemory = () => {
@@ -146,12 +163,30 @@ export default function SettingsPage() {
                     {tzErr && <div style={{ fontSize: 12, color: "#D95D39" }}>{tzErr}</div>}
                   </div>
                 ) : (
-                  <div
-                    style={{ ...fieldRead, cursor: "pointer" }}
-                    title="Click to edit"
-                    onClick={() => { setTzDraft(me?.timezone || ""); setEditingTz(true); }}
-                  >
-                    {me?.timezone} <span style={{ color: "#a49c8c", fontSize: 11 }}>· edit</span>
+                  <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                    <div
+                      style={{ ...fieldRead, cursor: "pointer" }}
+                      title="Click to edit"
+                      onClick={() => { setTzDraft(me?.timezone || ""); setEditingTz(true); }}
+                    >
+                      {me?.timezone} <span style={{ color: "#a49c8c", fontSize: 11 }}>· edit</span>
+                    </div>
+                    {me?.timezone_auto ? (
+                      <span style={{ fontSize: 11, color: "#a09889" }}>
+                        Following this device — times move with you.
+                      </span>
+                    ) : (
+                      <span style={{ fontSize: 11, color: "#a09889" }}>
+                        Set by you ·{" "}
+                        <span
+                          onClick={useDeviceTz}
+                          style={{ color: "#2A9D8F", cursor: "pointer", fontWeight: 600 }}
+                        >
+                          follow this device
+                        </span>
+                      </span>
+                    )}
+                    {tzErr && <div style={{ fontSize: 12, color: "#D95D39" }}>{tzErr}</div>}
                   </div>
                 )}
               </div>

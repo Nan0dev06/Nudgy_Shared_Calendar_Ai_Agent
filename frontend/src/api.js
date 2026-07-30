@@ -25,6 +25,10 @@ async function req(path, opts = {}) {
 export const api = {
   me: () => req("/auth/me"),
   patchMe: (body) => req("/auth/me", { method: "PATCH", body }),
+  // "my browser is in this zone" — sent on every boot; the server ignores it
+  // for anyone who picked a timezone by hand (see auth_routes.detected_timezone)
+  detectedTimezone: (timezone) =>
+    req("/auth/me/detected-timezone", { method: "POST", body: { timezone } }),
   logout: () => req("/auth/logout", { method: "POST" }),
   // email / password identity (decoupled from calendars). register / magicLink /
   // requestReset intentionally return a generic message whether or not the email

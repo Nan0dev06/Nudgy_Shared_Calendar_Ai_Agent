@@ -71,6 +71,11 @@ _LATE_COLUMNS = [
     ("users", "tier", "VARCHAR DEFAULT 'free' NOT NULL"),
     ("users", "password_hash", "VARCHAR"),
     ("users", "email_verified", "BOOLEAN DEFAULT FALSE NOT NULL"),
+    # Existing rows default to TRUE (auto): every timezone in the DB before this
+    # column existed was the unasked-for "Asia/Beirut" default, so letting the
+    # browser correct it is the point. Anyone who then types one in Settings
+    # flips it to FALSE and is never touched again.
+    ("users", "timezone_auto", "BOOLEAN DEFAULT TRUE NOT NULL"),
     ("plans", "expected_count", "INTEGER"),
     # WITH TIME ZONE matches DateTime(timezone=True) on Postgres; SQLite treats
     # any type name as an affinity hint, so the same DDL is portable

@@ -114,11 +114,34 @@ export default function App() {
     return gs;
   }, []);
 
+  // The server has no way to know what timezone someone is in, and everybody
+  // used to be stamped Asia/Beirut — wrong hours for anyone else, and wrong
+  // hours in the reminder emails. The browser is the one party that knows, so
+  // it says so on every boot. Skipped once the user picked one by hand
+  // (timezone_auto false), and failure is ignored: a timezone that stays stale
+  // for one session is not worth interrupting the app for.
+  const reportTimezone = useCallback(async (m) => {
+    if (!m?.timezone_auto) return;
+    let tz;
+    try {
+      tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    } catch {
+      return;
+    }
+    if (!tz || tz === m.timezone) return;
+    try {
+      setMe(await api.detectedTimezone(tz));
+    } catch {
+      /* offline or 401 — the next boot tries again */
+    }
+  }, []);
+
   useEffect(() => {
     (async () => {
       try {
         const m = await api.me();
         setMe(m);
+        reportTimezone(m);
         const gs = await loadGroups();
         if (gs.length && !gs.some((g) => g.id === activeGroupId)) {
           setActiveGroupId(gs[0].id);
