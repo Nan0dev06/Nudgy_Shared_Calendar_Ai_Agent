@@ -52,6 +52,7 @@ frontend. Start here to see the whole route surface.
 | `passwords.py` | scrypt password hashing (stdlib, no dep). |
 | `entitlements.py` | Plan/tier definitions (Free/Pro/…) + feature gates. |
 | `quota.py` | Per-user daily AI-turn quota meter. |
+| `observability.py` | Sentry init (off without `SENTRY_DSN`) + `scrub_event`, which strips share tokens / OAuth codes / cookies / bodies from every error report. |
 
 ### `db/` — persistence
 | File | Owns |
@@ -139,7 +140,8 @@ the same two functions. Consumed by `api/stream_routes.py`; knobs
 | File | Route surface |
 |---|---|
 | `deps.py` | `get_session` + `get_current_user` (session-cookie auth). Shared cookie config. |
-| `auth_routes.py` | `/auth/*` — Google OAuth **and** email/password/magic-link/reset + `/auth/me`. |
+| `health_routes.py` | `GET /healthz` (no I/O — what the uptime pinger hits) and `GET /readyz` (round-trips the DB). |
+| `auth_routes.py` | `/auth/*` — Google OAuth **and** email/password/magic-link/reset + `/auth/me` (+ `/auth/me/detected-timezone`). |
 | `group_routes.py` | `/groups/*` — create/join, members. |
 | `event_routes.py` | group events & tasks + Google sync. |
 | `plan_routes.py` | `/plans/*` — voting, deterministic host actions, deadline/auto-book settings, share-link on/off. |
@@ -198,6 +200,13 @@ the same two functions. Consumed by `api/stream_routes.py`; knobs
 - **DB schema change:** `db/models.py` + `db/session.py`
   (`_LATE_COLUMNS`/`_LATE_INDEXES`/backfill).
 - **Config / env:** `core/config.py` + `.env.example`.
+- **Deploying / Postgres / error tracking:** `docs/deploy.md`, `render.yaml`,
+  `db/session.py` (`normalize_db_url`, engine/pool), `core/observability.py`,
+  `api/health_routes.py`, `backend/scripts/check_db.py`.
+- **Timezones:** `db/models.py` (`User.timezone`, `timezone_auto`),
+  `api/auth_routes.py` (`patch_me`, `detected_timezone`), `App.jsx`
+  (`reportTimezone`), `pages/SettingsPage.jsx`. Everything is UTC internally
+  and rendered per-viewer.
 - **Billing / quota / tiers:** `core/entitlements.py`, `core/quota.py`,
   `db/models.py` (`AgentUsage`, `User.tier`).
 - **Events & tasks + Google sync:** `api/event_routes.py`, `db/models.py`
@@ -208,5 +217,7 @@ the same two functions. Consumed by `api/stream_routes.py`; knobs
 One file per concern; mirror that when adding features. Notable:
 `test_calendar_accounts`, `test_calendar_provider`, `test_freebusy_cache`,
 `test_email_auth`, `test_passwords`, `test_slots`, `test_plan_rules`,
-`test_plan_*`, `test_quota`, `test_auth_security`, `test_crypto`. Run:
+`test_plan_*`, `test_quota`, `test_auth_security`, `test_crypto`,
+`test_db_portability` (renders the schema against the Postgres dialect with no
+server), `test_observability`, `test_health`, `test_timezone`. Run:
 `python -m pytest backend/tests -q`.

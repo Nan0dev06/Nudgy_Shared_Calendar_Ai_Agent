@@ -4,6 +4,7 @@ GET  /auth/google/login     -> 302 to Google's consent screen
 GET  /auth/google/callback  -> exchanges code, upserts user + token, sets cookie
 GET   /auth/me              -> who am I (or 401)
 PATCH /auth/me              -> update display name / timezone
+POST  /auth/me/detected-timezone -> the browser reports where it is
 POST  /auth/logout          -> clears the cookie
 """
 from __future__ import annotations
@@ -190,10 +191,23 @@ def _me_json(user: User) -> dict:
     return {
         "email": user.email,
         "timezone": user.timezone,
+        "timezone_auto": user.timezone_auto,
         "display_name": user.display_name,
         "calendar_connected": user.calendar_connected,
         "email_verified": user.email_verified,
     }
+
+
+def _valid_timezone(name: str) -> bool:
+    """A real IANA zone name. ZoneInfo also accepts paths like '../etc/passwd'
+    on some systems, so the shape is checked before the lookup."""
+    if not name or len(name) > 60 or ".." in name or name.startswith("/"):
+        return False
+    try:
+        ZoneInfo(name)
+    except Exception:
+        return False
+    return True
 
 
 @router.get("/me")
@@ -204,6 +218,8 @@ def me(user: User = Depends(get_current_user)):
 class PatchMeBody(BaseModel):
     display_name: str | None = Field(default=None, max_length=80)
     timezone: str | None = Field(default=None, max_length=60)
+    # send true to hand the timezone back to auto-detection
+    timezone_auto: bool | None = None
 
 
 @router.patch("/me")
@@ -215,12 +231,45 @@ def patch_me(
     if body.display_name is not None:
         user.display_name = body.display_name.strip() or None
     if body.timezone is not None:
-        try:
-            ZoneInfo(body.timezone)  # validate it's a real IANA name
-        except Exception:
+        if not _valid_timezone(body.timezone):
             raise HTTPException(status_code=400, detail="Unknown timezone (use an IANA name like Asia/Beirut).")
         user.timezone = body.timezone
+        # typing one in is an explicit choice: stop tracking the device unless
+        # the same request also asks to go back to auto
+        user.timezone_auto = False
+    if body.timezone_auto is not None:
+        user.timezone_auto = body.timezone_auto
     session.commit()
+    return _me_json(user)
+
+
+class DetectedTimezoneBody(BaseModel):
+    timezone: str = Field(max_length=60)
+
+
+@router.post("/me/detected-timezone")
+def detected_timezone(
+    body: DetectedTimezoneBody,
+    user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+):
+    """"My browser thinks it is in this zone." Called on every app boot.
+
+    The server can't infer a timezone on its own — a UTC timestamp and an IP
+    are both bad guesses — so the one process that actually knows reports it.
+    Ignored (200, unchanged) once the user has chosen a zone by hand, which is
+    what makes this safe to call unconditionally: no confirmation prompt, and
+    a stale zone fixes itself the next time that person opens the app.
+    """
+    if not _valid_timezone(body.timezone):
+        # a browser reporting something we can't resolve isn't the user's
+        # problem — keep whatever we had rather than 400ing on every boot
+        log.warning("Ignoring unusable detected timezone %r", body.timezone[:60])
+        return _me_json(user)
+    if user.timezone_auto and user.timezone != body.timezone:
+        log.info("User %s timezone %s -> %s (detected)", user.id, user.timezone, body.timezone)
+        user.timezone = body.timezone
+        session.commit()
     return _me_json(user)
 
 

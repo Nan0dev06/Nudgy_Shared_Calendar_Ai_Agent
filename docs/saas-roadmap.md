@@ -81,8 +81,12 @@ A hackathon proves the idea works once, with everyone in the room. A SaaS has to
 - **FK indexes** (none today beyond unique/email/invite-code).
 - **Freebusy cache** (fewer Google/Graph calls, faster group loads).
 - ~~Replace **5s polling** with **SSE**~~ (DONE — `realtime/` + `GET /groups/{id}/stream`; the poll stays as a slow backstop). ETag/304 still open as an extra.
-- **Managed Postgres** (Neon/Supabase free tier) with backups instead of SQLite on ephemeral disk.
-- **Error tracking + uptime** (Sentry free tier, a free uptime pinger).
+- ~~**Managed Postgres**~~ (DONE — engine is Neon-shaped: TLS forced, pooling for
+  idle disconnects, `scripts/check_db.py` to verify a connection string, and the
+  schema is now checked against the Postgres dialect in CI. Remaining: you create
+  the Neon project and paste the URL.)
+- ~~**Error tracking + uptime**~~ (DONE — Sentry behind `SENTRY_DSN` with a
+  credential scrubber; `/healthz` for the pinger, `/readyz` for the DB check.)
 - Delete dead `polls`/`votes` tables + stray `orbi.db`; reset & reseed local DB.
 
 ---
@@ -102,7 +106,8 @@ A hackathon proves the idea works once, with everyone in the room. A SaaS has to
 3. **Recurring plans** ("same crew, next week").
 4. **Solo/personal mode** — plan your own life + tasks with the agent, no group.
 5. **Smarter venues** — avoid low-rated, cuisine/budget/fairness of travel distance.
-6. **Auto timezone detect** (everyone defaults to Beirut today — a real correctness bug for mixed-tz groups).
+6. ~~**Auto timezone detect**~~ (DONE — the browser reports its zone on every
+   boot; typing one in Settings pins it and detection stops touching it).
 7. **Chat integrations** — Slack/Discord where consumer groups already live.
 8. **Host analytics** — "your crew usually says yes to Thursday 7pm."
 
@@ -136,7 +141,7 @@ A hackathon proves the idea works once, with everyone in the room. A SaaS has to
 |---|---|---|---|
 | Legal/verification | None today | Blocks *public* launch (not private beta) | Privacy/ToS from templates; Google + MS verification when going public; stay in Testing mode for beta |
 | Billing | None | Needed to earn, but premature to integrate | Build entitlement/quota skeleton now; defer processor behind `BillingProvider`; recommend Lemon Squeezy/Paddle |
-| Data durability | SQLite on ephemeral disk locally; Postgres on Render | Data loss risk; no backups | Managed Postgres (Neon/Supabase free) + backups |
+| Data durability | SQLite for dev; Postgres (Neon) in prod, TLS forced, schema portability tested | Render's own free Postgres self-deletes after 30 days — hence Neon | Create the Neon project + paste `DATABASE_URL` |
 | Multi-tenant cost | One shared free LLM key for all users | One user can exhaust everyone's daily budget | Per-user token quota (also a paid upsell) |
 
 ### Optimization
@@ -159,7 +164,7 @@ A hackathon proves the idea works once, with everyone in the room. A SaaS has to
 |---|---|---|---|
 | Notifications | Vote reminders + deadline/booking mail via the mailer seam (console backend in dev) | Wording done, delivery isn't — needs a real provider; no in-app or push channel, no per-user preferences | Wire Resend/SMTP; add Settings > Notifications, gating it in `notify/` |
 | Share links | Per-plan bearer token; guests give a name (+optional email for the invite), vote in the same cascade, counted in the tally | Host can regenerate/revoke; capped per plan; no rate limit on join attempts | Add a join rate limit if links ever leak in the wild |
-| Timezones | Everyone defaults to Beirut | Correctness bug for mixed-tz groups | Auto-detect at signup; per-user tz |
+| Timezones | Per-user IANA zone, auto-detected from the browser on each boot (`timezone_auto`); a zone typed in Settings pins it | Mixed-tz groups render correctly for each viewer | Done. Next: show other members' local time on a proposed slot |
 | Recurring / solo / smarter venues / chat integrations | N/A | High-value differentiators | Build post-core from the wishlist |
 
 ---

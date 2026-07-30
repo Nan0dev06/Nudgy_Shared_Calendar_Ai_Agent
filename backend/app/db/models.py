@@ -5,8 +5,9 @@ Design notes:
   library produces (token_json). We never parse it here; auth/google.py owns
   that. One place to serialize, one place to read.
 - timezone is an IANA name ("Asia/Beirut"). Everything time-related in the
-  app is UTC internally and converted to this for display. Defaults to Beirut
-  for the hackathon; real users would set it at connect time.
+  app is UTC internally and converted to this for display. The stored default
+  only covers the moment between "account exists" and "a browser told us where
+  it is" (see timezone_auto + POST /auth/me/detected-timezone).
 - A Group has a short invite_code; joining is "know the code" — no roles,
   no hierarchy (per spec).
 - Membership is the user<->group join table. A user can be in several groups.
@@ -54,6 +55,12 @@ class User(Base):
     password_hash: Mapped[str | None] = mapped_column(String, default=None)
     email_verified: Mapped[bool] = mapped_column(default=False)
     timezone: Mapped[str] = mapped_column(String, default="Asia/Beirut")
+    # True = the timezone above is a guess the browser reported, so the app may
+    # keep it in sync as the person travels. Set False the moment someone types
+    # one in Settings — an explicit choice must never be silently overwritten
+    # (a Beirut user working from a machine set to UTC means it, and a stored
+    # deadline shown in the wrong zone is how people miss plans).
+    timezone_auto: Mapped[bool] = mapped_column(default=True)
     # optional user-chosen name; UI falls back to deriving one from the email
     display_name: Mapped[str | None] = mapped_column(String, default=None)
     # unfinished things (event/poll started without a time) — a JSON array the
