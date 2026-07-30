@@ -34,7 +34,7 @@ from app.core.passwords import hash_password, verify_password
 from app.db.models import CalendarAccount, User
 from app.db import repo
 from app.db.session import get_session
-from app.mailer import send_email
+from app.mailer import send_email_safe
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 log = logging.getLogger("nudgy.auth")
@@ -416,7 +416,7 @@ def _auth_error_redirect(provider: str) -> RedirectResponse:
 def _send_verification(user: User) -> None:
     token = tokens.make_token(tokens.VERIFY_EMAIL, {"uid": user.id})
     link = f"{APP_BASE_URL}/auth/verify?token={token}"
-    send_email(
+    send_email_safe(
         user.email, "Verify your Nudgy email",
         f"Welcome to Nudgy! Confirm your email to finish signing up:\n\n{link}\n\n"
         "This link expires in 24 hours. If you didn't sign up, ignore this.",
@@ -501,7 +501,7 @@ def request_magic_link(body: EmailBody, session: Session = Depends(get_session))
     if user is not None:
         token = tokens.make_token(tokens.MAGIC_LOGIN, {"uid": user.id})
         link = f"{APP_BASE_URL}/auth/magic?token={token}"
-        send_email(
+        send_email_safe(
             email, "Your Nudgy sign-in link",
             f"Click to sign in to Nudgy:\n\n{link}\n\nThis link expires in 15 minutes.",
         )
@@ -535,7 +535,7 @@ def request_password_reset(body: EmailBody, session: Session = Depends(get_sessi
         # the reset form. `/auth/reset` has no route — it would 404 before the app
         # ever loaded. (verify/magic differ: those ARE backend GETs that redirect.)
         link = f"{APP_BASE_URL}/?mode=reset&token={token}"
-        send_email(
+        send_email_safe(
             email, "Reset your Nudgy password",
             f"Reset your password here:\n\n{link}\n\nExpires in 1 hour. "
             "If you didn't ask for this, you can ignore it.",
