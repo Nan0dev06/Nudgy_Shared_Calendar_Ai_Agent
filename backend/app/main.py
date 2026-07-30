@@ -25,6 +25,7 @@ from app.api.share_routes import router as share_router
 from app.api.stream_routes import router as stream_router
 from app.db.session import init_db
 from app.jobs.plan_ticker import start_ticker, stop_ticker
+from app.mailer import configure_from_env as configure_mailer
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(message)s")
 
@@ -43,6 +44,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="Nudgy", description="Agentic group scheduling assistant",
               lifespan=lifespan)
 init_db()
+configure_mailer()  # SMTP if SMTP_* is set, else the console dev backend
 
 app.include_router(auth_router)
 app.include_router(group_router)

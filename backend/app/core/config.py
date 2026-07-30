@@ -71,6 +71,21 @@ MS_SCOPES = [
     "Calendars.ReadWrite",
 ]
 
+# --- Transactional email (app/mailer/) --------------------------------------
+# SMTP delivery for verification / magic-link / password-reset mail. Unset ->
+# the console dev backend (links logged to the server console, nothing sent),
+# which is the right default for local dev. Set all of HOST + USER + PASSWORD to
+# switch on real delivery; for Gmail that's smtp.gmail.com:587 with a 16-char
+# App Password (requires 2-Step Verification on the account) — NOT the account
+# password. Port 465 selects implicit TLS; anything else uses STARTTLS.
+SMTP_HOST = os.getenv("SMTP_HOST", "")
+SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
+SMTP_USER = os.getenv("SMTP_USER", "")
+SMTP_PASSWORD = os.getenv("SMTP_PASSWORD", "")
+# The visible From: address. Defaults to the SMTP user (Gmail requires From to
+# match the authenticated account anyway).
+SMTP_FROM = os.getenv("SMTP_FROM", "") or SMTP_USER
+
 # --- LLM provider -----------------------------------------------------------
 # Which model backend Nudgy talks to. Default is Groq (free tier, fast).
 #   groq      -> free cloud, needs GROQ_API_KEY   (recommended for the demo)
