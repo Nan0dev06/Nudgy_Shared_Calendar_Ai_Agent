@@ -106,6 +106,16 @@ life with a frozen clock); the asyncio loop around it is started/stopped by
 host. Knobs: `PLAN_TICK_SECONDS`, `PLAN_TICKER_ENABLED`,
 `PLAN_REMINDER_INTERVAL_SECONDS`.
 
+### `realtime/` — the live feed's pub/sub
+`bus.py`: an in-process `EventBus` of per-group subscribers; `__init__.py`
+exposes `plans_changed(group_id)` / `events_changed(group_id)`, which is what
+routes, the agent's mutating tools, and the ticker call. What travels is a KIND
+("plans"/"events"), never plan contents — the client refetches through the
+normal authenticated endpoint, so authorization stays in one place and bursts
+coalesce into one refetch. One process only: multi-worker needs Redis behind
+the same two functions. Consumed by `api/stream_routes.py`; knobs
+`SSE_HEARTBEAT_SECONDS`, `SSE_MAX_CONNECTIONS`.
+
 ### `tools/` — calendar reads, venue search, slot math, booking, vote rules
 | File | Owns |
 |---|---|
@@ -134,6 +144,7 @@ host. Knobs: `PLAN_TICK_SECONDS`, `PLAN_TICKER_ENABLED`,
 | `event_routes.py` | group events & tasks + Google sync. |
 | `plan_routes.py` | `/plans/*` — voting, deterministic host actions, deadline/auto-book settings, share-link on/off. |
 | `share_routes.py` | `/share/{token}/*` — **the only unauthenticated writes in the app.** Guest voting: view, join (name + optional email), interest, time-vote. |
+| `stream_routes.py` | `GET /groups/{id}/stream` — the SSE live feed (see `realtime/`). |
 | `chat_routes.py` | `/chat` — the agent endpoint. |
 | `review_routes.py` | `/reviews` — place reviews. |
 
@@ -150,11 +161,12 @@ host. Knobs: `PLAN_TICK_SECONDS`, `PLAN_TICKER_ENABLED`,
   `ActivityPage`, `SettingsPage`.
 - `components/` — `Shell`, `Sidebar`, `TopBar`, `ChatPanel`, `ChatbotOrb`,
   `Modals`, `Fields`, `Blobs`, `OrbLogo`, `Icons`.
-- `api.js` — backend calls; `ctx.js` — shared state; `availability.js`,
-  `dates.js`, `people.js`, `places.js`, `theme.js` — helpers.
-- `vite.config.js` — dev proxy to `:8000`. ⚠️ Known bug: proxies `/polls` but
-  the API uses `/plans`; missing `/events`, `/reviews`. Fix when next touching
-  the frontend (backend-serve mode is unaffected).
+- `api.js` — backend calls; `live.js` — the SSE subscription (`useGroupLive`)
+  + the poll cadences; `ctx.js` — shared state; `availability.js`, `dates.js`,
+  `people.js`, `places.js`, `theme.js` — helpers.
+- `vite.config.js` — dev proxy to `:8000` (`/auth`, `/groups`, `/plans`,
+  `/events`, `/reviews`, `/chat`; the dead `/polls` prefix was removed in
+  PR#13). Every backend prefix the frontend calls must be listed here.
 
 ---
 
@@ -180,6 +192,9 @@ host. Knobs: `PLAN_TICK_SECONDS`, `PLAN_TICKER_ENABLED`,
   `auth/guest_tokens.py`, `db/models.py` (`PlanGuest`, `Guest*Vote`,
   `Plan.share_token`), `db/repo.py` (share + guest section),
   `frontend/src/screens/SharePage.jsx`.
+- **Live updates / SSE:** `realtime/bus.py`, `realtime/__init__.py`,
+  `api/stream_routes.py`, `frontend/src/live.js`, `App.jsx` (the poke handlers
+  + the backstop poll), `core/config.py` (SSE_* knobs).
 - **DB schema change:** `db/models.py` + `db/session.py`
   (`_LATE_COLUMNS`/`_LATE_INDEXES`/backfill).
 - **Config / env:** `core/config.py` + `.env.example`.

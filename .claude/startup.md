@@ -17,17 +17,18 @@ Read these before doing anything else this session:
 - **Frontend auth UI** (PR #13) + **sync_setting enforcement** (#14) + **beta
   hardening / group lifecycle** (#15) — DONE, merged.
 - **Async voting** (deadlines, non-voter reminders, opt-in auto-book) — PR #16,
-  branch `feat/async-voting`. **Open, awaiting merge.**
-- **Guest voting** (shareable vote links, no account needed) — branch
-  `feat/guest-voting`, stacked **on top of** `feat/async-voting`. Merge #16
-  first, then this one.
-- **Next up in Phase 2:** SSE to replace the 5s poll (the poll cadence is
-  visible in the server log — it's the last piece of the async story), then
-  conversation persistence / model router / injection defense.
-- **Known gap worth a small branch:** the poll card's "Lock it in" and "Try the
-  next time" still go through the LLM (`doSend`) even though the deterministic
-  endpoints exist (`POST /plans/{id}/lock-in`, `/next-time`) and `api.js` could
-  call them directly.
+  merged.
+- **Guest voting** (shareable vote links, no account needed) — PR #17, merged.
+- **Direct host actions** (the card calls `/lock-in` + `/next-time` instead of
+  the LLM) — PR #18, merged.
+- **SSE live feed** replacing the 5s poll — branch `feat/sse-live-updates`.
+  `app/realtime/` (in-process bus, pokes carry only a group id + kind) +
+  `GET /groups/{id}/stream` + `frontend/src/live.js`. The poll survives as a
+  backstop: 5s when the stream is down, 60s when it's up.
+- **Next up in Phase 2:** conversation persistence, model router + fallback,
+  injection defense.
+- **Email for beta:** Gmail SMTP app-password backend (no domain) — the
+  `EmailSender` seam in `app/mailer/` is where it plugs in.
 
 ## Working branch
 

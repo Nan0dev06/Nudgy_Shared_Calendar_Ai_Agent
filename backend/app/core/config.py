@@ -123,6 +123,19 @@ PLAN_REMINDER_INTERVAL_SECONDS = float(
     os.getenv("PLAN_REMINDER_INTERVAL_SECONDS", str(12 * 3600))
 )
 
+# --- live updates / SSE (api/stream_routes.py) ------------------------------
+# How long a quiet stream waits before sending a heartbeat comment. Idle
+# connections are dropped by proxies (and phone radios) after ~60s of silence,
+# so this has to stay comfortably under that; it is also how long a client can
+# take to notice the server went away.
+SSE_HEARTBEAT_SECONDS = float(os.getenv("SSE_HEARTBEAT_SECONDS", "20"))
+
+# Ceiling on concurrent open streams in this process. Each one is cheap (an
+# idle coroutine, no DB session held), but a runaway client reconnect-storm
+# shouldn't be able to pin the worker. Over the cap the endpoint returns 503 and
+# the frontend falls back to polling, which is exactly the old behaviour.
+SSE_MAX_CONNECTIONS = int(os.getenv("SSE_MAX_CONNECTIONS", "500"))
+
 # Big-intake guard: if an estimated request would exceed this many input
 # tokens, the agent asks the user to narrow the request instead of firing a
 # call that the model would reject. 0 disables the check. Sized to catch

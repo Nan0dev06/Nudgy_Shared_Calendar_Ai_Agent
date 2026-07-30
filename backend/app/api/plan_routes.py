@@ -38,6 +38,7 @@ from app.core.config import APP_BASE_URL
 from app.db.models import Plan, User
 from app.db import repo
 from app.db.session import get_session
+from app.realtime import events_changed, plans_changed
 from app.tools.plan_service import (
     HOST_DECIDABLE, advance_to_next_time, confirm_active_time, day_label,
     load_plan_state, maybe_auto_book, member_ballot, plan_tally, time_label,
@@ -247,6 +248,10 @@ def create_plan(
              plan.id, user.email, len(slots),
              f", closes {deadline:%Y-%m-%d %H:%M}Z" if deadline else "",
              ", auto-book" if body.auto_book else "")
+    # Everyone else in the group is looking at a plan list that no longer has
+    # this in it. Poke them so their card appears now, not at the next poll —
+    # here and after every other mutation below (see app/realtime).
+    plans_changed(group_id)
     return _plan_json(session, plan, user, user.timezone)
 
 
@@ -285,6 +290,9 @@ def update_plan_settings(
     # rather than making the host wait for a vote that may never come.
     if plan.status == "open" and plan.auto_book:
         maybe_auto_book(session, plan, user.timezone)
+    plans_changed(plan.group_id)
+    if plan.status == "scheduled":  # auto-book just put it on the calendar
+        events_changed(plan.group_id)
     return _plan_json(session, plan, user, user.timezone)
 
 
@@ -338,8 +346,10 @@ def delete_plan(
     _require_membership(session, user, plan.group_id)
     if user.id != plan.created_by:
         raise HTTPException(status_code=403, detail="Only the host who made this poll can delete it.")
+    group_id = plan.group_id
     repo.delete_plan(session, plan)
     log.info("[plan %d] deleted by host %s", plan_id, user.email)
+    plans_changed(group_id)
     return {"deleted": True, "plan_id": plan_id}
 
 
@@ -367,6 +377,7 @@ def add_rounds(
         slots.append((start, end))
     repo.append_rounds(session, plan, slots)
     log.info("[plan %d] %s appended %d candidate time(s)", plan.id, user.email, len(slots))
+    plans_changed(plan.group_id)
     return _plan_json(session, plan, user, user.timezone)
 
 
@@ -429,6 +440,10 @@ def lock_in_time(
     if result.get("error"):
         raise HTTPException(status_code=400, detail=result["error"])
     log.info("[plan %d] host %s locked in via API", plan.id, user.email)
+    # The card settles AND an event lands on the group's calendar — both views
+    # are stale for every other member until they hear about it.
+    plans_changed(plan.group_id)
+    events_changed(plan.group_id)
     return {"action": result.get("action"), "plan": _plan_json(session, plan, user, user.timezone)}
 
 
@@ -445,6 +460,7 @@ def next_time(
     if result.get("error"):
         raise HTTPException(status_code=400, detail=result["error"])
     log.info("[plan %d] host %s advanced time via API (%s)", plan.id, user.email, result.get("action"))
+    plans_changed(plan.group_id)
     return {"action": result.get("action"), "plan": _plan_json(session, plan, user, user.timezone)}
 
 
@@ -462,6 +478,9 @@ def vote_interest(
     log.info("[plan %d] %s is %s for the plan", plan.id, user.email,
              "IN" if body.yes else "OUT")
     maybe_auto_book(session, plan, user.timezone)
+    plans_changed(plan.group_id)
+    if plan.status == "scheduled":
+        events_changed(plan.group_id)
     return _plan_json(session, plan, user, user.timezone)
 
 
@@ -496,4 +515,7 @@ def vote_time(
     # The vote that completes a unanimous plan is the one that books it (opt-in
     # only) — see plan_service.maybe_auto_book. A no-op for everything else.
     maybe_auto_book(session, plan, user.timezone)
+    plans_changed(plan.group_id)
+    if plan.status == "scheduled":
+        events_changed(plan.group_id)
     return _plan_json(session, plan, user, user.timezone)

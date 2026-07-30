@@ -34,6 +34,7 @@ from app.db.session import SessionLocal
 from app.notify.plans import (
     notify_plan_auto_booked, notify_plan_expired, notify_vote_reminder,
 )
+from app.realtime import events_changed, plans_changed
 from app.tools.plan_deadlines import reminder_due
 from app.tools.plan_service import (
     load_plan_state, pending_voters, plan_tally, resolve_deadline, time_label,
@@ -72,11 +73,16 @@ def _process_plan(session: Session, plan: Plan, now: datetime,
         if outcome["action"] == "booked":
             counts["booked"] += 1
             _announce_booking(session, plan, outcome)
+            events_changed(plan.group_id)
         else:
             counts["expired"] += 1
             if host is not None:
                 summary = plan_tally(session, plan, host_tz).host_note
                 notify_plan_expired(plan, host.email, summary)
+        # This is the one state change nobody triggered — no request comes back
+        # to refresh the card, so without a poke an open browser would show a
+        # live poll that closed (or booked itself) minutes ago.
+        plans_changed(plan.group_id)
         return  # the plan is no longer open; nothing left to remind about
 
     if _remind(session, plan, now, interval):

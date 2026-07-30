@@ -137,6 +137,33 @@ def test_the_deadline_closes_voting_and_tells_the_host(ctx):
     assert "Voting closed" in outbox.last.subject
 
 
+def test_a_deadline_pokes_the_live_feed(ctx, monkeypatch):
+    """The one state change nobody triggered: no request comes back to refresh
+    the card, so an open browser learns it closed only from a poke."""
+    session, group, users, _ = ctx
+    poked = []
+    monkeypatch.setattr("app.jobs.plan_ticker.plans_changed", poked.append)
+    _plan(session, group, users["host"], deadline=NOW + timedelta(hours=2))
+
+    run_tick(session, NOW + timedelta(hours=3), INTERVAL)
+
+    assert poked == [group.id]
+
+
+def test_an_auto_booked_deadline_pokes_the_calendar_too(ctx, monkeypatch):
+    session, group, users, _ = ctx
+    poked = []
+    monkeypatch.setattr("app.jobs.plan_ticker.events_changed", poked.append)
+    plan = _plan(session, group, users["host"],
+                 deadline=NOW + timedelta(hours=2), auto_book=True)
+    active = repo.get_active_round(session, plan)
+    repo.cast_time_vote(session, active, users["host"], True)
+
+    run_tick(session, NOW + timedelta(hours=3), INTERVAL)
+
+    assert poked == [group.id]
+
+
 def test_an_expired_plan_is_not_processed_twice(ctx):
     session, group, users, outbox = ctx
     _plan(session, group, users["host"], deadline=NOW + timedelta(hours=2))
