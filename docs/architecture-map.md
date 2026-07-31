@@ -135,6 +135,7 @@ the same two functions. Consumed by `api/stream_routes.py`; knobs
 | `prompt.py` | System-prompt assembly (incl. the user-memory block). |
 | `tools.py` | Agent tool definitions + implementations (find slots, suggest venues, create plan, …). |
 | `availability.py` | **Availability service:** `fetch_busy_for_group` (unions each member's calendars via the cache) + `compute_availability` (slots + partial windows). The bridge between DB and `tools/slots`. |
+| `fencing.py` | **The trust boundary.** Sanitizes text nobody on this side wrote (calendar locations, OSM venue/area names, group names, reviews, memory notes) and wraps it in `<untrusted>` blocks. Applied to the prompt in `prompt.py` and to *every* tool result in `loop._tool_message`, so a tool added later is covered by default. |
 
 ### `api/` — HTTP routes
 | File | Route surface |
@@ -178,6 +179,10 @@ the same two functions. Consumed by `api/stream_routes.py`; knobs
   `db/repo.py` (`get_calendar_accounts`).
 - **The agent (behavior, tools, prompt):** `agent/loop.py`, `agent/prompt.py`,
   `agent/tools.py`; `core/quota.py`; `core/config.py` (LLM_* settings).
+- **Prompt injection / untrusted text:** `agent/fencing.py`, the `UNTRUSTED DATA`
+  rule in `agent/prompt.py`, `loop.TRUSTED_RESULT_KEYS`. Adding a tool that
+  returns a `note` means promising that note never inlines untrusted text —
+  `tools/locations.py` shows the pattern (point at a field, don't splice it in).
 - **Auth (login, sessions, email/password):** `api/auth_routes.py`,
   `api/deps.py`, `auth/google.py`, `auth/tokens.py`, `core/passwords.py`,
   `mailer/`, `db/repo.py` (user/account fns), `db/models.py` (`User`,

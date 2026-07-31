@@ -51,6 +51,28 @@ deadlines/auto-expire, member-proposed times, auto-book-if-all-yes, reminders. [
 - Roles exist to gate: manage membership (invite/remove), rename/delete group, transfer ownership, (later) billing. Default group creator = owner = default host. [LOCKED]
 - **Default when a host cancels: keep the plan and auto-book-if-all-yes**, with a notification letting the group pick another rule (majority-by-deadline / designate a decider / elect a new host). The richer host-handover options are a specific edge case → **[LATER]**; v1 ships only the sensible default. [LOCKED]
 
+## Editing events & tasks (decided 2026-07-31)
+- **Personal events belong to their owner.** Nobody else can edit, change or delete
+  another member's personal event — not the group, not the group's creator. [LOCKED]
+- **Shared group events/tasks are not unilaterally editable — not even by their
+  creator.** Any member can *propose* a change; it goes back to the group as a vote.
+  **Every field** goes through this, titles included: a meeting renamed from "quarter
+  goals" to "week analysis" is exactly as material as a moved time. [LOCKED]
+- **Majority wins, but the creator applies it.** The vote produces a verdict; a human
+  presses go. This preserves the app's standing rule that nothing reaches a real
+  calendar without a person deciding (see `tools/plan_rules.py` and the Plan
+  docstring) — the creator can apply what the group approved or drop it, never
+  override it. [LOCKED]
+- **Attendees are notified on every applied edit** (`sendUpdates="all"`), including
+  title-only changes. [LOCKED]
+- Deleting a shared event is, for now, creator-only — tightened from "any member",
+  which was a live hole. Whether a delete should itself need a vote is open. [DISCUSS]
+- **Leader-decides variant** — in a workplace group the leader changes the time
+  directly, taking the group's stated preferences into account rather than voting.
+  Belongs with *different group types*, already [LATER] below. [LATER]
+- **Change history** — an audit trail of who changed what and when on an event or
+  task, so an edit is explicable after the fact. [LATER]
+
 ## Content & safety policy
 - The agent and venue search will **not** suggest or plan around **alcohol, sexual, or illegal** activities/venues (drop bar/pub/alcohol venue types; scope-guard refuses these). [LOCKED]
 
@@ -69,7 +91,7 @@ setTimeout pacing). Sync: two-way + settings toggle. All [LOCKED] unless in DISC
 2. Microsoft/Outlook — **in v1** (build `CalendarProvider` abstraction; Google + Microsoft both shipped; caveat: some uni/work MS tenants require IT-admin consent, outside our control).
 3. Auth — email **+ password** with reset/verification **+ optional magic-link** + Google + Microsoft.
 4. Availability freshness — **short cache (~60–120s) + always live at booking**.
-5. Title reading — **opt-in per user**, clear toggle + consent.
+5. Title reading — **opt-in per connected calendar** (a switch per `CalendarAccount`, beside colour/sync), clear toggle + consent. Titles pulled in are **visible to their owner only**: groupmates still see opaque busy blocks, so the freebusy-only promise made to everyone else is unchanged. Refined 2026-07-31 — the point is that a person stops leaving Nudgy to check what they have (and it carries into solo mode). [LOCKED]
 6. Hostless plan — **default keep + auto-book-if-all-yes**; richer options [LATER].
 7. Free-tier AI turns — **placeholder ~8/day** (a "turn" = one user→agent message; internal steps are capped separately). Revisit with a cost model.
 8. Recurrence — **decide during Phase 2** (include only if low-friction, else [LATER]).

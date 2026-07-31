@@ -168,15 +168,25 @@ def search_venues_near(
 
 
 def _search_failed(where: str) -> dict:
-    """The map service didn't answer. Say THAT — not 'there are no cafes'."""
+    """The map service didn't answer. Say THAT — not 'there are no cafes'.
+
+    `where` is carried as DATA (`searched_near`) and never spliced into `note`.
+    A note is trusted text the model is meant to follow — see
+    agent/loop.TRUSTED_RESULT_KEYS — while `where` is either an area the user
+    typed or a name that came back from OpenStreetMap. Interpolating one into
+    the other would smuggle untrusted text past the fence, so every note here
+    points at a field name instead of inlining its value.
+    """
     return {
         "search_failed": True,
         "venues": [],
-        "note": (f"The map service (OpenStreetMap) did not respond, so the venues near "
-                 f"{where} are UNKNOWN — this is NOT the same as there being none. Do "
-                 f"not tell the user the area has no places and do not ask them for a "
-                 f"different area. Say the venue lookup is temporarily down, and offer "
-                 f"to try again in a moment or to let them name the spot themselves."),
+        "searched_near": where,
+        "note": ("The map service (OpenStreetMap) did not respond, so the venues near "
+                 "the area named in `searched_near` are UNKNOWN — this is NOT the same "
+                 "as there being none. Do not tell the user the area has no places and "
+                 "do not ask them for a different area. Say the venue lookup is "
+                 "temporarily down, and offer to try again in a moment or to let them "
+                 "name the spot themselves."),
     }
 
 
@@ -199,9 +209,10 @@ def suggest_venues_for_slot(
         point = geocode(near)
         if point is None:
             return {
-                "anchor": None, "venues": [],
-                "note": (f"Could not find a place called {near!r} on the map. Ask the "
-                         "user to name the area differently, or to add the city."),
+                "anchor": None, "venues": [], "requested_area": near,
+                "note": ("Could not find the place named in `requested_area` on the "
+                         "map. Ask the user to name the area differently, or to add "
+                         "the city."),
             }
         anchor_area = area_name(*point)
         venues = search_venues_near(*point, kind=kind)
@@ -211,11 +222,12 @@ def suggest_venues_for_slot(
                  near, point, anchor_area, len(venues))
         return {
             "anchor_area": anchor_area,
-            "anchored_on": f"the area the user asked for ({near})",
+            "requested_area": near,
+            "anchored_on": "the area the user asked for (see `requested_area`)",
             "venues": venues,
             "note": (None if venues else
-                     f"The venue search near {near} returned no {kind}s — tell the "
-                     "user honestly; do NOT invent a venue."),
+                     f"The venue search near the area in `requested_area` returned no "
+                     f"{kind}s — tell the user honestly; do NOT invent a venue."),
         }
 
     locations_by_member: dict[str, list[str]] = {}
@@ -260,6 +272,6 @@ def suggest_venues_for_slot(
         "anchor_area": anchor_area,
         "venues": venues,
         "note": (None if venues else
-                 f"The venue search near {anchor_area} returned no {kind}s — "
-                 "tell the user honestly; do NOT invent a venue."),
+                 f"The venue search near the area in `anchor_area` returned no "
+                 f"{kind}s — tell the user honestly; do NOT invent a venue."),
     }
