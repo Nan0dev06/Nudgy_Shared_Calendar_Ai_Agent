@@ -430,22 +430,39 @@ export default function App() {
     [activeGroupId, refreshGroupData, pushActivity]
   );
 
+  // Both return true/false rather than throwing: the server can now refuse
+  // (someone else's personal event is theirs alone — see tools/event_rules.py),
+  // and a refusal must not leave the UI showing a change that didn't happen.
+  // The rule and its wording live server-side, so we surface what it said
+  // instead of second-guessing why.
   const setTaskDone = useCallback(
     async (eventId, done) => {
-      await api.patchEvent(eventId, { done });
+      try {
+        await api.patchEvent(eventId, { done });
+      } catch (e) {
+        pushActivity({ dot: "#D95D39", pre: "", bold: e.message, post: "" });
+        return false;
+      }
       setGroupEvents((evs) =>
         evs.map((e) => (e.id === eventId ? { ...e, done } : e))
       );
+      return true;
     },
-    []
+    [pushActivity]
   );
 
   const removeEvent = useCallback(
     async (eventId) => {
-      await api.deleteEvent(eventId);
+      try {
+        await api.deleteEvent(eventId);
+      } catch (e) {
+        pushActivity({ dot: "#D95D39", pre: "", bold: e.message, post: "" });
+        return false;
+      }
       setGroupEvents((evs) => evs.filter((e) => e.id !== eventId));
+      return true;
     },
-    []
+    [pushActivity]
   );
 
   // RSVP to a group event (going/maybe/cant) — server-backed so groupmates see

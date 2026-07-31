@@ -744,6 +744,25 @@ def set_event_done(session: Session, event: GroupEvent, done: bool) -> None:
     session.commit()
 
 
+def update_event(session: Session, event: GroupEvent, **fields) -> GroupEvent:
+    """Apply the given fields to an event. Only keys actually passed are set,
+    so a caller can clear `location` (pass None) without that being confused
+    with "leave it alone" — the route decides which is which from the request
+    body, not from the value.
+
+    Deliberately does NOT touch `kind` or `personal`: those decide which rules
+    govern the row (a task has no end time; a personal event is masked from
+    groupmates and skips outbound sync). Changing one would silently move an
+    event between mechanisms, so a conversion should be an explicit operation
+    if it's ever wanted, not a field edit.
+    """
+    for key, value in fields.items():
+        setattr(event, key, value)
+    session.commit()
+    session.refresh(event)
+    return event
+
+
 def delete_event(session: Session, event: GroupEvent) -> None:
     session.delete(event)
     session.commit()

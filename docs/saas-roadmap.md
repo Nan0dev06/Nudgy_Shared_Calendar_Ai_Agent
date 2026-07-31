@@ -133,7 +133,7 @@ A hackathon proves the idea works once, with everyone in the room. A SaaS has to
 | Calendar data | Google `freebusy` (ranges only) + event locations | Excellent privacy design, but Google-only and uncached | `CalendarProvider` abstraction + Microsoft Graph; short-TTL cache |
 | Groups | Invite-code join, flat, no roles | Missing leave/kick/rename/delete; no roles for teams-later | Add lifecycle ops + owner/member role now; optional solo mode |
 | Poll cascade | Two-stage, host-decides, pure + tested; **+ deadlines, reminders, opt-in auto-book, guest voting by link** | Host moves and live updates both fixed (PR#18 endpoints, SSE feed) | Next: modes (quick / pick-a-time / float-idea), member-proposed times |
-| Tasks/Events | Create/delete/toggle; optional one-way Google sync | No edit, no recurrence, no reminders; one-way sync | Full CRUD + recurrence + reminders; two-way resilient sync |
+| Tasks/Events | Create/delete/toggle; **edit for personal events**; **ownership enforced**; optional one-way Google sync | Shared-event edit needs the propose+vote flow; no recurrence, no reminders; one-way sync | Edit proposals + voting + change history; recurrence + reminders; two-way resilient sync |
 | Agent AI | 8-step loop, 7 tools, free Groq 8b, prompt resent each step | Fragile model; no persistence; no quota (shared budget); injection-exposed | Model router+fallback; per-user quota; persist transcripts; fence injected text; stream via SSE |
 
 ### SaaS scaffolding

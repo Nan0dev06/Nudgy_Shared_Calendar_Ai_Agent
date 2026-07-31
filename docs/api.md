@@ -156,11 +156,34 @@ failure never loses the in-app event — the response carries
 `"sync": {"ok": false, "reason": "..."}`.
 
 ### `PATCH /events/{event_id}`
-`{"done": true}` — check a task off. Response: the updated event.
+Check a task off and/or edit the event. Every field is optional; a field is
+changed only if the key is present, so `{"location": null}` clears the location
+while omitting it leaves it alone.
+
+```json
+{"done": true, "title": "Dentist", "category": "Event", "location": "Hamra",
+ "start_iso": "2026-07-20T09:00:00+03:00", "end_iso": "2026-07-20T10:00:00+03:00",
+ "anonymous": false}
+```
+
+`kind` and `personal` are not editable — each decides which rules govern the row.
+An empty body is `400`. Response `200`: the updated event.
+
+**Permissions** (`tools/event_rules.py`):
+
+| | edit fields | tick `done` | delete |
+|---|---|---|---|
+| **your personal** event/task | ✅ | ✅ | ✅ |
+| **someone else's personal** | ❌ | ❌ | ❌ |
+| **shared group** event/task | ❌ *goes to a group vote — not built yet* | ✅ anyone | ✅ creator only |
+
+A refusal is `403` and the `detail` explains which rule applied — it's meant to
+be shown to the user verbatim.
 
 ### `DELETE /events/{event_id}`
 Removes the event; if it was synced, also deletes the Google copy (best
-effort, via the creator's token). Response `200`: `{"ok": true, "gcal": {...}}`
+effort, via the creator's token). Creator-only (see the table above); `403`
+otherwise. Response `200`: `{"ok": true, "gcal": {...}}`
 
 ---
 
