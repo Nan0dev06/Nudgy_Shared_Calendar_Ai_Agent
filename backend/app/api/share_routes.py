@@ -2,8 +2,8 @@
 
 GET  /share/{token}             -> the plan as an outsider sees it
 POST /share/{token}/join        {"name": "Sam", "email": null} -> become a guest
-POST /share/{token}/interest    {"yes": true}
-POST /share/{token}/time-vote   {"yes": true, "round_id": 3}
+POST /share/{token}/interest    {"yes": true}  (Float-an-idea polls only)
+POST /share/{token}/time-vote   {"round_id": 3, "answer": "yes"|"no"|"if_needed"}
 
 These are the ONLY unauthenticated write endpoints in the app, so the rules they
 work under are worth stating plainly:
@@ -37,8 +37,9 @@ from app.db.models import Plan, PlanGuest, User
 from app.db import repo
 from app.db.session import get_session
 from app.realtime import events_changed, plans_changed
+from app.tools.plan_rules import VOTE_STATES
 from app.tools.plan_service import (
-    day_label, guest_ballot, load_plan_state, maybe_auto_book, time_label,
+    converge, day_label, guest_ballot, load_plan_state, time_label,
 )
 
 log = logging.getLogger("nudgy.agent")
@@ -58,8 +59,8 @@ class InterestBody(BaseModel):
 
 
 class TimeVoteBody(BaseModel):
-    yes: bool
     round_id: int
+    answer: str
 
 
 def _first_name(user: User) -> str:
@@ -116,22 +117,26 @@ def _share_json(session: Session, plan: Plan, guest: PlanGuest | None) -> dict:
         # counts, not a roster: how many are in out of how many were asked
         "going_count": len(interested),
         "people_count": len(state.participants),
+        "asks_interest": plan.asks_interest,
+        # every candidate is answerable at once, so the guest sees the same grid
+        # a member does — there is no active time to single out
         "times": [
             {
                 "round_id": r.id,
                 "label": time_label(r, tz),
-                "status": r.status,
+                "spotlit": r.id == plan.spotlight_round_id,
                 "start_iso": r.start.isoformat(),
                 "end_iso": r.end.isoformat(),
+                "my_answer": state.guest_votes_by_time.get(r.id, {}).get(
+                    guest.label) if guest is not None else None,
             }
             for r in plan.rounds
         ],
-        "active_round_id": state.active.id if state.active else None,
-        "active_time_label": time_label(state.active, tz) if state.active else None,
     }
     if guest is not None:
         b = guest_ballot(plan, guest, state=state)
-        out["me"] = {"name": guest.name, "stage": b.stage, "note": b.note}
+        out["me"] = {"name": guest.name, "stage": b.stage, "note": b.note,
+                     "unanswered": b.unanswered}
     else:
         out["me"] = None
     return out
@@ -235,10 +240,15 @@ def guest_interest(
     plan = _plan_for_token(session, token)
     _votable(plan)
     guest = _require_guest(session, plan, nudgy_guest)
+    if not plan.asks_interest:
+        raise HTTPException(
+            status_code=400,
+            detail="This poll asks about times directly — just answer the times.",
+        )
     repo.cast_guest_interest(session, guest, body.yes)
     log.info("[plan %d] %s is %s for the plan", plan.id, guest.label,
              "IN" if body.yes else "OUT")
-    maybe_auto_book(session, plan, "UTC")
+    converge(session, plan, "UTC")
     # a guest ballot moves the host's tally exactly like a member's does, and
     # the host is watching the group's live feed
     _announce(plan)
@@ -256,23 +266,27 @@ def guest_time_vote(
     _votable(plan)
     guest = _require_guest(session, plan, nudgy_guest)
 
-    state = load_plan_state(session, plan)
-    if not state.interest_votes.get(guest.label):
-        raise HTTPException(
-            status_code=403,
-            detail="Say you're in for the plan first — times are only asked of people who are.",
-        )
-    if state.active is None:
-        raise HTTPException(status_code=400, detail="No time is on the table for this plan.")
-    # same guard members get: a vote cast while the host was switching times
-    # must not land on the wrong question
-    if state.active.id != body.round_id:
-        raise HTTPException(status_code=409, detail="The host moved on to a different time.")
+    if body.answer not in VOTE_STATES:
+        raise HTTPException(status_code=400,
+                            detail=f"answer must be one of {', '.join(VOTE_STATES)}.")
+    if plan.asks_interest:
+        state = load_plan_state(session, plan)
+        if not state.interest_votes.get(guest.label):
+            raise HTTPException(
+                status_code=403,
+                detail="Say you're in for the plan first — times are only asked of people who are.",
+            )
+    round_ = next((r for r in plan.rounds if r.id == body.round_id), None)
+    if round_ is None:
+        raise HTTPException(status_code=404,
+                            detail="That time isn't one of this poll's candidates.")
 
-    repo.cast_guest_time_vote(session, state.active, guest, body.yes)
-    log.info("[plan %d] %s said %s to the active time", plan.id, guest.label,
-             "YES" if body.yes else "NO")
-    maybe_auto_book(session, plan, "UTC")
+    repo.cast_guest_time_vote(session, round_, guest, body.answer)
+    log.info("[plan %d] %s answered %s to a time", plan.id, guest.label, body.answer)
+    # A guest's answer can be the last one outstanding, so it can complete the
+    # poll exactly like a member's — but it can never make the MINIMUM, which is
+    # counted on members only.
+    converge(session, plan, "UTC")
     _announce(plan)
     return _share_json(session, plan, guest)
 
@@ -282,5 +296,5 @@ def _announce(plan) -> None:
     get no stream: the share page is a single plan seen through a bearer token,
     and a token holder has no business hearing about the rest of the group."""
     plans_changed(plan.group_id)
-    if plan.status == "scheduled":
+    if plan.status == "booked":
         events_changed(plan.group_id)

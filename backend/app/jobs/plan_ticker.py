@@ -92,7 +92,7 @@ def _process_plan(session: Session, plan: Plan, now: datetime,
 def _remind(session: Session, plan: Plan, now: datetime, interval: timedelta) -> bool:
     """Send this plan's nudges if one is due. True if anything went out."""
     state = load_plan_state(session, plan)
-    waiting = pending_voters(state)
+    waiting = pending_voters(state, plan)
     if not reminder_due(
         now=now,
         created_at=plan.created,
@@ -103,16 +103,24 @@ def _remind(session: Session, plan: Plan, now: datetime, interval: timedelta) ->
     ):
         return False
 
+    spotlight = next((r for r in state.rounds if r.id == plan.spotlight_round_id), None)
     by_email = {m.email: m for m in repo.get_group_members(session, plan.group_id)}
     for email in waiting:
         member = by_email.get(email)
         if member is None:
             continue
         tz = member.timezone or "UTC"
-        if state.interest_votes.get(email) is None:
+        if plan.asks_interest and state.interest_votes.get(email) is None:
             question = "Are you in for this plan?"
+        elif spotlight is not None:
+            # The spotlight earns its keep here: "the group's leaning toward X"
+            # is a far better nudge than "you have times to answer".
+            question = (f"The group's leaning toward {time_label(spotlight, tz)} — "
+                        "does it work for you?")
+        elif len(state.rounds) == 1:
+            question = f"Does {time_label(state.rounds[0], tz)} work for you?"
         else:
-            question = f"Does {time_label(state.active, tz)} work for you?"
+            question = f"Which of the {len(state.rounds)} times work for you?"
         notify_vote_reminder(
             plan, email, question,
             deadline_label=_label(plan.deadline, tz) if plan.deadline else None,

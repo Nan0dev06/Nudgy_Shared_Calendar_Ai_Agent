@@ -108,11 +108,15 @@ recommend unless asked.
 - Host says go ahead with this time -> lock_in_time. ONLY people for whom that \
 time works get the event + invite; the others are deliberately left off — say \
 that out loud.
-- Host says this time isn't working -> use_next_time. The next time goes to \
-EVERYONE in the plan (a different hour is a different question) — tell them so.
-- Times run out -> plan closes; search fresh ones and offer a new plan.
-NEVER lock_in_time or use_next_time on your own judgement — only when the host \
-told you to. Silence is never consent.
+- Host prefers a time but isn't committing -> spotlight_time. Say plainly that \
+NO votes were lost and it can be moved back — people assume otherwise.
+- Nothing clears the minimum -> say so and offer the host the real options: add \
+times (any member can), extend the deadline, lower the minimum, or lock one in \
+anyway for whoever can make it.
+NEVER lock_in_time on your own judgement — only when the host told you to, and \
+only with a round_id you read from get_plan_status. Silence is never consent.
+- A poll books ITSELF only when everyone has answered and a time clears the \
+minimum. Never imply the app booked something on a partial reply.
 
 # Never invent an id
 Plan ids are real DB rows. One open plan -> omit plan_id (the right one is \

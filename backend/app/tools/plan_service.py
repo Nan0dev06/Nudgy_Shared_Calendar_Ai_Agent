@@ -1,32 +1,26 @@
-"""Glue between plan storage and the cascade rules.
+"""Glue between plan storage and the poll rules.
 
-The rules in plan_rules.py are pure and only report. THIS file is the single
-place a plan's state actually transitions, and there are exactly two host
-moves that can do it:
+plan_rules.py and plan_deadlines.py are pure and only report. THIS file is the
+single place a poll's state actually transitions, and there are now three moves:
 
-  advance_to_next_time() — "5 PM doesn't work, try 7 PM". The active round is
-      skipped and the next queued one goes live to the WHOLE interested cohort
-      (not just the people who said no to 5 PM — 7 PM is a new question, and
-      someone free at 5 might be busy at 7). No times left -> the plan is dead.
-  confirm_active_time()  — "lock in 5 PM". Books ONLY the people who said yes
-      to that specific time.
+  set_spotlight()   — host: "we're leaning toward this one". Changes NOTHING
+      else: no vote, no status, no other time. Reversible, and repeatable.
+  confirm_time()    — host: "lock this one in". Books the time the host names,
+      for whoever said yes or if-needed to it, whether or not the minimum was
+      met. The host is never gated by the minimum; it exists to constrain what
+      happens WITHOUT a human.
+  converge()        — the automatic path. Books the best qualifying time when
+      nobody is left to answer, or at the deadline.
 
-Votes never transition anything by themselves: no majority, no unanimity, no
-auto-booking on silence. A member's vote only moves that member forward
-through their own cascade. The host is the decider, which is also what keeps a
-human in the loop before anything is written to a calendar.
-
-Two async paths (Phase 2) can also transition a plan, and both are bounded so
-they never violate that rule — see tools/plan_deadlines.py for the reasoning:
-  maybe_auto_book()   — opt-in, and only on true unanimity, i.e. only when no
-      human had anything left to decide.
-  resolve_deadline()  — the vote deadline passing. Expires the plan (voting
-      closes, the host can still act) or, for an auto-book plan, books it.
+A vote never transitions anything by itself; it only moves that voter forward.
+What makes the automatic path safe is that booking only ever invites people who
+said yes or if-needed — nothing can reach the calendar of somebody who declined
+or never answered. See docs/poll-edit-redesign.md §1.5.
 """
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -35,14 +29,16 @@ from sqlalchemy.orm import Session
 from app.db.models import Plan, TimeRound, User
 from app.db import repo
 from app.tools.plan_deadlines import (
-    BOOK, EXPIRE, deadline_outcome, everyone_said_yes,
+    BOOK, EXPIRE, choose_winner, deadline_outcome, ready_to_book_early,
 )
-from app.tools.plan_rules import Ballot, Tally, ballot_for, tally
+from app.tools.plan_rules import (
+    IF_NEEDED, YES, Ballot, Tally, ballot_for, eligible_voters, tally,
+)
 
 log = logging.getLogger("nudgy.agent")
 
 # Statuses a host can still act on. `expired` means voting closed, NOT that the
-# plan is over: the host can lock in whatever came in before the deadline.
+# poll is over: the host can lock in whatever came in before the deadline.
 HOST_DECIDABLE = ("open", "expired")
 
 
@@ -66,211 +62,277 @@ def day_label(plan: Plan, tz_name: str) -> str:
 
 @dataclass
 class PlanState:
-    """A plan's live vote state, fetched once and reused. GET /plans builds both
-    the member ballot AND (for the host) the tally per plan; without this each
-    did its own round-trips for the active round + both vote sets — doubled up,
-    every 5s, for every open plan. Load once, pass to both.
+    """A poll's live vote state, fetched once and reused.
 
-    `participants` is members (by email) AND anyone who joined through the share
-    link (by "Name (guest)"), merged here so every consumer downstream — the
-    rules, the tally, unanimity, reminders — sees one list of people who owe an
-    answer. The vote dicts are merged the same way.
+    GET /plans builds the member ballot AND (for the host) the tally per poll;
+    without this each did its own round-trips. Load once, pass to both.
+
+    Members and guests are kept in separate lists all the way through. They were
+    merged in the old engine because every consumer wanted one list of people who
+    owe an answer — but the minimum is counted on members only, so the two have
+    to stay distinguishable. `participants` is still available for the places
+    that genuinely mean "everyone".
     """
-    active: TimeRound | None
-    participants: list[str]
-    interest_votes: dict[str, bool]
-    time_votes: dict[str, bool]
-    times_left: int
-    member_emails: list[str]   # members only — who a reminder can actually reach
+    rounds: list[TimeRound] = field(default_factory=list)
+    member_emails: list[str] = field(default_factory=list)
+    guest_labels: list[str] = field(default_factory=list)
+    interest_votes: dict[str, bool] = field(default_factory=dict)
+    votes_by_time: dict[int, dict[str, str]] = field(default_factory=dict)
+    guest_votes_by_time: dict[int, dict[str, str]] = field(default_factory=dict)
+    minimum: int = 0
+    spotlight: int | None = None
+
+    @property
+    def participants(self) -> list[str]:
+        return self.member_emails + self.guest_labels
+
+    @property
+    def time_keys(self) -> list[int]:
+        return [r.id for r in self.rounds]
+
+    def merged_votes(self) -> dict[int, dict[str, str]]:
+        """Members and guests in one map per time — what the tally reads."""
+        return {
+            key: {**self.votes_by_time.get(key, {}),
+                  **self.guest_votes_by_time.get(key, {})}
+            for key in self.time_keys
+        }
+
+
+def minimum_for(session: Session, plan: Plan) -> int:
+    """How many MEMBERS must be able to make a time before it books itself.
+
+    `expected_count` is set at creation and defaults to the whole group. Legacy
+    rows predate the column and read as the group size — never as "no minimum",
+    which would let an old poll book itself on a single yes.
+    """
+    if plan.expected_count:
+        return plan.expected_count
+    return len(repo.get_group_members(session, plan.group_id))
 
 
 def load_plan_state(session: Session, plan: Plan) -> PlanState:
-    active = repo.get_active_round(session, plan)
     members = [m.email for m in repo.get_group_members(session, plan.group_id)]
     # guests count from the moment they JOIN, not from their first vote — a guest
-    # who opened the link and went quiet is someone the plan is waiting on, the
+    # who opened the link and went quiet is someone the poll is waiting on, the
     # same as a silent member.
     guests = [g.label for g in repo.get_plan_guests(session, plan)]
     return PlanState(
-        active=active,
-        participants=members + guests,
+        rounds=list(plan.rounds),
+        member_emails=members,
+        guest_labels=guests,
         interest_votes={
             **repo.get_interest_votes(session, plan),
             **repo.get_guest_interest_votes(session, plan),
         },
-        time_votes={
-            **repo.get_time_votes(session, active),
-            **repo.get_guest_time_votes(session, active),
-        },
-        times_left=repo.count_queued_rounds(session, plan),
-        member_emails=members,
+        votes_by_time=repo.get_votes_by_time(session, plan),
+        guest_votes_by_time=repo.get_guest_votes_by_time(session, plan),
+        minimum=minimum_for(session, plan),
+        spotlight=plan.spotlight_round_id,
     )
 
 
-def plan_tally(session: Session, plan: Plan, tz_name: str, *, state: PlanState | None = None) -> Tally:
-    """The host's summary box for the plan's active time."""
+def plan_tally(session: Session, plan: Plan, tz_name: str,
+               *, state: PlanState | None = None) -> Tally:
+    """The host's summary box, across every candidate time at once."""
     st = state or load_plan_state(session, plan)
     return tally(
-        st.participants,
+        st.member_emails,
+        st.guest_labels,
         st.interest_votes,
-        st.time_votes,
-        active_time_label=time_label(st.active, tz_name) if st.active else None,
-        times_left=st.times_left,
+        st.merged_votes(),
+        asks_interest=plan.asks_interest,
+        time_keys=st.time_keys,
+        minimum=st.minimum,
+        labels={r.id: time_label(r, tz_name) for r in st.rounds},
+        spotlight=st.spotlight,
     )
 
 
-def member_ballot(session: Session, plan: Plan, user: User, *, state: PlanState | None = None) -> Ballot:
-    """What this member should be answering right now — their step of the cascade."""
+def _answered_count(state: PlanState, who: str) -> int:
+    votes = state.merged_votes()
+    return sum(1 for key in state.time_keys if who in votes.get(key, {}))
+
+
+def member_ballot(session: Session, plan: Plan, user: User,
+                  *, state: PlanState | None = None) -> Ballot:
+    """What this member should be answering right now."""
     st = state or load_plan_state(session, plan)
     return ballot_for(
+        asks_interest=plan.asks_interest,
         interest=st.interest_votes.get(user.email),
-        time_vote=st.time_votes.get(user.email),
-        has_active_time=st.active is not None,
+        times_total=len(st.rounds),
+        times_answered=_answered_count(st, user.email),
         plan_status=plan.status,
     )
 
 
 def guest_ballot(plan: Plan, guest, *, state: PlanState) -> Ballot:
-    """The share-link visitor's step of the same cascade the members are in."""
+    """The share-link visitor's step of the same questions members answer."""
     return ballot_for(
+        asks_interest=plan.asks_interest,
         interest=state.interest_votes.get(guest.label),
-        time_vote=state.time_votes.get(guest.label),
-        has_active_time=state.active is not None,
+        times_total=len(state.rounds),
+        times_answered=_answered_count(state, guest.label),
         plan_status=plan.status,
     )
 
 
-def pending_voters(state: PlanState) -> list[str]:
-    """Members who still owe this plan an answer — who a reminder goes to.
+def pending_voters(state: PlanState, plan: Plan) -> list[str]:
+    """MEMBERS who still owe this poll an answer — who a reminder goes to.
 
-    Two ways to be pending: never answered the plan at all, or said you're in
-    and haven't answered the time on the table. Someone who said no to the plan
-    is done; someone who said no to the time has answered it.
+    Two ways to be pending: never answered the interest question (Float only), or
+    being eligible and not having answered every candidate time. Somebody who
+    said no to the plan is done.
 
-    MEMBERS only, even though guests can be pending too: a nudge needs somewhere
-    to land, and a guest gave us at most an optional address for the calendar
-    invite. Chasing them is whoever shared the link's job.
+    Members only, even though guests can be pending too: a nudge needs somewhere
+    to land, and a guest gave us at most an optional address for the invite.
+    Chasing them is whoever shared the link's job.
     """
+    votes = state.merged_votes()
     waiting = []
     for email in state.member_emails:
-        interest = state.interest_votes.get(email)
-        if interest is None:
-            waiting.append(email)
-        elif interest and state.active is not None and email not in state.time_votes:
+        if plan.asks_interest:
+            interest = state.interest_votes.get(email)
+            if interest is None:
+                waiting.append(email)
+                continue
+            if not interest:
+                continue
+        if any(email not in votes.get(key, {}) for key in state.time_keys):
             waiting.append(email)
     return waiting
 
 
+def pending_answers(state: PlanState, plan: Plan) -> int:
+    """How many (participant, time) answers are still outstanding, guests
+    included. Zero means no further vote can arrive, which is what lets a poll
+    book before its deadline."""
+    votes = state.merged_votes()
+    voters = eligible_voters(state.participants, state.interest_votes,
+                             asks_interest=plan.asks_interest)
+    missing = 0
+    if plan.asks_interest:
+        missing += sum(1 for p in state.participants
+                       if state.interest_votes.get(p) is None)
+    for key in state.time_keys:
+        answered = votes.get(key, {})
+        missing += sum(1 for p in voters if p not in answered)
+    return missing
+
+
+def winning_round(session: Session, plan: Plan, tz_name: str,
+                  *, state: PlanState | None = None) -> TimeRound | None:
+    """Which time would book right now, or None if nothing qualifies."""
+    st = state or load_plan_state(session, plan)
+    t = plan_tally(session, plan, tz_name, state=st)
+    key = choose_winner(t.times, minimum=st.minimum, spotlight=st.spotlight,
+                        order=st.time_keys)
+    if key is None:
+        return None
+    return next((r for r in st.rounds if r.id == key), None)
+
+
 # ----------------------------------------------------------------- host moves
 
-def advance_to_next_time(session: Session, plan: Plan, actor: User, tz_name: str) -> dict:
-    """Host: this time doesn't work — put the next candidate to the cohort."""
+def set_spotlight(session: Session, plan: Plan, actor: User,
+                  round_id: int | None, tz_name: str) -> dict:
+    """Host: point at the time the group is leaning toward (or clear it)."""
     if actor.id != plan.created_by:
-        return {"error": "Only the host who suggested this plan can change the time."}
-    if plan.status == "expired":
-        # Putting a new time up asks people to vote, and voting is shut. Moving
-        # the deadline is the host's way of saying "keep going".
-        return {"error": "Voting on this plan has closed. Extend the deadline to "
-                         "put another time to the group."}
-    if plan.status != "open":
+        return {"error": "Only the host who suggested this plan can spotlight a time."}
+    if plan.status not in HOST_DECIDABLE:
         return {"error": f"This plan is already {plan.status}."}
-
-    active = repo.get_active_round(session, plan)
-    if active is not None:
-        repo.set_round_status(session, active, "skipped")
-
-    nxt = repo.get_next_queued_round(session, plan)
-    if nxt is None:
-        repo.set_plan_status(session, plan, "dead")
-        log.info("[plan %d] no candidate times left -> dead", plan.id)
-        return {
-            "action": "out_of_times",
-            "note": ("Every candidate time has been tried. The plan is closed — "
-                     "search for fresh times and suggest a new plan."),
-        }
-
-    repo.set_round_status(session, nxt, "active")
-    cohort = [e for e, v in repo.get_interest_votes(session, plan).items() if v]
-    log.info("[plan %d] host skipped round %s -> round %d (%s) live to %d interested",
-             plan.id, active.ordinal if active else "-", nxt.ordinal,
-             time_label(nxt, tz_name), len(cohort))
+    if round_id is not None:
+        target = next((r for r in plan.rounds if r.id == round_id), None)
+        if target is None:
+            return {"error": "That time isn't one of this plan's candidates."}
+    repo.set_plan_spotlight(session, plan, round_id)
+    label = (time_label(next(r for r in plan.rounds if r.id == round_id), tz_name)
+             if round_id is not None else None)
+    log.info("[plan %d] host spotlighted %s", plan.id, label or "nothing")
     return {
-        "action": "next_time",
-        "time": time_label(nxt, tz_name),
-        "asked": cohort,
-        "times_left": repo.count_queued_rounds(session, plan),
-        "note": (f"{time_label(nxt, tz_name)} is now the question, and everyone who "
-                 "said they're in for the plan has been asked it — including the "
-                 "people who were fine with the previous time."),
+        "action": "spotlight",
+        "time": label,
+        # Say the quiet part: people who already voted often assume a change like
+        # this wiped their answer, because the old engine genuinely did.
+        "note": (f"{label} is highlighted as the one you're leaning toward. "
+                 "Every vote already cast still counts — this only breaks a tie."
+                 if label else "Spotlight cleared."),
     }
 
 
-def confirm_active_time(session: Session, plan: Plan, actor: User, tz_name: str) -> dict:
-    """Host: lock this time in — book the members who said yes to THIS time."""
+def confirm_time(session: Session, plan: Plan, actor: User,
+                 round_id: int, tz_name: str) -> dict:
+    """Host: lock in the time they name — NOT necessarily the spotlit one.
+
+    Deliberately not gated by the minimum. The minimum governs what may happen
+    without a human; a host choosing a time IS the human, and blocking them from
+    booking the four people who can make it would be the app overruling the
+    person it exists to serve.
+    """
     if actor.id != plan.created_by:
         return {"error": "Only the host who suggested this plan can lock in a time."}
     if plan.status not in HOST_DECIDABLE:
         return {"error": f"This plan is already {plan.status}."}
-    return _confirm(session, plan, tz_name)
+    target = next((r for r in plan.rounds if r.id == round_id), None)
+    if target is None:
+        return {"error": "That time isn't one of this plan's candidates."}
+    return _confirm(session, plan, target, tz_name)
 
 
-def _confirm(session: Session, plan: Plan, tz_name: str) -> dict:
-    """Book the active time for its yes-voters. Status/permission checks are the
-    CALLER's job — the three callers each authorize differently (host action,
-    unanimous auto-book, deadline resolution) but the booking itself is one
-    path, so a change to how a plan reaches the calendar can't diverge."""
+def _confirm(session: Session, plan: Plan, round_: TimeRound, tz_name: str) -> dict:
+    """Book one time for everyone who can make it.
+
+    Status/permission checks are the CALLER's job — the three callers authorize
+    differently (host lock-in, early convergence, deadline) but the booking
+    itself is one path, so a change to how a poll reaches the calendar can't
+    diverge between them.
+    """
     from app.tools.booking import book_round_event
 
-    active = repo.get_active_round(session, plan)
-    if active is None:
-        return {"error": "No time is on the table for this plan."}
-
-    votes = repo.get_time_votes(session, active)
-    going = sorted(e for e, v in votes.items() if v)
+    votes = repo.get_time_votes(session, round_)
+    going = sorted(e for e, a in votes.items() if a in (YES, IF_NEEDED))
     # Guests count as attending, but their tally key is "Name (guest)", not an
     # address — only the ones who left an email can be invited. Keeping the two
     # lists apart is what stops a display label being handed to Google as a
     # recipient.
-    guest_votes = repo.get_guest_time_votes(session, active)
+    guest_votes = repo.get_guest_time_votes(session, round_)
     guests_going = [g for g in repo.get_plan_guests(session, plan)
-                    if guest_votes.get(g.label)]
+                    if guest_votes.get(g.label) in (YES, IF_NEEDED)]
     going += [g.label for g in guests_going]
     if not going:
-        return {"error": f"Nobody has said {time_label(active, tz_name)} works for them "
+        return {"error": f"Nobody said {time_label(round_, tz_name)} works for them "
                          "— there is no one to book it for."}
 
-    invite = sorted(e for e, v in votes.items() if v)
+    invite = sorted(e for e, a in votes.items() if a in (YES, IF_NEEDED))
     invite += [g.email for g in guests_going if g.email]
     if not invite:
         # Only email-less guests can make it. The event still belongs on the
         # host's calendar — they're the organizer and they locked it in — so
         # book it there and simply send no invites.
-        organizer_email = session.get(User, plan.created_by).email
-        invite = [organizer_email]
+        invite = [session.get(User, plan.created_by).email]
 
-    repo.set_round_status(session, active, "confirmed")
-    log.info("[decision] plan %d: confirming round %d (%s) for %d attendee(s), %d invited",
-             plan.id, active.ordinal, time_label(active, tz_name), len(going), len(invite))
+    log.info("[decision] plan %d: confirming time %d (%s) for %d attendee(s), %d invited",
+             plan.id, round_.ordinal, time_label(round_, tz_name), len(going), len(invite))
 
-    # Google can refuse or throw (expired token, network). Either way the time
-    # must go back to "active" — a round left "confirmed" with no event would
-    # be a dead end: not bookable again, and not skippable to the next time.
+    # Google can refuse or throw (expired token, network). The poll must stay
+    # exactly as it was so the host can retry — nothing is marked until the
+    # calendar has actually accepted it.
     organizer = session.get(User, plan.created_by)
     try:
-        result = book_round_event(session, plan, active, organizer, invite)
+        result = book_round_event(session, plan, round_, organizer, invite)
     except Exception as exc:
-        repo.set_round_status(session, active, "active")
         log.exception("[decision] plan %d booking raised", plan.id)
         return {"action": "book_failed", "error": f"{type(exc).__name__}: {exc}"}
     if not result.get("booked"):
-        repo.set_round_status(session, active, "active")
         log.warning("[decision] plan %d booking failed: %s", plan.id, result.get("error"))
         return {"action": "book_failed", "error": result.get("error")}
 
-    repo.set_plan_status(session, plan, "scheduled")
+    repo.set_plan_status(session, plan, "booked")
     return {
         "action": "booked",
-        "time": time_label(active, tz_name),
+        "time": time_label(round_, tz_name),
+        "round_id": round_.id,
         # who is coming (members by email, guests by label) vs. who we can
         # actually write to — never assume the first list is mailable
         "attendees": going,
@@ -280,75 +342,66 @@ def _confirm(session: Session, plan: Plan, tz_name: str) -> dict:
     }
 
 
-# ------------------------------------------------------------- async transitions
+# ------------------------------------------------------------- automatic paths
 
-def maybe_auto_book(session: Session, plan: Plan, tz_name: str) -> dict | None:
-    """Book an opted-in plan the moment it becomes unanimous. None = not yet.
+def converge(session: Session, plan: Plan, tz_name: str) -> dict | None:
+    """Book a poll early, the moment nobody is left to answer. None = not yet.
 
-    Called after every vote. The guard is `everyone_said_yes`: every member has
-    answered the plan and every interested member said yes to the time on the
-    table. At that point a host lock-in would be a formality, so a plan that
-    asked for it skips the wait — which is the whole point for a group whose
-    host is asleep.
+    Called after every vote. The guard is `ready_to_book_early`: a time meets the
+    minimum AND no participant owes any answer. At that point no further vote can
+    arrive, so waiting for the deadline would achieve nothing — and with the
+    default minimum (the whole group) this fires exactly when everyone is in.
 
     A booking failure is swallowed on purpose: the vote that triggered this was
-    still cast and must still return 200. The plan stays open with its time
-    active, so the next vote (or the host) retries.
+    still cast and must still return 200. The poll stays open, so the next vote —
+    or the host — retries.
     """
-    if not plan.auto_book or plan.status != "open":
+    if plan.status != "open":
         return None
     st = load_plan_state(session, plan)
-    if st.active is None:
+    if not st.rounds:
         return None
-    # participants, not members: a guest who joined through the share link and
-    # hasn't answered is someone this plan is still waiting on, so unanimity has
-    # to include them. Otherwise sharing a link would make plans book EASIER.
-    t = tally(st.participants, st.interest_votes, st.time_votes,
-              active_time_label=None, times_left=st.times_left)
-    if not everyone_said_yes(
-        interested=len(t.interested),
-        silent_on_interest=len(t.no_interest_answer),
-        time_yes=len(t.time_yes),
-        time_no=len(t.time_no),
-        time_waiting=len(t.time_waiting),
+    winner = winning_round(session, plan, tz_name, state=st)
+    if not ready_to_book_early(
+        winner=winner.id if winner else None,
+        pending_answers=pending_answers(st, plan),
     ):
         return None
 
-    log.info("[plan %d] unanimous and auto-book is on -> booking %s",
-             plan.id, time_label(st.active, tz_name))
-    result = _confirm(session, plan, tz_name)
+    log.info("[plan %d] everyone has answered and %s qualifies -> booking",
+             plan.id, time_label(winner, tz_name))
+    result = _confirm(session, plan, winner, tz_name)
     if result.get("action") != "booked":
-        log.warning("[plan %d] auto-book did not go through: %s",
+        log.warning("[plan %d] early booking did not go through: %s",
                     plan.id, result.get("error"))
         return None
     return result
 
 
-def resolve_deadline(session: Session, plan: Plan, now: datetime, tz_name: str) -> dict | None:
+def resolve_deadline(session: Session, plan: Plan, now: datetime,
+                     tz_name: str) -> dict | None:
     """Apply a passed vote deadline. None = the deadline hasn't passed.
 
-    Returns {"action": "booked"|"expired", ...}. Booking only happens for
-    auto-book plans; everything else parks as `expired` with its votes intact,
-    so the host still has a decision to make rather than a deleted plan.
+    Returns {"action": "booked"|"expired", ...}. The best qualifying time books
+    for the people who can make it; with nothing qualifying the poll parks as
+    `expired` with its votes intact, so the host still has a decision to make
+    rather than a deleted poll.
     """
-    active = repo.get_active_round(session, plan)
-    yes_count = sum(1 for v in repo.get_time_votes(session, active).values() if v)
+    winner = winning_round(session, plan, tz_name)
     outcome = deadline_outcome(
         now=now,
         deadline=plan.deadline,
         status=plan.status,
-        auto_book=plan.auto_book,
-        has_active_time=active is not None,
-        time_yes_count=yes_count,
+        winner=winner.id if winner else None,
     )
     if outcome == BOOK:
-        result = _confirm(session, plan, tz_name)
+        result = _confirm(session, plan, winner, tz_name)
         if result.get("action") == "booked":
-            log.info("[plan %d] deadline passed -> auto-booked %s", plan.id, result["time"])
+            log.info("[plan %d] deadline passed -> booked %s", plan.id, result["time"])
             return result
         # Couldn't book (calendar refused). Don't leave it hanging past its own
         # deadline — close voting and hand it back to the host.
-        log.warning("[plan %d] deadline auto-book failed (%s) -> expiring instead",
+        log.warning("[plan %d] deadline booking failed (%s) -> expiring instead",
                     plan.id, result.get("error"))
         outcome = EXPIRE
     if outcome == EXPIRE:

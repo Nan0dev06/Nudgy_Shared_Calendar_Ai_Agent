@@ -4,10 +4,10 @@ The agent's full toolbox:
 - get_group_members  — resolve the group and who has connected a calendar
 - find_meeting_slots — live freebusy + intersection + reasonable-hours filter
 - suggest_venues     — location-anchored REAL venue search
-- create_plan        — put a plan (place + day + candidate times) to the group
-- get_plan_status    — the host's decision box: who's in, out, and in/out on the time
-- use_next_time      — host move: this time didn't work, ask the cohort the next one
-- lock_in_time       — host move: commit the active time, booking its yes-voters
+- create_plan        — put a poll (place + candidate times + minimum) to the group
+- get_plan_status    — the host's decision box: every candidate time's standing
+- spotlight_time     — host move: lean toward one time (resets no votes)
+- lock_in_time       — host move: book a named time for whoever can make it
 
 Each tool logs its invocation so the agent loop is visible in the server log
 (the "show the judges the loop" requirement).
@@ -86,25 +86,32 @@ TOOL_SCHEMAS = [
     {
         "name": "create_plan",
         "description": (
-            "Put a plan to the group: one place, one day, and an ORDERED list of "
-            "candidate times to try (e.g. 5 PM first, then 7 PM as the fallback). "
-            "This starts a two-stage cascade: every member is first asked whether "
-            "they're in for the plan at all, and only the people who say yes are "
-            "then asked about the first time. Only call this AFTER the user has "
-            "confirmed the place, the day, and the times with you — never guess "
-            "them. Use start_iso/end_iso values from find_meeting_slots verbatim."
+            "Put a poll to the group: one place and a list of candidate times. "
+            "Everyone votes on EVERY time at once (yes / no / if needed) — there "
+            "is no ordering and no fallback, so list the times chronologically. "
+            "Only call this AFTER the user has confirmed the place, the times, "
+            "AND the minimum with you — never guess them. Use start_iso/end_iso "
+            "values from find_meeting_slots verbatim."
         ),
         "input_schema": {
             "type": "object",
             "properties": {
                 "title": {"type": "string", "description": "Short event title, e.g. 'Coffee catch-up'."},
                 "location": {"type": "string", "description": "Where the hangout is, e.g. 'Cafe Younes, Hamra'."},
+                "minimum": {
+                    "type": "integer",
+                    "description": (
+                        "How many GROUP MEMBERS must be able to make a time before it "
+                        "books itself. ASK THE USER for this — do not pick it yourself "
+                        "unless their stored preferences state a default. It is what "
+                        "stops a 10-person outing booking for the 3 who replied."
+                    ),
+                },
                 "times": {
                     "type": "array",
                     "description": (
-                        "Candidate times IN PREFERENCE ORDER, all on the same day. "
-                        "The first is asked immediately; the rest are held back and "
-                        "only used if the host decides to move on from the first."
+                        "Candidate times, chronological, all votable at once. There is "
+                        "no preference order — the group's votes decide which wins."
                     ),
                     "minItems": 1,
                     "maxItems": 5,
@@ -118,18 +125,17 @@ TOOL_SCHEMAS = [
                     },
                 },
             },
-            "required": ["title", "times"],
+            "required": ["title", "times", "minimum"],
         },
     },
     {
         "name": "get_plan_status",
         "description": (
-            "The host's decision box for a plan: who is in for the plan, who is "
-            "out, who hasn't answered, and — for the time currently being asked — "
-            "who can make it, who can't, and who is silent. Nothing here decides "
-            "anything: relay it to the host and let THEM choose between locking "
-            "the time in and moving to the next one. Call it when the user asks "
-            "how the plan is going."
+            "The host's decision box for a poll: who is in, who is out, who hasn't "
+            "answered, and EVERY candidate time's standing (yes / if-needed / no / "
+            "silent, plus whether it clears the minimum). Nothing here decides "
+            "anything: relay it and let the HOST choose. Call it when the user asks "
+            "how the poll is going, and to get the exact round_id for a host move."
         ),
         "input_schema": {
             "type": "object",
@@ -140,37 +146,44 @@ TOOL_SCHEMAS = [
         },
     },
     {
-        "name": "use_next_time",
+        "name": "spotlight_time",
         "description": (
-            "HOST MOVE — the current time didn't work out, so drop it and ask the "
-            "next candidate time instead. Everyone who said they're in for the "
-            "plan gets asked the new time, including people who were fine with the "
-            "old one (a different hour is a different question). Only call this "
-            "when the host has explicitly said to move on. If no candidate times "
-            "are left the plan closes and you should search for fresh ones. This "
-            "is about the times ALREADY queued on the plan — it does not search "
-            "for new ones, so do not call find_meeting_slots for it."
+            "HOST MOVE — mark one candidate time as the one the group is leaning "
+            "toward. This does NOT skip, close or reset anything: every vote "
+            "already cast still counts, and the spotlight can be moved back. It "
+            "only highlights the time, sharpens the reminders, and breaks a tie. "
+            "Use it when the host says they prefer a time but isn't committing "
+            "yet — for committing, use lock_in_time. Say plainly that no votes "
+            "were lost, because people expect otherwise."
         ),
         "input_schema": {
             "type": "object",
-            "properties": {"plan_id": {
-                "type": "integer",
-                "description": "OMIT this when the group has one open plan — it will be "
-                               "used automatically. NEVER guess a number: if you need an "
-                               "id, take the exact one from get_plan_status.",
-            }},
+            "properties": {
+                "round_id": {
+                    "type": "integer",
+                    "description": "The time to highlight, from get_plan_status. "
+                                   "Omit to clear the spotlight.",
+                },
+                "plan_id": {
+                    "type": "integer",
+                    "description": "OMIT this when the group has one open plan — it will "
+                                   "be used automatically. NEVER guess a number: if you "
+                                   "need an id, take the exact one from get_plan_status.",
+                },
+            },
             "required": [],
         },
     },
     {
         "name": "lock_in_time",
         "description": (
-            "HOST MOVE — commit the time currently being asked and put it on the "
-            "calendar. ONLY the members who said that time works get the event and "
-            "Google's invite email. Only call this when the host has explicitly "
-            "said to go ahead with this time — never on your own judgement, never "
-            "because the numbers look good, and never while people are still "
-            "silent unless the host says so anyway."
+            "HOST MOVE — commit ONE named candidate time and put it on the "
+            "calendar. ONLY the people who said that time works (yes or if-needed) "
+            "get the event and the invite email. Take round_id from "
+            "get_plan_status — never guess it. Only call this when the host has "
+            "explicitly said to go ahead with that time: never on your own "
+            "judgement, never because the numbers look good, and never while "
+            "people are still silent unless the host says so anyway."
         ),
         "input_schema": {
             "type": "object",
@@ -180,8 +193,15 @@ TOOL_SCHEMAS = [
                                "used automatically. NEVER guess a number: booking the "
                                "wrong plan puts a real event on real calendars. If you "
                                "need an id, take the exact one from get_plan_status.",
-            }},
-            "required": [],
+            },
+                "round_id": {
+                    "type": "integer",
+                    "description": "REQUIRED — which candidate time to book, from "
+                                   "get_plan_status. There is no 'current' time any "
+                                   "more; the host names the one they mean.",
+                },
+            },
+            "required": ["round_id"],
         },
     },
     {
@@ -325,48 +345,52 @@ def _create_plan(ctx: ToolContext, args: dict) -> dict:
     # title alone ("hang out" vs "Hang out at Blend Cafe") won't stop it.
     dup = repo.find_duplicate_open_plan(ctx.session, ctx.group, args.get("location"), slots)
     if dup is not None:
-        active = repo.get_active_round(ctx.session, dup)
         log.info("[plan %d] create_plan skipped — duplicate of an open plan", dup.id)
         return {
             "plan_id": dup.id,
             "title": dup.title,
             "location": dup.location,
             "duplicate": True,
-            "first_time": time_label(active, ctx.tz_name) if active else None,
-            "note": ("An open plan for this place and these times already exists, so "
+            "note": ("An open poll for this place and these times already exists, so "
                      "a second one was NOT created. Tell the user it's already up — "
-                     "call get_plan_status for its tally rather than proposing again."),
+                     "call get_plan_status for its standing rather than proposing again."),
         }
 
+    members = repo.get_group_members(ctx.session, ctx.group.id)
+    minimum = args.get("minimum") or len(members)
     plan = repo.create_plan(
         ctx.session, ctx.group, ctx.user,
         title=args["title"],
         slots=slots,
         location=args.get("location"),
+        expected_count=minimum,
     )
-    members = repo.get_group_members(ctx.session, ctx.group.id)
-    active = repo.get_active_round(ctx.session, plan)
-    log.info("[plan %d] created by %s: %d candidate time(s), asked %d member(s)",
-             plan.id, ctx.user.email, len(slots), len(members))
+    log.info("[plan %d] created by %s: %d candidate time(s), min %d, asked %d member(s)",
+             plan.id, ctx.user.email, len(slots), minimum, len(members))
     return {
         "plan_id": plan.id,
         "title": plan.title,
         "location": plan.location,
         "day": day_label(plan, ctx.tz_name),
         "asked": [m.email for m in members],
-        "first_time": time_label(active, ctx.tz_name) if active else None,
-        "times_held_back": [time_label(r, ctx.tz_name) for r in plan.rounds[1:]],
-        "note": ("Everyone was asked if they're in for the plan itself. Whoever says "
-                 "yes gets asked about the first time straight away. Nothing books "
-                 "until the host says so — report back and let them decide."),
+        "minimum": minimum,
+        "times": [{"round_id": r.id, "label": time_label(r, ctx.tz_name)}
+                  for r in plan.rounds],
+        "note": ("Everyone can vote on every time straight away (yes / no / if "
+                 f"needed). It books itself only once {minimum} member(s) can make "
+                 "the same time AND nobody is left to answer; otherwise the host "
+                 "locks one in. Tell the user the minimum you used."),
     }
 
 
 def _plan_json(ctx: ToolContext, plan) -> dict:
     from app.tools.plan_service import plan_tally
 
+    from app.tools.plan_service import minimum_for
+
     t = plan_tally(ctx.session, plan, ctx.tz_name)
-    active = repo.get_active_round(ctx.session, plan)
+    labels = {r.id: time_label(r, ctx.tz_name) for r in plan.rounds}
+    minimum = minimum_for(ctx.session, plan)
     return {
         "plan_id": plan.id,
         "title": plan.title,
@@ -374,15 +398,25 @@ def _plan_json(ctx: ToolContext, plan) -> dict:
         "day": day_label(plan, ctx.tz_name),
         "status": plan.status,
         "you_are_host": ctx.user.id == plan.created_by,
+        "minimum_to_book_itself": minimum,
         "in_for_the_plan": t.interested,
         "out_of_the_plan": t.not_interested,
         "no_answer_on_the_plan": t.no_interest_answer,
-        "time_being_asked": time_label(active, ctx.tz_name) if active else None,
-        "can_make_it": t.time_yes,
-        "cannot_make_it": t.time_no,
-        "silent_on_this_time": t.time_waiting,
-        "times_left_to_try": [time_label(r, ctx.tz_name)
-                              for r in plan.rounds if r.status == "queued"],
+        # every candidate at once — round_id is what a host move needs
+        "times": [
+            {
+                "round_id": r.key,
+                "label": labels.get(r.key),
+                "can_make_it": r.yes,
+                "if_needed": r.if_needed,
+                "cannot_make_it": r.no,
+                "silent": r.waiting,
+                "guests_coming": len(r.guest_yes) + len(r.guest_if_needed),
+                "clears_the_minimum": r.member_committed >= minimum,
+                "spotlit": r.key == plan.spotlight_round_id,
+            }
+            for r in t.times
+        ],
         "booked_link": next((r.event_link for r in plan.rounds if r.booked), None),
         "host_box": t.host_note,
     }
@@ -437,24 +471,28 @@ def _resolve_plan(ctx: ToolContext, args: dict):
     return plan
 
 
-def _host_move(ctx: ToolContext, args: dict, fn) -> dict:
-    """Shared guard for the two host-only moves."""
+def _spotlight_time(ctx: ToolContext, args: dict) -> dict:
+    from app.tools.plan_service import set_spotlight
+
     plan = _resolve_plan(ctx, args)
     if isinstance(plan, dict):
         return plan
-    return fn(ctx.session, plan, ctx.user, ctx.tz_name)
-
-
-def _use_next_time(ctx: ToolContext, args: dict) -> dict:
-    from app.tools.plan_service import advance_to_next_time
-
-    return _host_move(ctx, args, advance_to_next_time)
+    return set_spotlight(ctx.session, plan, ctx.user, args.get("round_id"), ctx.tz_name)
 
 
 def _lock_in_time(ctx: ToolContext, args: dict) -> dict:
-    from app.tools.plan_service import confirm_active_time
+    from app.tools.plan_service import confirm_time
 
-    return _host_move(ctx, args, confirm_active_time)
+    plan = _resolve_plan(ctx, args)
+    if isinstance(plan, dict):
+        return plan
+    round_id = args.get("round_id")
+    if round_id is None:
+        # No "current" time exists to fall back on, and guessing here books a
+        # real event at a time nobody chose.
+        return {"error": "Which time? Call get_plan_status and use the exact "
+                         "round_id of the time the host named — never guess it."}
+    return confirm_time(ctx.session, plan, ctx.user, round_id, ctx.tz_name)
 
 
 _DISPATCH = {
@@ -463,7 +501,7 @@ _DISPATCH = {
     "suggest_venues": _suggest_venues,
     "create_plan": _create_plan,
     "get_plan_status": _get_plan_status,
-    "use_next_time": _use_next_time,
+    "spotlight_time": _spotlight_time,
     "lock_in_time": _lock_in_time,
 }
 
@@ -472,7 +510,7 @@ _DISPATCH = {
 # chat request, so without this the group finds out about a plan the agent
 # started only on their next refresh — a poke here covers every mutating path
 # through the model in one place, rather than inside each tool.
-_MUTATING = {"create_plan", "use_next_time", "lock_in_time"}
+_MUTATING = {"create_plan", "spotlight_time", "lock_in_time"}
 
 
 def run_tool(ctx: ToolContext, name: str, args: dict) -> dict:

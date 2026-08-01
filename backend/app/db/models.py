@@ -150,32 +150,37 @@ class Group(Base):
 
 
 class Plan(Base):
-    """A proposed hangout: a place, a day, and an ordered queue of candidate times.
+    """A proposed hangout: a place and a set of candidate times people vote on.
 
-    Voting is a two-stage cascade, evaluated per person (see tools/plan_rules.py):
-      stage 1 INTEREST — every member: "coming to the coffee shop Monday?"
-                         no  -> out of the plan entirely, never asked a time
-                         yes -> immediately handed the active time question
-      stage 2 TIME     — the interested cohort only: "does 5 PM work?"
-                         no  -> out of THAT time, still in the plan
+    Redesigned 2026-08-01 (docs/poll-edit-redesign.md §1). Every candidate time
+    is votable AT ONCE — there is no queue and no "active" time. See
+    tools/plan_rules.py for the engine and tools/plan_deadlines.py for what may
+    book without a human.
 
-    Exactly one TimeRound is "active" at a time. Nothing is ever booked by a
-    rule — no majority, no unanimity, no auto-booking on silence. The HOST
-    (created_by) reads the tally and either confirms the active time or moves
-    to the next one, which re-asks the whole interested cohort.
-    Status: open -> scheduled | dead (all candidate times used up) | expired
-    (the vote deadline passed — see below).
+    MODES are derived, never stored (`plan_rules.mode_of`): a plan created with
+    no times asks interest first (Float-an-idea); one created with times asks
+    only about times (Quick with one, Pick-a-time with several). `asks_interest`
+    is fixed at creation so a Float plan that later gains times keeps the answers
+    it already collected instead of silently changing what it asked.
 
-    ASYNC CONVERGENCE. Groups are not all in the app at once, so a plan can
-    carry a `deadline_utc`: after it, voting closes and the plan goes `expired`
-    — the host can still lock in whatever came in (or push the deadline out to
-    reopen it), but the plan stops hanging around silently forever. Until then a
-    background ticker nudges the people who haven't answered (`reminder_sent_at`
-    rate-limits that). `auto_book` is the opt-in that lets a plan converge with
-    NO host present: the moment every member has answered and every interested
-    member said yes to the active time, it books itself. It is opt-in precisely
-    because the default rule of this app is "a human decides before anything
-    reaches a calendar".
+    THE SPOTLIGHT is the host's only positional move: "we're leaning toward this
+    one". It emphasizes a card, sharpens reminder copy, and breaks ties at the
+    deadline — and moving it RESETS NOTHING, which is the whole difference from
+    the old advance_to_next_time, where prior votes became irrelevant by design.
+
+    THE MINIMUM (`expected_count`) is what makes automatic booking safe: it
+    answers "how many of us make this worth doing?". Counted on MEMBERS only,
+    defaulting to the whole group, and only a human can lower it. It constrains
+    automatic convergence ONLY — a host lock-in books whatever time they pick for
+    whoever said yes, minimum or not.
+
+    Status: open -> booked | expired. (`dead` is gone: it only ever meant "the
+    host walked off the end of the queue", which cannot happen now.) `expired`
+    means the deadline passed with nothing qualifying — voting closes, votes are
+    kept, and the host can extend it, add times, lower the minimum, or lock in.
+
+    A background ticker nudges people who haven't answered (`reminder_sent_at`
+    rate-limits that) and applies the deadline.
 
     The plan's DAY is not stored — it is derived from the rounds' times in the
     viewer's timezone, so everyone reads the day in their own zone.
@@ -188,16 +193,25 @@ class Plan(Base):
     title: Mapped[str] = mapped_column(String, default="Group hangout")
     location: Mapped[str | None] = mapped_column(String, default=None)
     status: Mapped[str] = mapped_column(String, default="open")
-    # optional "aiming for N people" — lets the host (and the agent) see when
-    # enough of the group has said yes; None means no target
+    # how many MEMBERS must be able to make a time before it may book without a
+    # human. Set at creation (defaults to the whole group) and lowerable only by
+    # the host. None on legacy rows, read through plan_service.minimum_for, which
+    # falls back to the group size — never treated as "no minimum".
     expected_count: Mapped[int | None] = mapped_column(default=None)
+    # Float-an-idea plans ask "are you in?" before any time exists. Fixed at
+    # creation: re-deriving it from "has times yet" would change the question a
+    # plan is asking the moment somebody adds one.
+    asks_interest: Mapped[bool] = mapped_column(default=False)
+    # the time the host is leaning toward. A plain integer, not a ForeignKey:
+    # plans and time_rounds already point at each other, and a real FK here adds
+    # a circular dependency for create_all plus a delete-order problem when a
+    # plan's rounds cascade away. Resolved through plan.rounds, never joined.
+    spotlight_round_id: Mapped[int | None] = mapped_column(default=None)
     # when voting closes (UTC). None = no deadline, the plan stays open until
     # the host acts. Read via the `deadline` accessor, never raw.
     deadline_utc: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), default=None
     )
-    # opt-in: book the active time by itself once everybody said yes to it
-    auto_book: Mapped[bool] = mapped_column(default=False)
     # last non-voter nudge, so reminders are rate-limited instead of spammed
     reminder_sent_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), default=None
@@ -251,13 +265,16 @@ class InterestVote(Base):
 
 
 class TimeRound(Base):
-    """Stage 2: one candidate time for a plan (5 PM, then 7 PM, ...).
+    """One candidate time for a plan (5 PM, 7 PM, Saturday noon, ...).
 
     Times are stored in UTC (tz handling happens at the edges, as everywhere).
-    ordinal fixes the queue order the host walks through.
-    Status: queued -> active -> confirmed | skipped. `booked` flips to True
-    once the calendar event is actually written (confirmed != booked, so we
-    can never double-book).
+    `ordinal` is display order — chronological as entered — and is also the last
+    tiebreak when two times finish level.
+
+    There is no status. Every candidate is votable from the moment it exists, so
+    the old queued/active/skipped machine described a walk that no longer happens.
+    `booked` flips to True once the calendar event is actually written, which is
+    the only state a time has beyond existing.
     """
     __tablename__ = "time_rounds"
     __table_args__ = (UniqueConstraint("plan_id", "ordinal", name="uq_plan_ordinal"),)
@@ -267,7 +284,6 @@ class TimeRound(Base):
     ordinal: Mapped[int] = mapped_column()
     slot_start_utc: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     slot_end_utc: Mapped[datetime] = mapped_column(DateTime(timezone=True))
-    status: Mapped[str] = mapped_column(String, default="queued")
     booked: Mapped[bool] = mapped_column(default=False)
     event_link: Mapped[str | None] = mapped_column(String, default=None)
 
@@ -293,10 +309,15 @@ class TimeRound(Base):
 
 
 class TimeVote(Base):
-    """One member's yes/no on ONE candidate time; re-voting replaces the old vote.
+    """One member's answer on ONE candidate time; re-voting replaces the old one.
 
-    A no here only removes them from THIS time — they stay in the interested
-    cohort and are asked again if the host moves to the next time.
+    `answer` is three-state (plan_rules.YES / NO / IF_NEEDED), not a boolean:
+    with every time visible at once, "I could make this work, I'd rather not" is
+    the answer that decides most polls, and collapsing it into either yes or no
+    loses the group's actual preference.
+
+    A no here is about THIS time only — the person stays in the plan and their
+    answers on the other candidates stand on their own.
     """
     __tablename__ = "time_votes"
     __table_args__ = (UniqueConstraint("round_id", "user_id", name="uq_round_user"),)
@@ -304,7 +325,7 @@ class TimeVote(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     round_id: Mapped[int] = mapped_column(ForeignKey("time_rounds.id"))
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"))
-    yes: Mapped[bool] = mapped_column()
+    answer: Mapped[str] = mapped_column(String)
     voted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
 
     round: Mapped["TimeRound"] = relationship(back_populates="votes")
@@ -377,14 +398,18 @@ class GuestInterestVote(Base):
 
 
 class GuestTimeVote(Base):
-    """A guest's stage-2 answer on one candidate time. Re-voting replaces."""
+    """A guest's answer on one candidate time. Re-voting replaces.
+
+    Three-state like TimeVote — a guest answers the same question members do.
+    Their yes counts for ranking and for who gets booked, but NOT toward the
+    minimum, which is a statement about how much of the GROUP is in."""
     __tablename__ = "guest_time_votes"
     __table_args__ = (UniqueConstraint("round_id", "guest_id", name="uq_round_guest"),)
 
     id: Mapped[int] = mapped_column(primary_key=True)
     round_id: Mapped[int] = mapped_column(ForeignKey("time_rounds.id"), index=True)
     guest_id: Mapped[int] = mapped_column(ForeignKey("plan_guests.id"), index=True)
-    yes: Mapped[bool] = mapped_column()
+    answer: Mapped[str] = mapped_column(String)
     voted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
 
     guest: Mapped["PlanGuest"] = relationship(back_populates="time_votes")

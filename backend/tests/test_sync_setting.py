@@ -63,10 +63,9 @@ def _confirmed_plan(s, host):
         s, group, host, title="Coffee", location="Cafe",
         slots=[(DAY, DAY.replace(hour=18))],
     )
-    round_ = repo.get_active_round(s, plan)
-    round_.status = "confirmed"
-    s.commit()
-    return plan, round_
+    # Every candidate time is votable from the start and carries no status —
+    # the caller has already decided this one wins (see booking.book_round_event).
+    return plan, plan.rounds[0]
 
 
 def test_booking_skips_calendar_write_when_sync_none(Session, monkeypatch):
