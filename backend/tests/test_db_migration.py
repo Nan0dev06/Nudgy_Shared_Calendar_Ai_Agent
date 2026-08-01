@@ -14,6 +14,11 @@ shipped with three columns that made an existing database unusable —
 
 So these tests build the PRE-redesign schema by hand, put real rows in it, run
 init_db() against it, and assert the data survived and the app can write again.
+
+Extended for §2 (poll/event unification), which adds `events.plan_id`. The rule
+this file exists to enforce: **every schema change ships its migration and its
+case here together**, not afterwards. A green suite otherwise reads as "safe to
+deploy" while saying nothing at all about existing data.
 """
 from __future__ import annotations
 
@@ -60,6 +65,36 @@ CREATE TABLE guest_time_votes (
     yes BOOLEAN NOT NULL,
     voted_at DATETIME NOT NULL
 );
+-- pre-§2: events had no idea a poll existed
+CREATE TABLE events (
+    id INTEGER NOT NULL PRIMARY KEY,
+    group_id INTEGER NOT NULL,
+    created_by INTEGER NOT NULL,
+    kind VARCHAR NOT NULL,
+    title VARCHAR NOT NULL,
+    category VARCHAR NOT NULL,
+    location VARCHAR,
+    start_utc DATETIME,
+    end_utc DATETIME,
+    done BOOLEAN NOT NULL,
+    personal BOOLEAN DEFAULT FALSE NOT NULL,
+    anonymous BOOLEAN DEFAULT TRUE NOT NULL,
+    synced BOOLEAN NOT NULL,
+    gcal_event_id VARCHAR,
+    gcal_link VARCHAR,
+    created_at DATETIME NOT NULL
+);
+CREATE TABLE event_rsvps (
+    id INTEGER NOT NULL PRIMARY KEY,
+    event_id INTEGER NOT NULL,
+    user_id INTEGER NOT NULL,
+    status VARCHAR NOT NULL,
+    updated_at DATETIME NOT NULL
+);
+INSERT INTO events VALUES
+    (1, 1, 1, 'event', 'Picnic', 'Event', 'Park', '2026-07-20 14:00:00',
+     '2026-07-20 16:00:00', 0, 0, 1, 0, NULL, NULL, '2026-07-01 10:00:00');
+INSERT INTO event_rsvps VALUES (1, 1, 2, 'going', '2026-07-01 11:00:00');
 INSERT INTO plans VALUES
     (1, 1, 1, 'Karaoke', 'Cheers', 'open', NULL, '2026-07-01 10:00:00', 0);
 INSERT INTO time_rounds VALUES
@@ -176,3 +211,51 @@ def test_upgrade_is_idempotent(legacy_db):
         again = dict(conn.execute(text("SELECT id, answer FROM time_votes")).all())
     assert again[1] == "if_needed", "the backfill overwrote a real answer"
     assert again[2] == "no"
+
+
+# ------------------------------- §2 poll/event unification + §3 needs_reconfirm
+
+def test_events_gain_plan_id_and_keep_their_rows(legacy_db):
+    """§2 adds `events.plan_id`. It must be NULLABLE: every event that predates
+    the change was created directly, and NULL is exactly what that means — a
+    NOT NULL column here would make the upgrade fail on real data."""
+    path, engine = legacy_db
+    from app.db.session import init_db
+
+    init_db()
+
+    assert "plan_id" in _columns(engine, "events")
+    with engine.begin() as conn:
+        rows = conn.execute(text("SELECT id, title, plan_id FROM events")).all()
+    assert rows == [(1, "Picnic", None)]
+
+
+def test_needs_reconfirm_needs_no_schema_change(legacy_db):
+    """§3's new attendance state is a VALUE in an existing VARCHAR column, not a
+    new column — so an old database can store it the moment the code ships.
+    Worth pinning: if `status` ever gains a CHECK constraint, this breaks first.
+    """
+    path, engine = legacy_db
+    from app.db.session import init_db
+
+    init_db()
+
+    with engine.begin() as conn:
+        conn.execute(text(
+            "UPDATE event_rsvps SET status = 'needs_reconfirm' WHERE id = 1"
+        ))
+        got = conn.execute(text("SELECT status FROM event_rsvps WHERE id = 1")).scalar()
+    assert got == "needs_reconfirm"
+
+
+def test_a_pre_existing_rsvp_is_untouched_by_the_upgrade(legacy_db):
+    """Upgrading must not invent attendance state. Somebody who said `going`
+    before §2 existed is still going afterwards — only a real edit resets."""
+    path, engine = legacy_db
+    from app.db.session import init_db
+
+    init_db()
+
+    with engine.begin() as conn:
+        got = conn.execute(text("SELECT status FROM event_rsvps WHERE id = 1")).scalar()
+    assert got == "going"

@@ -5,14 +5,25 @@ POST   /groups/{group_id}/events   -> create; optionally sync to Google Calendar
 PATCH  /events/{event_id}          -> check a task off, and/or edit its fields
 DELETE /events/{event_id}          -> remove (and delete the Google event too)
 
-Who may do what lives in tools/event_rules.py, not here: personal events belong
-to their owner, shared events can't be edited by any one person (changes go to
-a group vote — not built yet), and only the creator deletes.
+Who may do what lives in tools/event_rules.py, not here: an event belongs to
+whoever created it, and only they can change or remove it.
+
+EDITING IS RSVP-RESET (docs/poll-edit-redesign.md §3). A material change —
+title, start, end, location — sets every attendee back to `needs_reconfirm`
+instead of carrying their yes across to something they never agreed to. They
+stay tentative (and stay busy) until the event, and are dropped only if they
+never answer. Non-material changes (category, anonymity) apply straight away.
+That is what replaced the group-vote design: majority rule over other people's
+time hands an event to the people who voted against it, whereas re-asking each
+person keeps the app's standing guarantee that nothing reaches your calendar
+without your own consent.
 
 Google sync uses the same pattern as booking.py: one event on the creator's
 primary calendar with chosen members as attendees, sendUpdates="all" — Google
-mirrors it onto everyone's calendar and sends invite emails. The inbound half
-of "two-way" is the freebusy-based availability endpoint: whatever people do
+mirrors it onto everyone's calendar and sends invite emails. Applied edits are
+pushed the same way, which also means Google resets its own responses on a time
+change, so the two systems agree rather than fight. The inbound half of
+"two-way" is still the freebusy-based availability endpoint: whatever people do
 in Google Calendar shows up as busy blocks here.
 """
 from __future__ import annotations
@@ -261,15 +272,6 @@ def patch_event(
         _check(event_rules.can_toggle_done(event, user.id, creator_email))
     if edits:
         _check(event_rules.can_edit(event, user.id, creator_email))
-        # Only personal events are editable today, and those never sync out
-        # (see create_event), so this is unreachable — it exists so that if the
-        # group-vote path ever reaches here before the provider write is wired,
-        # it fails loudly instead of letting Nudgy and Google quietly disagree.
-        if event.synced and event.gcal_event_id:
-            raise HTTPException(
-                status_code=409,
-                detail="This event is on a real calendar and can't be edited here yet.",
-            )
 
     fields: dict = {}
     if "done" in sent:
@@ -293,11 +295,69 @@ def patch_event(
         fields["start_utc"] = start
         fields["end_utc"] = end
 
+    # A material edit changes what people agreed to come to, so their yes is put
+    # back to "we need to hear from you" rather than carried across to something
+    # they never agreed to (docs/poll-edit-redesign.md §3). Read BEFORE the write
+    # so the decision is made on the values that are actually changing.
+    material = edits and not event.personal and event_rules.is_material(edits)
+
     repo.update_event(session, event, **fields)
+
+    reconfirm: list[str] = []
+    if material:
+        reconfirm = repo.reset_attendance(session, event)
+
+    # Push to the real calendar. This is where provider.update_event — shipped
+    # in both providers and, until now, called by nothing — finally does its
+    # job. Best-effort like every other sync: the in-app edit already happened
+    # and must not be lost because a token expired.
+    sync = None
+    if edits and event.synced and event.gcal_event_id:
+        sync = _push_edit_to_calendar(session, event)
+
     _announce(event)
-    return _event_json(
+    out = _event_json(
         event, user.timezone, viewer_id=user.id, creator_email=creator_email,
     )
+    # Who now owes an answer, so the UI can say "3 people need to re-confirm"
+    # instead of the change looking like it cost nothing.
+    out["needs_reconfirm"] = reconfirm
+    if sync is not None:
+        out["sync"] = sync
+    return out
+
+
+def _push_edit_to_calendar(session: Session, event: GroupEvent) -> dict:
+    """Mirror an applied edit onto the calendar the event was synced to.
+
+    The provider notifies attendees itself (`sendUpdates="all"`), which is what
+    the redesign asks for — and it means a time change resets responses on
+    Google's side too, so the two systems agree instead of fighting.
+
+    The event lives on the CREATOR's calendar (same pattern as booking.py and
+    _delete_from_google), so it needs the creator's token regardless of who is
+    editing — which today is always the creator anyway.
+    """
+    creator = session.get(User, event.created_by)
+    account = repo.get_primary_calendar_account(session, creator) if creator else None
+    if account is None:
+        return {"ok": False, "reason": "Creator's calendar isn't connected."}
+    if not repo.account_syncs_out(account):
+        return {"ok": False, "reason": "Sync is off for that calendar."}
+    try:
+        provider = provider_for_account(session, account)
+        provider.update_event(
+            event.gcal_event_id,
+            summary=event.title,
+            start=event.start,
+            end=event.end,
+            location=event.location,
+        )
+        log.info("[events] %d edit pushed to the calendar", event.id)
+        return {"ok": True}
+    except Exception as exc:
+        log.exception("[events] calendar update failed for event %d", event.id)
+        return {"ok": False, "reason": f"{type(exc).__name__}: {exc}"}
 
 
 @router.post("/events/{event_id}/rsvp")

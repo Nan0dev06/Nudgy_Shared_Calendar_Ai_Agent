@@ -805,6 +805,73 @@ def get_event(session: Session, event_id: int) -> GroupEvent | None:
     return session.get(GroupEvent, event_id)
 
 
+def create_event_from_booking(
+    session: Session,
+    plan: Plan,
+    round_: TimeRound,
+    attendee_emails: list[str],
+    *,
+    gcal_event_id: str | None = None,
+    gcal_link: str | None = None,
+) -> GroupEvent:
+    """Turn a booked poll time into the real group event (poll-edit-redesign §2).
+
+    Before this, a booked `Plan` and a `GroupEvent` were separate worlds, which
+    is why a booked poll had no edit path: there was no attendance record to
+    reset and no row for `update_event` to act on. Locking in now produces an
+    ordinary group event, so everything that works on an event — editing,
+    RSVP-reset, availability, the calendar view — works on a booked poll too.
+
+    Attendees are the yes / if-needed voters, written as `going` RSVPs: they
+    already consented through the vote, so asking them to RSVP again would be
+    asking the same question twice.
+
+    GUESTS GET NO RSVP ROW. `EventRsvp.user_id` is a real foreign key and a
+    guest has no user — they are a name attached to one poll. They still got
+    their calendar invite from the booking itself (if they left an address); what
+    they don't get is a seat in the group's attendance record, which is correct:
+    they aren't in the group. The poll remains their record, via `plan_id`.
+
+    Idempotent on the poll: a second call for the same plan returns the event
+    that already exists rather than making a duplicate. Booking is retried after
+    calendar failures, and two events for one poll would be worse than none.
+    """
+    existing = session.scalar(select(GroupEvent).where(GroupEvent.plan_id == plan.id))
+    if existing is not None:
+        return existing
+
+    event = GroupEvent(
+        group_id=plan.group_id,
+        created_by=plan.created_by,
+        plan_id=plan.id,
+        kind="event",
+        title=plan.title,
+        category="Event",
+        location=plan.location,
+        start_utc=round_.start,
+        end_utc=round_.end,
+        # A poll booking is the group's business by definition — it is never
+        # personal, and never anonymous: everyone who voted already knows what
+        # it is and who is coming.
+        personal=False,
+        anonymous=False,
+        synced=gcal_event_id is not None,
+        gcal_event_id=gcal_event_id,
+        gcal_link=gcal_link,
+    )
+    session.add(event)
+    session.flush()
+
+    members = {m.email: m for m in get_group_members(session, plan.group_id)}
+    for email in attendee_emails:
+        member = members.get(email)
+        if member is None:
+            continue  # a guest label, not a member address — see the docstring
+        session.add(EventRsvp(event_id=event.id, user_id=member.id, status="going"))
+    session.commit()
+    return event
+
+
 def get_group_events(
     session: Session, group_id: int, member_ids: list[int] | None = None,
 ) -> list[GroupEvent]:
@@ -831,10 +898,17 @@ def get_group_events(
 
 # RSVP statuses that make a member BUSY for a shared event. `maybe` counts:
 # tentatively attending still means the time is spoken for, and proposing a
-# competing plan on top of it is worse than losing a slot that frees up. `cant`
-# is the only status that leaves the time open. See docs/poll-edit-redesign.md §4
-# — `needs_reconfirm` joins this set when the edit flow lands.
-BUSY_RSVP_STATUSES = ("going", "maybe")
+# competing plan on top of it is worse than losing a slot that frees up.
+#
+# `needs_reconfirm` counts too (docs/poll-edit-redesign.md §3-§4): it means the
+# event was edited under someone who had already said yes. They WERE busy a
+# moment ago and probably still are, so treating a pending re-confirm as free
+# would invite double-booking somebody who is still coming. A soft-busy tier
+# (avoid when possible, not disqualifying) is the better long-run answer, but
+# slots.py deals in binary intervals; deferred.
+#
+# `cant` is the only status that leaves the time open.
+BUSY_RSVP_STATUSES = ("going", "maybe", "needs_reconfirm")
 
 
 def get_busy_events_for_users(
@@ -930,6 +1004,38 @@ def update_event(session: Session, event: GroupEvent, **fields) -> GroupEvent:
     session.commit()
     session.refresh(event)
     return event
+
+
+def reset_attendance(session: Session, event: GroupEvent) -> list[str]:
+    """A material edit landed — ask everyone who was coming to say so again.
+
+    Returns the emails whose RSVP was reset, so the caller can notify exactly
+    those people (docs/poll-edit-redesign.md §3).
+
+    Only `going` and `maybe` are reset. Somebody who already said `cant` is not
+    made to answer a second time about an event they had already declined, and
+    an attendee sitting at `needs_reconfirm` from an EARLIER edit stays there
+    with their original timestamp — re-stamping would restart the clock on a
+    question they still haven't answered.
+
+    The creator is skipped: they are the one who just made the change, so
+    asking them to re-confirm their own edit is a question with no content.
+    """
+    from app.db.models import _utcnow
+
+    reset: list[str] = []
+    for rsvp in list(event.rsvps):
+        if rsvp.user_id == event.created_by:
+            continue
+        if rsvp.status not in ("going", "maybe"):
+            continue
+        rsvp.status = "needs_reconfirm"
+        rsvp.updated_at = _utcnow()
+        user = session.get(User, rsvp.user_id)
+        if user is not None:
+            reset.append(user.email)
+    session.commit()
+    return reset
 
 
 def delete_event(session: Session, event: GroupEvent) -> None:
