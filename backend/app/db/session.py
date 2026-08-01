@@ -6,6 +6,7 @@ Two backends, chosen by whether DATABASE_URL is set:
 
 For a hackathon we create tables on startup with create_all — no migrations.
 """
+import logging
 from collections.abc import Iterator
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
@@ -14,6 +15,8 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from app.core.config import DATABASE_URL, DB_POOL_SIZE, ROOT_DIR
 from app.db.models import Base
+
+log = logging.getLogger("nudgy.db")
 
 
 def normalize_db_url(raw: str) -> str:
@@ -88,10 +91,39 @@ _LATE_COLUMNS = [
     ("plans", "asks_interest", "BOOLEAN DEFAULT FALSE NOT NULL"),
     ("plans", "spotlight_round_id", "INTEGER"),
     ("time_rounds", "created_by", "INTEGER"),
+    # Votes went from a boolean to three states. The old `yes` column is dropped
+    # further down, AFTER _backfill_vote_answers copies it across — order
+    # matters, which is why the drop is a separate pass and not a _LATE_COLUMNS
+    # entry.
+    ("time_votes", "answer", "VARCHAR"),
+    ("guest_time_votes", "answer", "VARCHAR"),
     ("plans", "share_token", "VARCHAR"),
     # TRUE/FALSE literals work on both SQLite (>=3.23) and Postgres
     ("events", "personal", "BOOLEAN DEFAULT FALSE NOT NULL"),
     ("events", "anonymous", "BOOLEAN DEFAULT TRUE NOT NULL"),
+]
+
+# Columns the model no longer has, which an EXISTING database still carries as
+# NOT NULL with no default — so leaving them in place makes every INSERT fail.
+# create_all never touches an existing table, so nothing else would catch this;
+# the test suite can't either, because tests always build a fresh schema.
+#
+#   time_votes.yes / guest_time_votes.yes
+#       replaced by the three-state `answer`. Backfilled first (see
+#       _backfill_vote_answers), then dropped — otherwise casting a vote raises
+#       NOT NULL, and reading one raises "no such column: answer".
+#   time_rounds.status
+#       the queued/active/skipped machine. Nothing replaces it: every candidate
+#       time is live at once, so the concept is gone rather than renamed.
+#       Dropping it is what lets a new candidate time be inserted at all.
+#
+# `plans.auto_book` is deliberately NOT here: it is NOT NULL but DEFAULT FALSE,
+# so it accepts inserts and simply sits unread. Dropping a harmless column is
+# risk without benefit.
+_DROPPED_COLUMNS = [
+    ("time_votes", "yes"),
+    ("guest_time_votes", "yes"),
+    ("time_rounds", "status"),
 ]
 
 # indexes on hot foreign keys, added after a DB existed. create_all only builds
@@ -134,6 +166,57 @@ def init_db() -> None:
                 f"CREATE UNIQUE INDEX IF NOT EXISTS {name} ON {table} ({column})"
             ))
     _backfill_calendar_accounts(engine)
+    # Copy the old boolean votes across BEFORE the column carrying them goes.
+    _backfill_vote_answers(engine)
+    _drop_dead_columns(engine)
+
+
+def _backfill_vote_answers(engine) -> None:
+    """Three-state votes (docs/poll-edit-redesign.md §1.3): turn every stored
+    `yes` boolean into the new `answer` string.
+
+    A pre-redesign vote only ever meant "works for me" or "doesn't", so it maps
+    onto exactly two of the three states — nothing becomes `if_needed`, because
+    nobody was ever able to say it. Guarded on `answer IS NULL` so it is a no-op
+    on every boot after the first, and skipped entirely once `yes` is gone.
+    """
+    insp = inspect(engine)
+    for table in ("time_votes", "guest_time_votes"):
+        cols = {c["name"] for c in insp.get_columns(table)}
+        if "yes" not in cols or "answer" not in cols:
+            continue  # already migrated, or a fresh DB that never had `yes`
+        with engine.begin() as conn:
+            conn.execute(text(
+                f"UPDATE {table} SET answer = CASE WHEN yes THEN 'yes' ELSE 'no' END "
+                " WHERE answer IS NULL"
+            ))
+
+
+def _drop_dead_columns(engine) -> None:
+    """Remove columns the model no longer writes but an existing DB still
+    requires (see _DROPPED_COLUMNS for why each one is fatal if left).
+
+    ALTER TABLE ... DROP COLUMN is supported by SQLite >= 3.35 and every
+    Postgres we target. On an older SQLite the drop fails; that is logged and
+    tolerated rather than raised, because the alternative — refusing to boot —
+    is worse than a clear error at the point somebody votes.
+
+    Re-inspects rather than reusing init_db's Inspector: that one was built
+    before the ALTERs above ran and its cached column lists are stale by now.
+    """
+    insp = inspect(engine)
+    for table, column in _DROPPED_COLUMNS:
+        if column not in {c["name"] for c in insp.get_columns(table)}:
+            continue
+        try:
+            with engine.begin() as conn:
+                conn.execute(text(f"ALTER TABLE {table} DROP COLUMN {column}"))
+            log.info("dropped dead column %s.%s", table, column)
+        except Exception:
+            log.exception(
+                "could not drop %s.%s — polls will fail until it is removed "
+                "by hand or the DB is recreated", table, column,
+            )
 
 
 def _backfill_calendar_accounts(engine) -> None:

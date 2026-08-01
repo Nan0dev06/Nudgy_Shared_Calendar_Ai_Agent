@@ -292,7 +292,8 @@ export default function App() {
     [setActivity]
   );
 
-  // Stage 1 of the cascade: "are you in for this plan at all?"
+  // Float-an-idea only: "are you in for this plan at all?". Polls created with
+  // times never ask this — a yes on a time is the interest signal.
   const voteInterest = useCallback(
     async (planId, yes) => {
       try {
@@ -317,23 +318,24 @@ export default function App() {
     [pushActivity, refreshGroupData]
   );
 
-  // Stage 2: "does this specific time work?"
+  // Answer ONE candidate time: "yes" | "no" | "if_needed". Every time is
+  // answerable independently, so this carries the round it is about and nothing
+  // else moves — no queue to race, which is why the old 409 is gone.
   const voteTime = useCallback(
-    async (planId, yes, roundId) => {
+    async (planId, roundId, answer) => {
+      const said = {
+        yes: ["#2A9D8F", "You said yes to a time for "],
+        if_needed: ["#DCA744", "You said you could make a time work for "],
+        no: ["#D95D39", "You ruled out a time for "],
+      }[answer] || ["#2A9D8F", "You answered a time for "];
       try {
-        const out = await api.voteTime(planId, yes, roundId);
+        const out = await api.voteTime(planId, roundId, answer);
         setPlans((ps) => ps.map((p) => (p.id === planId ? out : p)));
-        pushActivity({
-          dot: yes ? "#2A9D8F" : "#D95D39",
-          pre: `You said the time ${yes ? "works" : "doesn't work"} for `,
-          bold: out.title,
-          post: "",
-        });
+        pushActivity({ dot: said[0], pre: said[1], bold: out.title, post: "" });
         return out;
       } catch (e) {
-        // 409 = the host moved to the next time while we were voting; any other
-        // failure = a dropped request. Either way, resync so the card reflects
-        // the live question instead of silently doing nothing.
+        // A dropped or rejected request must never look like a dead button.
+        // Resync to the server so the card shows live state, and leave a trail.
         refreshGroupData();
         pushActivity({ dot: "#D95D39", pre: "Couldn't save that — ", bold: "try again", post: "" });
         throw e;
@@ -516,18 +518,33 @@ export default function App() {
   // The two host decisions, taken directly rather than asked of the agent. Both
   // endpoints answer with the refreshed plan, so the card re-renders from the
   // server's truth instead of an optimistic guess about what booking did.
-  const lockInPlan = useCallback(async (planId) => {
-    const out = await api.lockInPlan(planId);
+  const lockInPlan = useCallback(async (planId, roundId) => {
+    const out = await api.lockInPlan(planId, roundId);
     setPlans((ps) => ps.map((p) => (p.id === planId ? out.plan : p)));
     pushActivity({
-      dot: "#2A9D8F", pre: "You locked in ", bold: out.plan.title, post: "",
+      dot: "#2A9D8F",
+      pre: "You locked in ",
+      bold: out.plan.title,
+      // the endpoint answers with which time went and who it went to, so the
+      // trail can say it without re-deriving anything
+      post: out.time ? ` — ${out.time} for ${(out.attendees || []).length}` : "",
     });
     return out;
   }, [pushActivity]);
 
-  const nextPlanTime = useCallback(async (planId) => {
-    const out = await api.nextPlanTime(planId);
+  // Host: lean toward one time (or clear it with null). Resets nothing — the
+  // whole point of the move that replaced /next-time.
+  const spotlightTime = useCallback(async (planId, roundId) => {
+    const out = await api.spotlightTime(planId, roundId);
     setPlans((ps) => ps.map((p) => (p.id === planId ? out.plan : p)));
+    return out;
+  }, []);
+
+  // Take back a time YOU suggested. Server-side this is scoped to your own
+  // suggestion, so the card only offers it where can_remove says so.
+  const removePlanTime = useCallback(async (planId, roundId) => {
+    const out = await api.removeRound(planId, roundId);
+    setPlans((ps) => ps.map((p) => (p.id === planId ? out : p)));
     return out;
   }, []);
 
@@ -550,8 +567,9 @@ export default function App() {
     setPlans((ps) => ps.map((p) => (p.id === planId ? { ...p, share_url: null } : p)));
   }, []);
 
-  // host appending candidate times to an existing (usually timeless) poll —
-  // grows the same plan instead of spawning a second one
+  // ANY member appending candidate times to an existing poll — grows the same
+  // plan instead of spawning a second one. Members propose, the host decides:
+  // a new time is votable immediately and disturbs no vote already cast.
   const addTimesToPlan = useCallback(
     async (planId, slots) => {
       const out = await api.addRounds(planId, slots);
@@ -885,7 +903,7 @@ export default function App() {
     renameGroup, regenerateCode, deleteGroup, leaveGroup, removeMember,
     createEvent, setTaskDone, removeEvent, createPlanDirect, addTimesToPlan,
     removePlan, updatePlanSettings, sharePlanLink, unsharePlanLink,
-    lockInPlan, nextPlanTime, saveProfile,
+    lockInPlan, spotlightTime, removePlanTime, saveProfile,
     displayName:
       me?.display_name || profile.name || (me ? nameFromEmail(me.email) : ""),
   };

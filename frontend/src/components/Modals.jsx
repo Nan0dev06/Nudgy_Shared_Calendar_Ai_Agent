@@ -4,7 +4,7 @@ import {
   heavy, gpill, dpill, catChip, avatar, agentBox, fieldStyle, fieldRead,
   fieldLabel, toggleStyle, knobStyle,
 } from "../theme.js";
-import { CheckIcon, ClockIcon, PinIcon, PlusIcon, XIcon, ChevronLeft } from "../Icons.jsx";
+import { ClockIcon, PinIcon, PlusIcon, XIcon, ChevronLeft } from "../Icons.jsx";
 import { fmtDayLong, fmtRange } from "../dates.js";
 import {
   PlacePicker, GlassDatePicker, GlassTimePicker, StarRow, rememberPlace,
@@ -549,7 +549,11 @@ function NewTaskModal() {
   );
 }
 
-// ---- the two-stage poll composer -------------------------------------------
+// ---- the poll composer ------------------------------------------------------
+// Two panels, and what you fill in picks the MODE (docs/poll-edit-redesign.md
+// §1.1) without ever asking you to choose one: no times -> Float-an-idea ("who's
+// in?"), one time -> Quick, several -> Pick-a-time. The engine underneath is the
+// same; the mode only decides how many questions get asked.
 // Panel 1: what + who ("check who's in" can submit right here, timeless).
 // Panel 2: place + day + candidate times — slides in inside the same glass.
 function NewPollModal() {
@@ -579,12 +583,18 @@ function NewPollModal() {
       }));
     return [{ start: "", end: "" }];
   });
-  const [expected, setExpected] = useState(draft.expected || null); // people count
+  // The bar for booking without a human. Two kinds, and they are NOT the same:
+  //   "all"  -> the default RULE: every account-holding member must be able to
+  //             make the time. Sent to the API as null, never as a number, so
+  //             that guests can never stand in for a member.
+  //   a count -> the creator named how many people is enough; guests then count.
+  // Defaults to "all", which is the safe end — only a deliberate human act
+  // lowers it (docs/poll-edit-redesign.md §1.4).
+  const [expected, setExpected] = useState(draft.expected || "all");
   const [customN, setCustomN] = useState("");
   // async convergence: hours until voting closes (null = stays open until the
   // host acts) and whether a poll everyone says yes to may book itself
   const [closesIn, setClosesIn] = useState(null);
-  const [autoBook, setAutoBook] = useState(false);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
   const [dupLink, setDupLink] = useState(null);
@@ -651,28 +661,41 @@ function NewPollModal() {
     const dup = findDuplicate(bodySlots);
     if (dup) {
       setDupLink(dup);
+      // `dead` is gone (it only meant "the host walked off the end of the
+      // queue"); the statuses now are open | booked | expired.
       setErr(
         dup.status === "open"
           ? "This exact poll is already open."
-          : dup.status === "dead"
-            ? "This exact poll already ran and didn't work out — change the time or place before proposing it again."
-            : "This exact poll already exists."
+          : dup.status === "expired"
+            ? "This exact poll ran and nobody's time reached the bar — reopen it or change the time or place before proposing it again."
+            : dup.status === "booked"
+              ? "This exact poll already booked."
+              : "This exact poll already exists."
       );
       return;
     }
     setBusy(true);
     setErr("");
     try {
-      const n = expected === "custom" ? parseInt(customN, 10) : expected;
+      // "all" is the rule, not a count — it must reach the API as null. Sending
+      // len(members) instead would look identical today and behave differently
+      // the moment a guest votes.
+      const n =
+        expected === "all" ? null
+        : expected === "custom" ? parseInt(customN, 10)
+        : expected;
       await createPlanDirect({
         title: title.trim(),
         location: where.trim() || null,
         slots: bodySlots,
+        // null (nothing picked, or "Everyone") means the DEFAULT RULE: every
+        // account-holding member must be able to make the time. Deliberately
+        // not sent as a number — a count could be satisfied by guests, and
+        // "the group agreed" is a statement about those specific people.
         expected_count: n || null,
         deadline_iso: closesIn
           ? new Date(Date.now() + closesIn * 3600e3).toISOString()
           : null,
-        auto_book: autoBook,
       });
       if (where.trim()) rememberPlace(where.trim());
       if (draft.id) removeDraft(draft.id);
@@ -688,7 +711,9 @@ function NewPollModal() {
   const nChip = (n, label) => (
     <div
       key={label}
-      onClick={() => setExpected(expected === n ? null : n)}
+      // deselecting falls back to "all", never to nothing — the bar always has
+      // a value, and the safe end is the one to land on
+      onClick={() => setExpected(expected === n ? "all" : n)}
       style={{
         ...(expected === n ? dpill(true) : gpill(true)),
         padding: "6px 13px", fontSize: 12,
@@ -726,12 +751,10 @@ function NewPollModal() {
             autoFocus
           />
           <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-            <span style={fieldLabel}>How many people should this be?</span>
+            <span style={fieldLabel}>How many make this worth doing?</span>
             <div style={{ display: "flex", gap: 7, flexWrap: "wrap", alignItems: "center" }}>
-              {nChip(2, "2")}
-              {nChip(3, "3")}
-              {nChip(4, "4")}
-              {nChip(total, `Everyone (${total})`)}
+              {nChip("all", `Everyone (${total})`)}
+              {[2, 3, 4].filter((n) => n < total).map((n) => nChip(n, String(n)))}
               <div
                 onClick={() => setExpected("custom")}
                 style={{ ...(expected === "custom" ? dpill(true) : gpill(true)), padding: "6px 13px", fontSize: 12 }}
@@ -750,8 +773,10 @@ function NewPollModal() {
                 />
               )}
             </div>
-            <span style={{ fontSize: 11, color: "#a09889" }}>
-              Optional — helps Nudgy know when enough people are in.
+            <span style={{ fontSize: 11, color: "#a09889", lineHeight: 1.5 }}>
+              {expected === "all"
+                ? "Nudgy books a time on its own only when everyone in the group can make it. People voting by link can't stand in for a member."
+                : "Nudgy books a time on its own once this many people can make it — people voting by link included, since you named a number."}
             </span>
           </div>
           {err && stage === 0 && errText(err)}
@@ -800,7 +825,10 @@ function NewPollModal() {
           />
           <GlassDatePicker value={date} onChange={setDate} placeholder="Which day?" />
           <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-            <span style={fieldLabel}>Candidate times — asked one at a time</span>
+            {/* Not "asked one at a time" any more — that was the old queue,
+                where 7 PM was a separate question from 5 PM and moving on
+                re-asked everybody. All of these go up at once. */}
+            <span style={fieldLabel}>Candidate times — everyone answers all of them</span>
             {slots.map((s, i) => (
               <div key={i} style={{ display: "flex", gap: 8, alignItems: "center" }}>
                 <GlassTimePicker value={s.start} onChange={(v) => setSlot(i, "start", v)} placeholder="From" />
@@ -827,8 +855,11 @@ function NewPollModal() {
             )}
           </div>
 
-          {/* Async convergence: a deadline so a quiet poll doesn't drift, and
-              auto-book so a unanimous one doesn't wait on the host. */}
+          {/* A deadline so a quiet poll doesn't drift. There is no auto-book
+              checkbox any more: converging on the bar IS the automatic path,
+              and it is always on — what it takes is the bar set on panel 1.
+              Booking only ever invites the people who said they can make it,
+              which is what makes that safe without a switch. */}
           {!appendTo && (
             <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
               <span style={fieldLabel}>Voting closes</span>
@@ -838,31 +869,10 @@ function NewPollModal() {
                 {closesChip(72, "In 3 days", closesIn, setClosesIn)}
                 {closesChip(168, "In a week", closesIn, setClosesIn)}
               </div>
-              <div
-                className="hov-row"
-                onClick={() => setAutoBook((v) => !v)}
-                style={{
-                  display: "flex", alignItems: "center", gap: 9, cursor: "pointer",
-                  padding: "7px 9px", borderRadius: 12,
-                  background: autoBook ? "rgba(42,157,143,.12)" : "transparent",
-                }}
-              >
-                <div style={{
-                  width: 17, height: 17, borderRadius: 6, flex: "none",
-                  display: "flex", alignItems: "center", justifyContent: "center",
-                  background: autoBook ? "#2A9D8F" : "rgba(255,253,247,.6)",
-                  border: autoBook ? "none" : "1.4px solid rgba(160,152,137,.5)",
-                }}>
-                  {autoBook && <CheckIcon size={11} color="#fff" sw={3} />}
-                </div>
-                <span style={{ fontSize: 12.5, color: autoBook ? "#2A9D8F" : "#5c564b", fontWeight: autoBook ? 600 : 400 }}>
-                  Book it for us if everyone says yes
-                </span>
-              </div>
               <span style={{ fontSize: 11, color: "#a09889", lineHeight: 1.5 }}>
-                {autoBook
-                  ? "Only on a full yes — one no, or one person who hasn't answered, and it waits for you."
-                  : "Nudgy reminds whoever hasn't answered; you decide when to lock a time in."}
+                {closesIn
+                  ? "Nudgy nudges whoever hasn't answered, then books the best time that clears your bar — for the people who said they can make it. Nothing reaches anyone else's calendar."
+                  : "Open-ended: Nudgy still books the moment everyone has answered and a time clears your bar. Set a deadline if you'd rather it not wait on one quiet person."}
               </span>
             </div>
           )}
@@ -923,7 +933,7 @@ function dupJump(dup, setModal, setPage) {
         }, 120);
       }}
     >
-      {dup.status === "dead" ? "See how it went →" : "Jump to that poll →"}
+      {dup.status === "open" ? "Jump to that poll →" : "See how it went →"}
     </div>
   );
 }

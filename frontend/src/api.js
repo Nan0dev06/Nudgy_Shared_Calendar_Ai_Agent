@@ -64,9 +64,11 @@ export const api = {
   deletePlan: (planId) => req(`/plans/${planId}`, { method: "DELETE" }),
   createPlan: (groupId, body) =>
     req(`/groups/${groupId}/plans`, { method: "POST", body }),
-  // host-only: when voting closes (deadline_iso, null clears it) and whether a
-  // plan everyone said yes to may book itself (auto_book). Omit a field to
-  // leave it alone — sending deadline_iso: null actively clears the deadline.
+  // host-only: when voting closes (deadline_iso, null clears it) and the
+  // `minimum` — how many people must be able to make a time before it books
+  // without anyone. Omit a field to leave it alone; sending deadline_iso: null
+  // actively clears the deadline. There is no auto_book flag any more: a poll
+  // converging on its minimum IS the automatic path.
   patchPlan: (planId, body) => req(`/plans/${planId}`, { method: "PATCH", body }),
   // host-only: the public vote link. sharePlan mints one (or, with regenerate,
   // replaces it — which kills every copy already sent); unsharePlan turns it off.
@@ -80,21 +82,41 @@ export const api = {
     req(`/share/${token}/join`, { method: "POST", body: { name, email } }),
   guestInterest: (token, yes) =>
     req(`/share/${token}/interest`, { method: "POST", body: { yes } }),
-  guestTimeVote: (token, yes, round_id) =>
-    req(`/share/${token}/time-vote`, { method: "POST", body: { yes, round_id } }),
+  // `answer` is three-state: "yes" | "no" | "if_needed". Guests answer exactly
+  // the question members do, on exactly the same candidate times.
+  guestTimeVote: (token, round_id, answer) =>
+    req(`/share/${token}/time-vote`, { method: "POST", body: { round_id, answer } }),
+  // Interest is asked ONLY by Float-an-idea polls (the ones created with no
+  // times). Everywhere else a yes on a time is the interest signal, and the
+  // endpoint 400s to say so.
   voteInterest: (planId, yes) =>
     req(`/plans/${planId}/interest`, { method: "POST", body: { yes } }),
-  voteTime: (planId, yes, round_id) =>
-    req(`/plans/${planId}/time-vote`, { method: "POST", body: { yes, round_id } }),
+  // Answer ONE candidate time. Every time is answerable independently and at
+  // any moment — there is no active round to race against.
+  voteTime: (planId, round_id, answer) =>
+    req(`/plans/${planId}/time-vote`, { method: "POST", body: { round_id, answer } }),
   // Host moves, straight at the deterministic endpoints. These used to go
   // through the agent as an English sentence ("Lock in the active time for the
   // plan X"), which meant a real calendar booking depended on the model picking
   // the right tool AND matching the plan by its TITLE. Same moves, same
   // server-side guards, no model in the path.
-  lockInPlan: (planId) => req(`/plans/${planId}/lock-in`, { method: "POST" }),
-  nextPlanTime: (planId) => req(`/plans/${planId}/next-time`, { method: "POST" }),
+  //
+  // lockInPlan names the time explicitly rather than inheriting the spotlight:
+  // "what we're leaning toward" and "what we're committing to" are different
+  // statements, and coupling them would make locking in a different time a
+  // two-step dance.
+  lockInPlan: (planId, round_id) =>
+    req(`/plans/${planId}/lock-in`, { method: "POST", body: { round_id } }),
+  // Host: lean toward one time. Resets no votes and can be moved back or
+  // cleared (round_id: null). Replaces the old /next-time, which skipped a
+  // candidate and made every vote already cast on it irrelevant.
+  spotlightTime: (planId, round_id) =>
+    req(`/plans/${planId}/spotlight`, { method: "POST", body: { round_id } }),
+  // ANY member may put a candidate time up; only its suggester can take it back.
   addRounds: (planId, slots) =>
     req(`/plans/${planId}/rounds`, { method: "POST", body: { slots } }),
+  removeRound: (planId, roundId) =>
+    req(`/plans/${planId}/rounds/${roundId}`, { method: "DELETE" }),
   myReviews: () => req("/reviews"),
   upsertReview: (body) => req("/reviews", { method: "POST", body }),
   deleteReview: (reviewId) => req(`/reviews/${reviewId}`, { method: "DELETE" }),
