@@ -6,8 +6,12 @@ anonymous one whose title they were never allowed to read.
 
 The rules, and what each protects:
   - personal events belong to their owner (nobody else edits, ticks, or deletes)
-  - shared group events aren't editable by one person, creator included —
-    changes go to a group vote, which isn't built yet
+  - shared group events are editable by their CREATOR only; anyone else suggests
+    the change to them (docs/poll-edit-redesign.md §3)
+  - a MATERIAL edit (title, start, end, location) resets every attendee to
+    `needs_reconfirm` — the yes they gave was to the old event, and carrying it
+    across would put them somewhere they never agreed to go. Non-material edits
+    (category, anonymity) cost nobody their seat
   - deleting a shared event is creator-only (tightened from any member)
   - ticking a SHARED task done stays open to everyone: finishing work together
     is the point, and it doesn't change what or when the thing is
@@ -106,13 +110,33 @@ def test_nobody_touches_someone_elses_personal_event(rule):
     assert "sam@x.com" in decision.reason
 
 
-def test_shared_event_is_not_editable_even_by_its_creator():
-    """The deliberate one — a change to a shared event is the group's call."""
+def test_shared_event_is_editable_by_its_creator_only():
+    """Rewritten for docs/poll-edit-redesign.md §3. The creator edits; anyone
+    else gets told to suggest it to them. What protects the other attendees is
+    not this check but `needs_reconfirm` — see the reset tests below."""
     shared = _fake(1, personal=False)
-    for uid in (1, 2):
-        decision = event_rules.can_edit(shared, uid)
-        assert not decision
-        assert "vote" in decision.reason.lower()
+    assert event_rules.can_edit(shared, 1)
+
+    decision = event_rules.can_edit(shared, 2)
+    assert not decision
+    # the reason has to name the way forward, not just refuse
+    assert "suggest" in decision.reason.lower()
+
+
+def test_material_fields_are_the_ones_that_invalidate_a_yes():
+    """Title counts: renaming "quarter goals" to "week analysis" changes what
+    you're attending as surely as moving it does. Category and anonymity are
+    bookkeeping and must NOT cost anyone their seat."""
+    assert event_rules.is_material({"title"})
+    assert event_rules.is_material({"start_iso"})
+    assert event_rules.is_material({"end_iso"})
+    assert event_rules.is_material({"location"})
+
+    assert not event_rules.is_material({"category"})
+    assert not event_rules.is_material({"anonymous"})
+    assert not event_rules.is_material(set())
+    # a mixed edit is material — one material field is enough
+    assert event_rules.is_material({"category", "start_iso"})
 
 
 def test_shared_event_delete_is_creator_only():
@@ -193,17 +217,17 @@ def test_owner_edits_their_personal_event(ctx):
     assert body["anonymous"] is False
 
 
-def test_editing_a_shared_event_is_refused_with_a_reason(ctx):
-    """Not "forbidden" in the abstract — the user is told changes go to the
-    group, because a bare 403 on your own group's event reads like a bug."""
+def test_a_non_creator_is_refused_with_a_way_forward(ctx):
+    """Not "forbidden" in the abstract — a bare 403 on your own group's event
+    reads like a bug, so the reason names what to do instead."""
     client, Session = ctx
-    owner_id, _, gid = _group_of_two(Session)
+    owner_id, other_id, gid = _group_of_two(Session)
     ev = _event(Session, gid, owner_id)
 
-    _auth(client, owner_id)
+    _auth(client, other_id)
     r = client.patch(f"/events/{ev}", json={"title": "Renamed"})
     assert r.status_code == 403
-    assert "vote" in r.json()["detail"].lower()
+    assert "suggest" in r.json()["detail"].lower()
 
 
 def test_clearing_a_field_differs_from_omitting_it(ctx):
@@ -289,3 +313,125 @@ def test_kind_and_personal_cannot_be_edited(ctx):
     with Session() as s:
         ev_row = repo.get_event(s, ev)
         assert ev_row.personal is True and ev_row.kind == "event"
+
+
+# ------------------------------------------- RSVP-reset (poll-edit-redesign §3)
+
+def _rsvp(Session, event_id, user_id, status):
+    with Session() as s:
+        ev = repo.get_event(s, event_id)
+        user = s.get(User, user_id)
+        repo.upsert_rsvp(s, ev, user, status)
+
+
+def _statuses(Session, event_id):
+    with Session() as s:
+        ev = repo.get_event(s, event_id)
+        return {r.user_id: r.status for r in ev.rsvps}
+
+
+def test_a_material_edit_resets_everyone_who_was_coming(ctx):
+    """The heart of §3: moving the time doesn't carry a yes across to something
+    nobody agreed to. They aren't dropped either — they go tentative."""
+    client, Session = ctx
+    owner_id, other_id, gid = _group_of_two(Session)
+    ev = _event(Session, gid, owner_id)
+    _rsvp(Session, ev, other_id, "going")
+
+    _auth(client, owner_id)
+    r = client.patch(f"/events/{ev}", json={
+        "start_iso": "2026-07-20T19:00:00+00:00",
+        "end_iso": "2026-07-20T21:00:00+00:00",
+    })
+    assert r.status_code == 200
+    # the response names who now owes an answer, so the UI can say so
+    assert r.json()["needs_reconfirm"] == ["mo@x.com"]
+    assert _statuses(Session, ev)[other_id] == "needs_reconfirm"
+
+
+def test_a_non_material_edit_costs_nobody_their_seat(ctx):
+    """Category is bookkeeping. Resetting attendance over it would train people
+    to ignore the re-confirm prompt, which is what makes it work at all."""
+    client, Session = ctx
+    owner_id, other_id, gid = _group_of_two(Session)
+    ev = _event(Session, gid, owner_id)
+    _rsvp(Session, ev, other_id, "going")
+
+    _auth(client, owner_id)
+    r = client.patch(f"/events/{ev}", json={"category": "Dinner"})
+    assert r.status_code == 200
+    assert r.json()["needs_reconfirm"] == []
+    assert _statuses(Session, ev)[other_id] == "going"
+
+
+def test_a_declined_rsvp_is_not_asked_again(ctx):
+    """Somebody who already said they can't come is not made to answer twice
+    about an event they had already declined."""
+    client, Session = ctx
+    owner_id, other_id, gid = _group_of_two(Session)
+    ev = _event(Session, gid, owner_id)
+    _rsvp(Session, ev, other_id, "cant")
+
+    _auth(client, owner_id)
+    r = client.patch(f"/events/{ev}", json={"title": "Renamed"})
+    assert r.json()["needs_reconfirm"] == []
+    assert _statuses(Session, ev)[other_id] == "cant"
+
+
+def test_the_editor_does_not_reconfirm_their_own_edit(ctx):
+    """Asking the person who just moved the event whether they can make the new
+    time is a question with no content."""
+    client, Session = ctx
+    owner_id, other_id, gid = _group_of_two(Session)
+    ev = _event(Session, gid, owner_id)
+    _rsvp(Session, ev, owner_id, "going")
+    _rsvp(Session, ev, other_id, "going")
+
+    _auth(client, owner_id)
+    r = client.patch(f"/events/{ev}", json={"location": "Somewhere else"})
+    assert r.json()["needs_reconfirm"] == ["mo@x.com"]
+    assert _statuses(Session, ev)[owner_id] == "going"
+
+
+def test_reconfirming_is_an_ordinary_rsvp(ctx):
+    """No special endpoint — the way back is to say you're going."""
+    client, Session = ctx
+    owner_id, other_id, gid = _group_of_two(Session)
+    ev = _event(Session, gid, owner_id)
+    _rsvp(Session, ev, other_id, "going")
+
+    _auth(client, owner_id)
+    client.patch(f"/events/{ev}", json={"title": "Moved"})
+    assert _statuses(Session, ev)[other_id] == "needs_reconfirm"
+
+    _auth(client, other_id)
+    r = client.post(f"/events/{ev}/rsvp", json={"status": "going"})
+    assert r.status_code == 200
+    assert _statuses(Session, ev)[other_id] == "going"
+
+
+def test_a_personal_event_edit_resets_nothing(ctx):
+    """Personal events have no attendees to re-ask; the reset must not fire and
+    must not blow up on the empty case."""
+    client, Session = ctx
+    owner_id, _, gid = _group_of_two(Session)
+    ev = _event(Session, gid, owner_id, personal=True)
+
+    _auth(client, owner_id)
+    r = client.patch(f"/events/{ev}", json={"title": "Dentist"})
+    assert r.status_code == 200
+    assert r.json()["needs_reconfirm"] == []
+
+
+def test_patch_answers_with_the_attendance_it_just_changed(ctx):
+    """A PATCH used to answer with an empty rsvps map, so a client refreshing
+    from the response blanked the names exactly when a material edit made them
+    most worth showing."""
+    client, Session = ctx
+    owner_id, other_id, gid = _group_of_two(Session)
+    ev = _event(Session, gid, owner_id)
+    _rsvp(Session, ev, other_id, "going")
+
+    _auth(client, owner_id)
+    body = client.patch(f"/events/{ev}", json={"title": "Moved"}).json()
+    assert body["rsvps"] == {"mo@x.com": "needs_reconfirm"}

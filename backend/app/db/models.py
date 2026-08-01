@@ -426,19 +426,32 @@ class GuestTimeVote(Base):
 
 
 class GroupEvent(Base):
-    """An event or task a member created in-app (distinct from poll bookings,
-    which live on Poll). kind: 'event' has start/end; 'task' uses start_utc as
-    its due date (end_utc mirrors it) and can be checked off via `done`.
+    """An event or task in the group — including one a booked poll produced.
+
+    kind: 'event' has start/end; 'task' uses start_utc as its due date (end_utc
+    mirrors it) and can be checked off via `done`.
+
+    POLL BOOKINGS LAND HERE TOO (docs/poll-edit-redesign.md §2). They used to be
+    a separate world — a booked `Plan` and a `GroupEvent` were strangers, and
+    `EventRsvp` explicitly excluded poll bookings — which is why a booked poll
+    had no edit path at all. Now locking a time in creates one of these, with
+    the yes/if-needed voters carrying `going` RSVPs, and `plan_id` pointing back
+    at the poll so the group can still see how the time was chosen.
 
     If the creator opted into Google sync, gcal_event_id/gcal_link map to the
     Google Calendar event on the creator's primary calendar (members get it
-    via invites, same pattern as booking.py) so deletes can propagate.
+    via invites, same pattern as booking.py) so edits and deletes can propagate.
     """
     __tablename__ = "events"
 
     id: Mapped[int] = mapped_column(primary_key=True)
     group_id: Mapped[int] = mapped_column(ForeignKey("groups.id"), index=True)
     created_by: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    # the poll this came from, if any. Nullable because most events are created
+    # directly; set only by the booking path. Kept as a plain integer FK with no
+    # relationship: deleting a poll must not cascade away the real event people
+    # have on their calendars — the history goes, the commitment stays.
+    plan_id: Mapped[int | None] = mapped_column(ForeignKey("plans.id"), default=None)
     kind: Mapped[str] = mapped_column(String, default="event")  # event | task
     title: Mapped[str] = mapped_column(String)
     category: Mapped[str] = mapped_column(String, default="Event")
@@ -493,12 +506,26 @@ class PlaceReview(Base):
 
 
 class EventRsvp(Base):
-    """One member's RSVP to a group event (going | maybe | cant).
+    """One member's RSVP to a group event.
 
-    RSVP only applies to in-app group events (GroupEvent), never poll bookings
-    — a booked poll round already collected everyone's yes through the vote
-    cascade. One RSVP per (event, user); answering again replaces the old one.
-    Cascades away with its event (delete-orphan on GroupEvent.rsvps).
+    Four statuses: going | maybe | cant | needs_reconfirm.
+
+    `needs_reconfirm` is not something a person chooses — it is what a MATERIAL
+    EDIT does to everyone who had said yes (docs/poll-edit-redesign.md §3). If
+    the creator moves an event's time, the people who agreed to the old time
+    never agreed to the new one, so their answer is put back to "we need to hear
+    from you" rather than silently carried over. They stay tentative (and stay
+    BUSY — see repo.BUSY_RSVP_STATUSES) until the event, and are dropped only if
+    they never answer: a ten-minute shift must not cost a silent yes-person
+    their spot. Re-confirming is an ordinary RSVP of `going`.
+
+    Poll bookings carry these now too. They used to be excluded on the grounds
+    that the vote cascade had already collected everyone's yes — true, but it
+    left a booked poll with no attendance record to reset, and therefore no way
+    to edit it. §2 unified the two.
+
+    One RSVP per (event, user); answering again replaces the old one. Cascades
+    away with its event (delete-orphan on GroupEvent.rsvps).
     """
     __tablename__ = "event_rsvps"
     __table_args__ = (UniqueConstraint("event_id", "user_id", name="uq_event_user"),)
@@ -506,7 +533,7 @@ class EventRsvp(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     event_id: Mapped[int] = mapped_column(ForeignKey("events.id"))
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"))
-    status: Mapped[str] = mapped_column(String)  # going | maybe | cant
+    status: Mapped[str] = mapped_column(String)  # going | maybe | cant | needs_reconfirm
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
 
     event: Mapped["GroupEvent"] = relationship(back_populates="rsvps")

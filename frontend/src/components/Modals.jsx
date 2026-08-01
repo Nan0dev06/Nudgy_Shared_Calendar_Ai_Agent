@@ -177,10 +177,26 @@ function EventModal() {
             </div>
           )}
         </div>
+        {/* The creator changed something material, so the yes you gave was to a
+            different event (docs/poll-edit-redesign.md §3). You keep your spot
+            and stay counted as busy until the event — this is a question, not a
+            removal — but it has to be asked plainly, or a moved time silently
+            keeps people who can no longer come. */}
+        {showRsvp && my === "needs_reconfirm" && (
+          <div style={{ ...agentBox, borderColor: "rgba(220,167,68,.5)" }}>
+            <span style={{ fontSize: 12, fontWeight: 600, color: "#DCA744" }}>
+              This changed since you said yes
+            </span>
+            <span style={{ fontSize: 12.5, lineHeight: 1.5, color: "#5c564b" }}>
+              You're still on the list — just tell them whether the new details
+              still work for you.
+            </span>
+          </div>
+        )}
         {showRsvp && (
           <div style={{ display: "flex", flexDirection: "column", gap: 7 }}>
             <div style={{ display: "flex", gap: 9 }}>
-              {rsvpBtn("going", "Going")}
+              {rsvpBtn("going", my === "needs_reconfirm" ? "Still going" : "Going")}
               {rsvpBtn("maybe", "Maybe")}
               {rsvpBtn("cant", "Can't go")}
             </div>
@@ -188,7 +204,8 @@ function EventModal() {
               const going = withStatus("going");
               const maybe = withStatus("maybe");
               const cant = withStatus("cant");
-              if (!going.length && !maybe.length && !cant.length)
+              const pending = withStatus("needs_reconfirm");
+              if (!going.length && !maybe.length && !cant.length && !pending.length)
                 return (
                   <span style={{ fontSize: 10.5, color: "#a09889" }}>
                     Someone added this directly — let them know if you can make it.
@@ -205,6 +222,7 @@ function EventModal() {
                 <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
                   {line("Going", going, "#2A9D8F")}
                   {line("Maybe", maybe, "#DCA744")}
+                  {line("Yet to re-confirm", pending, "#c9a227")}
                   {line("Can't", cant, "#b08a80")}
                 </div>
               );
@@ -213,7 +231,7 @@ function EventModal() {
         )}
         {e.booked && (
           <span style={{ fontSize: 11.5, color: "#a09889" }}>
-            Locked in through a poll — attendance was settled by the votes.
+            Locked in through a poll — everyone here already said this time works.
           </span>
         )}
       </div>

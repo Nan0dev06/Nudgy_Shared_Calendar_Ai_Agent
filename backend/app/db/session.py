@@ -101,6 +101,10 @@ _LATE_COLUMNS = [
     # TRUE/FALSE literals work on both SQLite (>=3.23) and Postgres
     ("events", "personal", "BOOLEAN DEFAULT FALSE NOT NULL"),
     ("events", "anonymous", "BOOLEAN DEFAULT TRUE NOT NULL"),
+    # poll/event unification (docs/poll-edit-redesign.md §2): the poll a booked
+    # event came from. Nullable — every event that predates this was created
+    # directly, and NULL is exactly what that means.
+    ("events", "plan_id", "INTEGER"),
 ]
 
 # Columns the model no longer has, which an EXISTING database still carries as

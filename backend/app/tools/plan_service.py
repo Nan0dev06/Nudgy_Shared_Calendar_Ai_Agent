@@ -342,10 +342,20 @@ def _confirm(session: Session, plan: Plan, round_: TimeRound, tz_name: str) -> d
         return {"action": "book_failed", "error": result.get("error")}
 
     repo.set_plan_status(session, plan, "booked")
+    # The booking becomes a real group event (docs/poll-edit-redesign.md §2).
+    # `going` is written straight from the vote — these people already said this
+    # time works, and asking them to RSVP to what they just voted for would be
+    # the same question twice. This is what finally gives a booked poll an edit
+    # path; until now it was a Plan with nothing editable attached.
+    event = repo.create_event_from_booking(
+        session, plan, round_, going,
+        gcal_event_id=result.get("event_id"), gcal_link=result.get("event_link"),
+    )
     return {
         "action": "booked",
         "time": time_label(round_, tz_name),
         "round_id": round_.id,
+        "event_id_local": event.id,
         # who is coming (members by email, guests by label) vs. who we can
         # actually write to — never assume the first list is mailable
         "attendees": going,
