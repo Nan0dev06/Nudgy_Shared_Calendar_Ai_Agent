@@ -43,10 +43,11 @@ Read these before doing anything else this session:
 - **Event ownership** — PR #24, merged. `tools/event_rules.py` (pure, beside
   `plan_rules.py`): personal events are owner-only — closing a real hole where
   any member could delete another's masked private event — shared-event delete
-  is creator-only, shared-event EDIT is refused for everyone including the
-  creator (it needs the vote flow below), and ticking a shared task done stays
-  open to all. PATCH also edits personal events now; `model_fields_set`
-  distinguishes "clear it" from "don't touch it".
+  is creator-only, and ticking a shared task done stays open to all. PATCH also
+  edits personal events now; `model_fields_set` distinguishes "clear it" from
+  "don't touch it". *(Superseded in part by §3: shared-event edit was refused
+  for everyone at the time of this PR; it is now creator-only with an
+  attendance reset.)*
 - **Availability counts in-app events** — PR #25, merged. `poll-edit-redesign.md`
   §4. `repo.get_busy_events_for_users` + `BUSY_RSVP_STATUSES`;
   `MemberBusy.has_source` replaces "externally connected" as the test for
@@ -88,7 +89,7 @@ Read these before doing anything else this session:
 > case in the same commit — and check the case FAILS without the migration.
 > The suite builds fresh schemas, so it says nothing about existing data.
 
-## Decided 2026-08-01, §2 and §3 not yet built — READ `docs/poll-edit-redesign.md`
+## Decided 2026-08-01 — §1-§4 ALL BUILT. `docs/poll-edit-redesign.md` is history now, except §6 (still open)
 
 The poll/voting/editing logic was redesigned from first principles on 2026-08-01
 and that doc is authoritative; the poll + editing sections of `v1-decisions.md`
@@ -111,9 +112,9 @@ backend** — see the merged-work list above. The items still outstanding:
   to `needs_reconfirm`, which counts as BUSY. `provider.update_event` is wired
   and the deliberate 409 is gone. `repo.reset_attendance` skips the editor and
   anyone who already said `cant`.
-- ~~**Availability must learn about in-app events.**~~ BUILT (PR #25). What
-  remains of §4 for later: adding `needs_reconfirm` to `repo.BUSY_RSVP_STATUSES`
-  — that one tuple is the entire availability half of §3.
+- ~~**Availability must learn about in-app events.**~~ BUILT (PR #25), and §4 is
+  now complete: `needs_reconfirm` joined `repo.BUSY_RSVP_STATUSES` with §3, so a
+  pending re-confirm counts as busy and can't be double-booked.
 - **Inbound sync** — the user considers this beta-critical: external events
   should be visible IN Nudgy, not merely block scheduling as opaque busy ranges.
   Titles are **opt-in per connected calendar**, visible to their **owner only**
