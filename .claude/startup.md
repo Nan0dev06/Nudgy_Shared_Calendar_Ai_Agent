@@ -58,18 +58,26 @@ Read these before doing anything else this session:
   Deleted: `advance_to_next_time`, the queued/active/skipped machine, `dead`,
   `auto_book`, `everyone_said_yes`.
 
-> **READ `docs/beta-readiness-map.md`** — a full audit of the code against every
-> doc, done 2026-08-01. It is the current source of truth for what is actually
-> built. Headline: **`frontend/src/` still speaks the pre-rewrite poll API**, so
-> every poll interaction in the UI is broken against the merged backend (422s,
-> a 404, a booked poll with no confirmation UI). Also stale and broken:
-> `scripts/seed_app_data.py` (crashes), `scripts/check_plan_cascade.py`,
-> `docs/api.md`, and the committed `backend/app/static/` bundle.
+- **Poll UI rewrite** — `feat/poll-ui-rewrite`, merged 2026-08-01. §1 is now
+  complete end to end. The card is a GRID of candidate times with three answer
+  buttons each; host moves (lock in / lean toward) sit on the row they act on;
+  any member can suggest a time; the guest share page shows the same grid.
+  **Plus a migration that mattered:** an existing DB could not read or cast a
+  vote against the merged backend (`time_votes.yes` and `time_rounds.status`
+  were NOT NULL with no default, and `answer` did not exist). `db/session.py`
+  now adds + backfills `answer` and drops the three dead columns;
+  `tests/test_db_migration.py` builds the old schema by hand to prove it.
+  Scripts rebuilt too. 444 tests green.
 
-- **Next up:** the poll UI rewrite (blocking everything else), then
-  `poll-edit-redesign.md` §2 + §3, inbound sync, responsive. Deferred past beta:
-  conversation persistence, model router + fallback, notification preferences,
-  windowed events fetch.
+> **READ `docs/beta-readiness-map.md`** — a full audit of the code against every
+> doc, done 2026-08-01, and still the source of truth for what is actually built.
+> Its §0/§3 "the frontend is broken" headline is now RESOLVED; everything else in
+> it stands. `docs/api.md` is still stale on polls.
+
+- **Next up:** `poll-edit-redesign.md` §2 (booked poll → `GroupEvent`) then §3
+  (edit + RSVP-reset), inbound sync, then the mobile-responsive pass. Deferred
+  past beta: conversation persistence, model router + fallback, notification
+  preferences, windowed events fetch.
 
 ## Decided 2026-08-01, §2 and §3 not yet built — READ `docs/poll-edit-redesign.md`
 
@@ -85,8 +93,7 @@ backend** — see the merged-work list above. The items still outstanding:
   is a RULE by default (every account-holding member, guests cannot substitute),
   a NUMBER only when a human types one; the earlier "prefilled with a majority"
   reading is superseded — `poll-edit-redesign.md` §1.4 carries the amendment.
-- **The poll UI has not been rewritten** and is the next session. Until then the
-  merged backend has no working front end.
+- ~~The poll UI~~ — rewritten and merged; §1 is done end to end.
 - **A booked poll becomes a `GroupEvent`** with the yes-voters as attendees —
   today they're separate models, which is why a booked poll has no edit path.
 - **Editing = RSVP-reset, not a vote.** Creator-only edits; material ones
@@ -107,9 +114,7 @@ backend** — see the merged-work list above. The items still outstanding:
 Agreed order (2026-08-01): **finish everything for DESKTOP beta first, then do
 the phone pass.** Phone beta is wanted, it is just not first.
 
-1. **Poll UI rewrite** — blocking; the app has no working poll surface today.
-   Fold in fixing `seed_app_data.py` + `check_plan_cascade.py` and rebuilding
-   the static bundle.
+1. ~~**Poll UI rewrite**~~ — DONE (merged 2026-08-01), scripts and bundle with it.
 2. **§2 booked poll → `GroupEvent`** (small; unblocks §3).
 3. **§3 edit + RSVP-reset** — wires `provider.update_event`, adds
    `needs_reconfirm`.

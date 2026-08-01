@@ -8,6 +8,13 @@
 
 ---
 
+> **UPDATE 2026-08-01 (later the same day).** §0 and §3's headline — "the
+> frontend is broken" — is **RESOLVED**: the poll UI was rewritten and merged,
+> along with both stale scripts, a rebuilt bundle, and a migration for existing
+> databases that turned out to be the more serious bug (see §3a). Everything
+> else in this document still stands. Original text kept below as the record of
+> what was found.
+
 ## 0. The headline
 
 The **backend is in good shape and further along than the docs say.** The poll
@@ -118,6 +125,36 @@ Confirmed in source, all of it:
 6. **`.claude/startup.md` is stale** — still lists the poll redesign as "not yet built" and doesn't mention `feat/poll-engine-rewrite`.
 
 ---
+
+## 3a. Found while fixing §3 — the one that would have reached production
+
+The audit above missed this because it read code rather than upgrading a
+database, and the test suite misses this whole class by construction: **every
+test builds a fresh schema with `create_all`, so nothing exercises the path an
+existing database takes.**
+
+Against a DB created before the poll redesign, the merged backend could not read
+or cast a single vote:
+
+| Column | State | Effect |
+|---|---|---|
+| `time_votes.yes`, `guest_time_votes.yes` | `NOT NULL`, no default; replaced by three-state `answer` | reads raised *no such column: answer*; writes raised NOT NULL |
+| `time_rounds.status` | `NOT NULL`, no default; replaced by nothing | inserting any new candidate time failed |
+| `plans.auto_book` | `NOT NULL` but `DEFAULT FALSE` | harmless — accepts inserts, sits unread. Left in place. |
+
+`db/session.py` now adds `answer`, backfills it from the old boolean, then drops
+the three dead columns (`ALTER TABLE … DROP COLUMN`, supported on SQLite ≥ 3.35
+and every Postgres we target; a failure is logged, not raised). Nothing becomes
+`if_needed` in the backfill — nobody was ever able to say it, and inventing it
+would put words in a real person's mouth.
+
+`backend/tests/test_db_migration.py` builds the pre-redesign schema by hand,
+fills it, upgrades it, and asserts both preservation and writability. All four
+tests fail without the fix.
+
+**Carry this forward:** §2 and §3 both change the schema (`GroupEvent` gains
+poll parentage; `EventRsvp` gains `needs_reconfirm`). Add the migration and a
+`test_db_migration.py` case *with* the feature, not after it.
 
 ## 4. Still open by decision (not drift)
 
