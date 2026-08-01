@@ -33,15 +33,52 @@ Read these before doing anything else this session:
   + `docs/deploy.md` rewritten for the beta path.
 - **Auto timezone** — PR #22, merged. `User.timezone_auto`; the browser reports
   its zone on every boot; typing one in Settings pins it forever.
-- **Next up in Phase 2:** conversation persistence, model router + fallback,
-  injection defense.
+- **Injection defense** — PR #23, merged. `agent/fencing.py`: untrusted text
+  (calendar locations, OSM venue/area names, group names, reviews, memory notes)
+  is sanitized and wrapped in `<untrusted>` blocks, plus one standing prompt
+  rule. Fenced at ONE seam — `loop._tool_message` — so a tool added later is
+  covered by default. `TRUSTED_RESULT_KEYS` (`note`/`error`/`search_failed`)
+  stay outside the fence, which is why `locations.py` notes point at a field
+  name instead of inlining an untrusted value. Costs ~124 tokens/step.
+- **Event ownership** — PR #24, merged. `tools/event_rules.py` (pure, beside
+  `plan_rules.py`): personal events are owner-only — closing a real hole where
+  any member could delete another's masked private event — shared-event delete
+  is creator-only, shared-event EDIT is refused for everyone including the
+  creator (it needs the vote flow below), and ticking a shared task done stays
+  open to all. PATCH also edits personal events now; `model_fields_set`
+  distinguishes "clear it" from "don't touch it".
+- **Next up in Phase 2:** conversation persistence, model router + fallback.
 
-## Before beta testers (as of 2026-07-31)
+## Decided 2026-07-31, not yet built (see docs/v1-decisions.md)
 
-Code-side, one item left: **the mobile-responsive pass** (own session — there
-are zero `@media` queries and at 375px the sidebar squeezes the content column
-to ~119px). Then **one full security-review session**, last, after the code
-stops moving.
+- **Edit proposals + voting** — the next session. Any member proposes a change
+  to a shared event; EVERY field goes to a group vote (titles included);
+  majority wins but the CREATOR applies it, so nothing reaches a real calendar
+  by rule alone. This is where `update_event` (implemented in both providers,
+  called by nothing) finally gets wired, where the edit UI lands, and where
+  **change history** fits. Attendees are notified on every applied edit.
+- **Inbound sync** — the user considers this beta-critical: external events
+  should be visible IN Nudgy, not merely block scheduling as opaque busy ranges.
+  Titles are **opt-in per connected calendar**, visible to their **owner only**
+  (groupmates still see busy blocks). Polling first, webhooks later — same
+  syncToken/delta machinery, so it's an upgrade, not a rewrite.
+
+## Before beta testers (as of 2026-08-01)
+
+Code-side: **inbound sync** and **edit proposals + voting** (both above), plus
+the **mobile-responsive pass** (own session — there are zero `@media` queries
+and at 375px the sidebar squeezes the content column to ~119px). Then **one
+full security-review session**, last, after the code stops moving.
+
+**Hosting is a live blocker.** Render's free tier spins a web service down after
+15 minutes idle and offers no cron jobs. `plan_ticker` is an in-process asyncio
+task started in the FastAPI lifespan (`main.py`), so while the service sleeps
+**vote deadlines, non-voter reminders and auto-book stop firing** — a real
+pre-beta bug today, independent of sync. It also rules out reliable calendar
+webhooks, since nothing would renew the subscriptions. Options raised, none
+decided: a no-sleep free tier (Koyeb Nano, Northflank), a paid always-on Render
+instance, or staying on Render and driving ticks from an external free scheduler
+(GitHub Actions cron / cron-job.org hitting an endpoint).
 
 Everything else is the user's to do, outside the repo: live-test SMTP delivery,
 verify Google + Microsoft calendars actually sync, create the Neon project and
