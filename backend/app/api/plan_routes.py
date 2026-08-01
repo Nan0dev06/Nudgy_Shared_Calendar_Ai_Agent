@@ -548,12 +548,22 @@ def lock_in_time(
                             detail=result.get("error") or "The calendar booking failed — try again.")
     if result.get("error"):
         raise HTTPException(status_code=400, detail=result["error"])
-    log.info("[plan %d] host %s locked in via API", plan.id, user.email)
+    log.info("[plan %d] host %s locked in round %d via API",
+             plan.id, user.email, body.round_id)
     # The card settles AND an event lands on the group's calendar — both views
     # are stale for every other member until they hear about it.
     plans_changed(plan.group_id)
     events_changed(plan.group_id)
-    return {"action": result.get("action"), "plan": _plan_json(session, plan, user, user.timezone)}
+    return {
+        "action": result.get("action"),
+        # WHICH time was committed, and who it went to. The card needs this to
+        # say "booked Fri 7pm for 4 of you" without re-deriving it from the plan.
+        "round_id": result.get("round_id"),
+        "time": result.get("time"),
+        "attendees": result.get("attendees"),
+        "event_link": result.get("event_link"),
+        "plan": _plan_json(session, plan, user, user.timezone),
+    }
 
 
 @router.post("/plans/{plan_id}/interest")

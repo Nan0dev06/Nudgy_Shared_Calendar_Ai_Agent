@@ -695,6 +695,23 @@ def find_guest_by_email(session: Session, plan: Plan, email: str) -> PlanGuest |
                  if (g.email or "").casefold() == key), None)
 
 
+def find_guest_by_email(session: Session, plan: Plan, email: str) -> PlanGuest | None:
+    """The guest on this plan who already gave this address, if any.
+
+    A guest's vote can count toward a creator-typed minimum, so the same person
+    arriving twice doesn't merely look untidy — it inflates the numbers the bar
+    is measured against. Cookies are lost routinely (another device, a cleared
+    browser) and the old path minted a fresh guest row every time. An email is
+    the only identity signal we ask for, so a match hands back the existing
+    ballot instead. Optional by design: this protects the guests who give one.
+    """
+    key = email.strip().casefold()
+    if not key:
+        return None
+    return next((g for g in get_plan_guests(session, plan)
+                 if (g.email or "").casefold() == key), None)
+
+
 def create_guest(session: Session, plan: Plan, name: str,
                  email: str | None = None) -> PlanGuest:
     guest = PlanGuest(plan_id=plan.id, name=name.strip(), email=email)

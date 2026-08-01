@@ -247,6 +247,15 @@ host-action endpoints.
 
 ## 6. Still open
 
+- **FLAG BEFORE LAUNCH — guest de-duplication.** A guest's yes counts toward a
+  creator-typed minimum, so one person voting twice can carry a poll over its
+  own bar. Today the defence is: a signed cookie, unique names per plan, and
+  reclaim-by-email on join. Email is **optional** and asking for it is not a
+  login — but that means the reclaim only protects guests who happen to give
+  one. In beta we collect emails anyway, so the gap is masked. It stops being
+  masked at launch. Decide then whether a typed minimum should count guests at
+  all, or whether counting them should require an email.
+
 - Whether cancelling a shared event needs anything beyond creator-only.
 - `can't-ever` vote state — post-launch.
 - Soft-busy tier in `slots.py`.
