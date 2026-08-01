@@ -74,10 +74,19 @@ Read these before doing anything else this session:
 > Its §0/§3 "the frontend is broken" headline is now RESOLVED; everything else in
 > it stands. `docs/api.md` is still stale on polls.
 
-- **Next up:** `poll-edit-redesign.md` §2 (booked poll → `GroupEvent`) then §3
-  (edit + RSVP-reset), inbound sync, then the mobile-responsive pass. Deferred
-  past beta: conversation persistence, model router + fallback, notification
-  preferences, windowed events fetch.
+- **Poll/event unification + editing** — `feat/poll-event-unification`, merged
+  2026-08-01. §2 and §3 both done; see the struck-through items below for what
+  each landed. 460 tests green.
+
+- **Next up: inbound sync**, then the mobile-responsive pass, then doc
+  reconciliation, then the security review. Deferred past beta: conversation
+  persistence, model router + fallback, notification preferences, windowed
+  events fetch.
+
+> **Schema rule, learned the hard way:** every model change ships its
+> `_LATE_COLUMNS`/`_DROPPED_COLUMNS` entry AND a `tests/test_db_migration.py`
+> case in the same commit — and check the case FAILS without the migration.
+> The suite builds fresh schemas, so it says nothing about existing data.
 
 ## Decided 2026-08-01, §2 and §3 not yet built — READ `docs/poll-edit-redesign.md`
 
@@ -94,12 +103,14 @@ backend** — see the merged-work list above. The items still outstanding:
   a NUMBER only when a human types one; the earlier "prefilled with a majority"
   reading is superseded — `poll-edit-redesign.md` §1.4 carries the amendment.
 - ~~The poll UI~~ — rewritten and merged; §1 is done end to end.
-- **A booked poll becomes a `GroupEvent`** with the yes-voters as attendees —
-  today they're separate models, which is why a booked poll has no edit path.
-- **Editing = RSVP-reset, not a vote.** Creator-only edits; material ones
-  (title/start/end/location) reset attendees to `needs_reconfirm`, tentative
-  until the event. This is where `update_event` (implemented in both providers,
-  called by nothing, guarded by a deliberate 409) finally gets wired.
+- ~~**A booked poll becomes a `GroupEvent`**~~ — BUILT (§2, merged 2026-08-01).
+  `events.plan_id`; yes/if-needed voters arrive as `going` RSVPs. Guests get no
+  RSVP row (no user to hang it on) — the poll stays their record.
+- ~~**Editing = RSVP-reset, not a vote.**~~ — BUILT (§3, merged 2026-08-01).
+  Creator-only edits; material ones (title/start/end/location) reset attendees
+  to `needs_reconfirm`, which counts as BUSY. `provider.update_event` is wired
+  and the deliberate 409 is gone. `repo.reset_attendance` skips the editor and
+  anyone who already said `cant`.
 - ~~**Availability must learn about in-app events.**~~ BUILT (PR #25). What
   remains of §4 for later: adding `needs_reconfirm` to `repo.BUSY_RSVP_STATUSES`
   — that one tuple is the entire availability half of §3.
@@ -115,10 +126,9 @@ Agreed order (2026-08-01): **finish everything for DESKTOP beta first, then do
 the phone pass.** Phone beta is wanted, it is just not first.
 
 1. ~~**Poll UI rewrite**~~ — DONE (merged 2026-08-01), scripts and bundle with it.
-2. **§2 booked poll → `GroupEvent`** (small; unblocks §3).
-3. **§3 edit + RSVP-reset** — wires `provider.update_event`, adds
-   `needs_reconfirm`.
-4. **Inbound sync.**
+2. ~~**§2 booked poll → `GroupEvent`**~~ — DONE (merged 2026-08-01).
+3. ~~**§3 edit + RSVP-reset**~~ — DONE (merged 2026-08-01).
+4. **Inbound sync** — the next session.
 5. **Mobile-responsive pass** — zero `@media` queries today; at 375px the
    sidebar squeezes the content column to ~119px.
 6. **Doc reconciliation** (`api.md` is stale on polls).
