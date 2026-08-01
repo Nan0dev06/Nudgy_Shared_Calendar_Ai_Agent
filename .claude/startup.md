@@ -47,34 +47,55 @@ Read these before doing anything else this session:
   creator (it needs the vote flow below), and ticking a shared task done stays
   open to all. PATCH also edits personal events now; `model_fields_set`
   distinguishes "clear it" from "don't touch it".
-- **Next up in Phase 2:** conversation persistence, model router + fallback.
+- **Availability counts in-app events** — PR #25, merged. `poll-edit-redesign.md`
+  §4. `repo.get_busy_events_for_users` + `BUSY_RSVP_STATUSES`;
+  `MemberBusy.has_source` replaces "externally connected" as the test for
+  joining the intersection.
+- **Poll engine rewrite** — `feat/poll-engine-rewrite`, merged 2026-08-01.
+  `poll-edit-redesign.md` §1 **on the backend only**: modes, parallel voting +
+  spotlight, three vote states, the rule-or-number bar, minimum-based
+  convergence, member-suggested times, guest reclaim-by-email. 440 tests green.
+  Deleted: `advance_to_next_time`, the queued/active/skipped machine, `dead`,
+  `auto_book`, `everyone_said_yes`.
 
-## Decided 2026-08-01, not yet built — READ `docs/poll-edit-redesign.md` FIRST
+> **READ `docs/beta-readiness-map.md`** — a full audit of the code against every
+> doc, done 2026-08-01. It is the current source of truth for what is actually
+> built. Headline: **`frontend/src/` still speaks the pre-rewrite poll API**, so
+> every poll interaction in the UI is broken against the merged backend (422s,
+> a 404, a booked poll with no confirmation UI). Also stale and broken:
+> `scripts/seed_app_data.py` (crashes), `scripts/check_plan_cascade.py`,
+> `docs/api.md`, and the committed `backend/app/static/` bundle.
+
+- **Next up:** the poll UI rewrite (blocking everything else), then
+  `poll-edit-redesign.md` §2 + §3, inbound sync, responsive. Deferred past beta:
+  conversation persistence, model router + fallback, notification preferences,
+  windowed events fetch.
+
+## Decided 2026-08-01, §2 and §3 not yet built — READ `docs/poll-edit-redesign.md`
 
 The poll/voting/editing logic was redesigned from first principles on 2026-08-01
 and that doc is authoritative; the poll + editing sections of `v1-decisions.md`
 are marked superseded/amended and point at it. Headline changes:
 
-- **Poll modes finally built** (Quick / Pick-a-time / Float-an-idea) — they were
-  `[LOCKED]` since 2026-07-25 and never existed in code. Interest survives only
-  in Float-an-idea.
-- **Parallel time voting + a host spotlight** replaces the serial round queue.
-  Moving the spotlight resets nothing. Deletes `advance_to_next_time`, the
-  `queued/active/skipped` machine, and the `dead` status.
-- **Votes gain a third state** (yes / no / if needed).
-- **Every poll carries a required minimum** (`expected_count`, prefilled with a
-  group majority) and **converges by itself at the deadline** — best time that
-  meets the minimum books for its yes voters. Deletes `auto_book`.
-- **Members can add candidate times**; the host still decides.
+§1 (everything down to "members can add candidate times") is **BUILT on the
+backend** — see the merged-work list above. The items still outstanding:
+
+- ~~Poll modes~~ · ~~parallel voting + spotlight~~ · ~~three vote states~~ ·
+  ~~the minimum + convergence~~ · ~~member-added times~~ — all shipped. The bar
+  is a RULE by default (every account-holding member, guests cannot substitute),
+  a NUMBER only when a human types one; the earlier "prefilled with a majority"
+  reading is superseded — `poll-edit-redesign.md` §1.4 carries the amendment.
+- **The poll UI has not been rewritten** and is the next session. Until then the
+  merged backend has no working front end.
 - **A booked poll becomes a `GroupEvent`** with the yes-voters as attendees —
   today they're separate models, which is why a booked poll has no edit path.
 - **Editing = RSVP-reset, not a vote.** Creator-only edits; material ones
   (title/start/end/location) reset attendees to `needs_reconfirm`, tentative
   until the event. This is where `update_event` (implemented in both providers,
   called by nothing, guarded by a deliberate 409) finally gets wired.
-- **Availability must learn about in-app events.** `fetch_busy_for_group` reads
-  ONLY external freebusy — in-app events and RSVPs affect nothing today, while
-  calendar-optional is `[LOCKED]`. `needs_reconfirm` counts as busy.
+- ~~**Availability must learn about in-app events.**~~ BUILT (PR #25). What
+  remains of §4 for later: adding `needs_reconfirm` to `repo.BUSY_RSVP_STATUSES`
+  — that one tuple is the entire availability half of §3.
 - **Inbound sync** — the user considers this beta-critical: external events
   should be visible IN Nudgy, not merely block scheduling as opaque busy ranges.
   Titles are **opt-in per connected calendar**, visible to their **owner only**
@@ -83,20 +104,49 @@ are marked superseded/amended and point at it. Headline changes:
 
 ## Before beta testers (as of 2026-08-01)
 
-Code-side: **inbound sync** and **edit proposals + voting** (both above), plus
-the **mobile-responsive pass** (own session — there are zero `@media` queries
-and at 375px the sidebar squeezes the content column to ~119px). Then **one
-full security-review session**, last, after the code stops moving.
+Agreed order (2026-08-01): **finish everything for DESKTOP beta first, then do
+the phone pass.** Phone beta is wanted, it is just not first.
 
-**Hosting is a live blocker.** Render's free tier spins a web service down after
-15 minutes idle and offers no cron jobs. `plan_ticker` is an in-process asyncio
-task started in the FastAPI lifespan (`main.py`), so while the service sleeps
-**vote deadlines, non-voter reminders and auto-book stop firing** — a real
-pre-beta bug today, independent of sync. It also rules out reliable calendar
-webhooks, since nothing would renew the subscriptions. Options raised, none
-decided: a no-sleep free tier (Koyeb Nano, Northflank), a paid always-on Render
-instance, or staying on Render and driving ticks from an external free scheduler
-(GitHub Actions cron / cron-job.org hitting an endpoint).
+1. **Poll UI rewrite** — blocking; the app has no working poll surface today.
+   Fold in fixing `seed_app_data.py` + `check_plan_cascade.py` and rebuilding
+   the static bundle.
+2. **§2 booked poll → `GroupEvent`** (small; unblocks §3).
+3. **§3 edit + RSVP-reset** — wires `provider.update_event`, adds
+   `needs_reconfirm`.
+4. **Inbound sync.**
+5. **Mobile-responsive pass** — zero `@media` queries today; at 375px the
+   sidebar squeezes the content column to ~119px.
+6. **Doc reconciliation** (`api.md` is stale on polls).
+7. **One full security-review session, last**, after the code stops moving.
+
+**Hosting — corrected 2026-08-01, read this before repeating the old claim.**
+Render's free tier spins a web service down after 15 minutes idle and offers no
+cron jobs. `plan_ticker` is an in-process asyncio task started in the FastAPI
+lifespan (`main.py`).
+
+What that actually costs, read from the code rather than assumed:
+
+- **Deadlines fire LATE, not never.** `run_tick` scans every open plan and
+  `resolve_deadline` only tests `now >= deadline`, so a deadline that passed
+  during sleep is resolved on the first tick after any request wakes the service.
+- **Reminders can be missed outright.** `reminder_due` returns False once the
+  deadline has passed, so a nudge whose window elapsed during sleep is never
+  sent — the reminder is the part that genuinely degrades.
+- **Cold start hits the first real user**, and `_loop` sleeps
+  `PLAN_TICK_SECONDS` *before* its first tick, so the service must stay up ~60s
+  past wake for anything to run. Render keeps it up 15 min after a request, so
+  it does.
+- A calendar write does wake the service, but nothing writes when the group is
+  simply idle — which is exactly when a deadline is waiting.
+
+Keep-alive pinging works technically but is **not officially supported by
+Render**; their answer to cold starts is a paid instance. It is a workaround
+against the spirit of the free tier, not a sanctioned configuration, and it
+should not be what a beta depends on. Not decided yet: a no-sleep free tier
+(Koyeb Nano, Northflank), a paid always-on Render instance, or an external free
+scheduler (GitHub Actions cron / cron-job.org) hitting a tick endpoint — which
+is a legitimate "run my job on a schedule" use, unlike pinging `/healthz` purely
+to defeat sleep.
 
 Everything else is the user's to do, outside the repo: live-test SMTP delivery,
 verify Google + Microsoft calendars actually sync, create the Neon project and
