@@ -35,9 +35,13 @@ def book_round_event(
     organizer: User,
     attendee_emails: list[str],
 ) -> dict:
-    """Create the calendar event for a CONFIRMED time. Returns event info."""
-    if round_.status != "confirmed":
-        return {"error": f"Time is '{round_.status}', not confirmed by the host — refusing to book."}
+    """Create the calendar event for a decided time. Returns event info.
+
+    The caller has already decided this time wins — a host lock-in, or the
+    convergence rule. There is no longer a "confirmed" status to check against:
+    `booked` is the only state a time carries, and it is set here, after the
+    calendar accepts the event, never before.
+    """
     if round_.booked:
         return {"error": "This time is already booked.", "event_link": round_.event_link}
     if not attendee_emails:

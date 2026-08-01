@@ -345,29 +345,33 @@ def create_plan(
     location: str | None = None,
     expected_count: int | None = None,
     deadline: datetime | None = None,
-    auto_book: bool = False,
 ) -> Plan:
-    """Create a plan with its candidate times queued in order.
+    """Create a plan with all its candidate times immediately votable.
 
-    The first time is activated immediately, so the moment a member says yes to
-    the interest question they have a time to answer. The host suggested the
-    plan, so their interest is recorded as yes up front — they still vote on
-    the times themselves.
+    No time is "activated" — every candidate is open from the start (the queue
+    is gone; see docs/poll-edit-redesign.md §1.2).
 
-    `deadline` (UTC) closes voting at a fixed instant and `auto_book` lets a
-    unanimous plan book itself — see tools/plan_deadlines.py.
+    A plan created with NO times asks the interest question first — that is
+    Float-an-idea, and `asks_interest` is stored rather than derived so adding
+    times later doesn't silently change what the plan asked. A plan created WITH
+    times never asks it: a yes on any time is the interest signal.
+
+    The host suggested the plan, so their interest is recorded as yes up front
+    when there is an interest stage at all. They still vote on the times.
     """
+    asks_interest = not slots
     plan = Plan(group_id=group.id, created_by=host.id, title=title,
                 location=location, expected_count=expected_count,
-                deadline_utc=deadline, auto_book=auto_book)
+                deadline_utc=deadline, asks_interest=asks_interest)
     session.add(plan)
     session.flush()  # assign plan.id
     for i, (start, end) in enumerate(slots):
         session.add(TimeRound(
             plan_id=plan.id, ordinal=i, slot_start_utc=start, slot_end_utc=end,
-            status="active" if i == 0 else "queued",
+            created_by=host.id,
         ))
-    session.add(InterestVote(plan_id=plan.id, user_id=host.id, yes=True))
+    if asks_interest:
+        session.add(InterestVote(plan_id=plan.id, user_id=host.id, yes=True))
     session.commit()
     return plan
 
@@ -402,29 +406,44 @@ def find_duplicate_open_plan(
     return None
 
 
-def append_rounds(session: Session, plan: Plan, slots: list[tuple]) -> list[TimeRound]:
-    """Append candidate times to an existing plan (host adding times later).
+def append_rounds(session: Session, plan: Plan, slots: list[tuple],
+                  suggested_by: User | None = None) -> list[TimeRound]:
+    """Add candidate times to an existing plan — ANY member may do this.
 
-    Ordinals continue after the current queue. If no round is active or queued
-    (a timeless "who's in?" plan, or every earlier time was skipped), the first
-    appended time becomes active immediately so the interested cohort has a
-    question to answer.
+    `suggested_by` is stored so the card can say who put a time up, and so that
+    person (and only that person) can take it back down again.
+
+    Ordinals continue after the existing ones, which keeps display order stable
+    and gives the convergence rule its final tiebreak. New times are votable
+    immediately; no existing vote is disturbed.
     """
-    existing = list(plan.rounds)
-    next_ordinal = max((r.ordinal for r in existing), default=-1) + 1
-    has_live = any(r.status in ("active", "queued") for r in existing)
+    next_ordinal = max((r.ordinal for r in plan.rounds), default=-1) + 1
     made: list[TimeRound] = []
     for i, (start, end) in enumerate(slots):
         r = TimeRound(
             plan_id=plan.id, ordinal=next_ordinal + i,
             slot_start_utc=start, slot_end_utc=end,
-            status="active" if (not has_live and i == 0) else "queued",
+            created_by=suggested_by.id if suggested_by else None,
         )
         session.add(r)
         made.append(r)
     session.commit()
     session.refresh(plan)
     return made
+
+
+def delete_round(session: Session, plan: Plan, round_: TimeRound) -> None:
+    """Remove one candidate time, and its votes with it (delete-orphan cascade).
+
+    Clears the spotlight if it pointed here — a spotlight on a time that no
+    longer exists would read as "no spotlight" everywhere anyway, and leaving a
+    dangling id behind invites a stale match against a future round's id.
+    """
+    if plan.spotlight_round_id == round_.id:
+        plan.spotlight_round_id = None
+    session.delete(round_)
+    session.commit()
+    session.refresh(plan)
 
 
 def get_plan(session: Session, plan_id: int) -> Plan | None:
@@ -447,28 +466,20 @@ def get_group_plans(session: Session, group_id: int, only_open: bool = False) ->
     return list(session.scalars(q))
 
 
-def get_active_round(session: Session, plan: Plan) -> TimeRound | None:
-    return session.scalar(
-        select(TimeRound).where(TimeRound.plan_id == plan.id, TimeRound.status == "active")
-    )
-
-
-def get_next_queued_round(session: Session, plan: Plan) -> TimeRound | None:
-    return session.scalar(
-        select(TimeRound)
-        .where(TimeRound.plan_id == plan.id, TimeRound.status == "queued")
-        .order_by(TimeRound.ordinal)
-    )
-
-
-def count_queued_rounds(session: Session, plan: Plan) -> int:
-    return len(list(session.scalars(
-        select(TimeRound).where(TimeRound.plan_id == plan.id, TimeRound.status == "queued")
-    )))
-
-
 def get_round(session: Session, round_id: int) -> TimeRound | None:
     return session.get(TimeRound, round_id)
+
+
+def get_spotlight_round(session: Session, plan: Plan) -> TimeRound | None:
+    """The time the host is leaning toward, if it still exists.
+
+    Resolved through plan.rounds rather than a join: spotlight_round_id is a
+    plain integer (see the Plan model), and a stale id — the time it pointed at
+    was removed — must read as "no spotlight", not raise.
+    """
+    if plan.spotlight_round_id is None:
+        return None
+    return next((r for r in plan.rounds if r.id == plan.spotlight_round_id), None)
 
 
 def cast_interest(session: Session, plan: Plan, user: User, yes: bool) -> InterestVote:
@@ -487,16 +498,20 @@ def cast_interest(session: Session, plan: Plan, user: User, yes: bool) -> Intere
     return vote
 
 
-def cast_time_vote(session: Session, round_: TimeRound, user: User, yes: bool) -> TimeVote:
-    """Stage 2 vote on one candidate time; voting again replaces the previous."""
+def cast_time_vote(session: Session, round_: TimeRound, user: User, answer: str) -> TimeVote:
+    """Answer one candidate time (yes / no / if_needed); re-voting replaces.
+
+    Each candidate time is answered independently — voting on one says nothing
+    about the others.
+    """
     vote = session.scalar(
         select(TimeVote).where(TimeVote.round_id == round_.id, TimeVote.user_id == user.id)
     )
     if vote is None:
-        vote = TimeVote(round_id=round_.id, user_id=user.id, yes=yes)
+        vote = TimeVote(round_id=round_.id, user_id=user.id, answer=answer)
         session.add(vote)
     else:
-        vote.yes = yes
+        vote.answer = answer
     session.commit()
     return vote
 
@@ -515,8 +530,8 @@ def get_interest_votes(session: Session, plan: Plan) -> dict[str, bool]:
     return {v.user.email: v.yes for v in rows}
 
 
-def get_time_votes(session: Session, round_: TimeRound | None) -> dict[str, bool]:
-    """email -> yes/no for everyone who voted on this candidate time."""
+def get_time_votes(session: Session, round_: TimeRound | None) -> dict[str, str]:
+    """email -> answer for everyone who voted on ONE candidate time."""
     if round_ is None:
         return {}
     rows = session.scalars(
@@ -524,7 +539,42 @@ def get_time_votes(session: Session, round_: TimeRound | None) -> dict[str, bool
         .where(TimeVote.round_id == round_.id)
         .options(joinedload(TimeVote.user))
     )
-    return {v.user.email: v.yes for v in rows}
+    return {v.user.email: v.answer for v in rows}
+
+
+def get_votes_by_time(session: Session, plan: Plan) -> dict[int, dict[str, str]]:
+    """round id -> {email -> answer}, for every candidate time in one query.
+
+    Times are voted on in parallel now, so the poll page needs all of them at
+    once. Fetching per round would be a query per candidate on every refresh of
+    every open plan — the N+1 this layer exists to prevent.
+    """
+    if not plan.rounds:
+        return {}
+    rows = session.scalars(
+        select(TimeVote)
+        .where(TimeVote.round_id.in_([r.id for r in plan.rounds]))
+        .options(joinedload(TimeVote.user))
+    )
+    out: dict[int, dict[str, str]] = {r.id: {} for r in plan.rounds}
+    for v in rows:
+        out[v.round_id][v.user.email] = v.answer
+    return out
+
+
+def get_guest_votes_by_time(session: Session, plan: Plan) -> dict[int, dict[str, str]]:
+    """The same, for share-link guests, keyed by their display label."""
+    if not plan.rounds:
+        return {}
+    rows = session.scalars(
+        select(GuestTimeVote)
+        .where(GuestTimeVote.round_id.in_([r.id for r in plan.rounds]))
+        .options(joinedload(GuestTimeVote.guest))
+    )
+    out: dict[int, dict[str, str]] = {r.id: {} for r in plan.rounds}
+    for v in rows:
+        out[v.round_id][v.guest.label] = v.answer
+    return out
 
 
 def set_plan_status(session: Session, plan: Plan, status: str) -> None:
@@ -549,8 +599,21 @@ def set_plan_deadline(session: Session, plan: Plan, deadline: datetime | None) -
     session.commit()
 
 
-def set_plan_auto_book(session: Session, plan: Plan, auto_book: bool) -> None:
-    plan.auto_book = auto_book
+def set_plan_spotlight(session: Session, plan: Plan, round_id: int | None) -> None:
+    """Point the spotlight at a candidate time, or clear it.
+
+    Deliberately destructive of NOTHING — no vote, no status, no other time is
+    touched. That is what makes the move reversible, and it is the whole
+    difference from the advance_to_next_time it replaces.
+    """
+    plan.spotlight_round_id = round_id
+    session.commit()
+
+
+def set_plan_minimum(session: Session, plan: Plan, minimum: int) -> None:
+    """Change how many members must be able to make a time before it books
+    without a human. Host-gated at the API layer."""
+    plan.expected_count = minimum
     session.commit()
 
 
@@ -617,6 +680,38 @@ def find_guest_by_name(session: Session, plan: Plan, name: str) -> PlanGuest | N
                  if g.name.casefold() == key), None)
 
 
+def find_guest_by_email(session: Session, plan: Plan, email: str) -> PlanGuest | None:
+    """The strongest identity signal a guest ever gives us.
+
+    Used to hand a returning guest their EXISTING ballot when their cookie is
+    gone (different device, cleared browser) instead of minting a second row.
+    That matters beyond tidiness: a guest's vote counts toward a creator-typed
+    minimum, so duplicates would let one person raise a plan over its own bar.
+    """
+    key = email.strip().casefold()
+    if not key:
+        return None
+    return next((g for g in get_plan_guests(session, plan)
+                 if (g.email or "").casefold() == key), None)
+
+
+def find_guest_by_email(session: Session, plan: Plan, email: str) -> PlanGuest | None:
+    """The guest on this plan who already gave this address, if any.
+
+    A guest's vote can count toward a creator-typed minimum, so the same person
+    arriving twice doesn't merely look untidy — it inflates the numbers the bar
+    is measured against. Cookies are lost routinely (another device, a cleared
+    browser) and the old path minted a fresh guest row every time. An email is
+    the only identity signal we ask for, so a match hands back the existing
+    ballot instead. Optional by design: this protects the guests who give one.
+    """
+    key = email.strip().casefold()
+    if not key:
+        return None
+    return next((g for g in get_plan_guests(session, plan)
+                 if (g.email or "").casefold() == key), None)
+
+
 def create_guest(session: Session, plan: Plan, name: str,
                  email: str | None = None) -> PlanGuest:
     guest = PlanGuest(plan_id=plan.id, name=name.strip(), email=email)
@@ -639,17 +734,17 @@ def cast_guest_interest(session: Session, guest: PlanGuest, yes: bool) -> GuestI
 
 
 def cast_guest_time_vote(session: Session, round_: TimeRound, guest: PlanGuest,
-                         yes: bool) -> GuestTimeVote:
+                         answer: str) -> GuestTimeVote:
     vote = session.scalar(
         select(GuestTimeVote).where(
             GuestTimeVote.round_id == round_.id, GuestTimeVote.guest_id == guest.id
         )
     )
     if vote is None:
-        vote = GuestTimeVote(round_id=round_.id, guest_id=guest.id, yes=yes)
+        vote = GuestTimeVote(round_id=round_.id, guest_id=guest.id, answer=answer)
         session.add(vote)
     else:
-        vote.yes = yes
+        vote.answer = answer
     session.commit()
     return vote
 
@@ -666,7 +761,7 @@ def get_guest_interest_votes(session: Session, plan: Plan) -> dict[str, bool]:
     return {v.guest.label: v.yes for v in rows}
 
 
-def get_guest_time_votes(session: Session, round_: TimeRound | None) -> dict[str, bool]:
+def get_guest_time_votes(session: Session, round_: TimeRound | None) -> dict[str, str]:
     if round_ is None:
         return {}
     rows = session.scalars(
@@ -674,7 +769,7 @@ def get_guest_time_votes(session: Session, round_: TimeRound | None) -> dict[str
         .where(GuestTimeVote.round_id == round_.id)
         .options(joinedload(GuestTimeVote.guest))
     )
-    return {v.guest.label: v.yes for v in rows}
+    return {v.guest.label: v.answer for v in rows}
 
 
 def get_open_plans(session: Session) -> list[Plan]:
@@ -689,11 +784,6 @@ def get_open_plans(session: Session) -> list[Plan]:
     return list(session.scalars(
         select(Plan).where(Plan.status == "open").order_by(Plan.id)
     ))
-
-
-def set_round_status(session: Session, round_: TimeRound, status: str) -> None:
-    round_.status = status
-    session.commit()
 
 
 def mark_round_booked(session: Session, round_: TimeRound, event_link: str | None) -> None:

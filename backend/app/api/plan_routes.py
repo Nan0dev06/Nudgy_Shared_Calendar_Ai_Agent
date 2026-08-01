@@ -1,28 +1,32 @@
-"""Plan endpoints: members answer their step of the cascade; Nudgy creates plans.
+"""Poll endpoints: members answer; the host decides; the deadline converges.
 
-GET  /groups/{group_id}/plans      -> plans for a group, each carrying THIS
-                                      member's current ballot (and, for the
-                                      host, the decision box)
-POST /groups/{group_id}/plans      -> create a plan directly from the app UI
-                                      (title required; candidate times and
-                                      location optional — an empty slot list is
-                                      a pure "who's in?" interest check)
-PATCH /plans/{plan_id}             {"deadline_iso": ..., "auto_book": true}
-                                   -> host: when voting closes, and whether a
-                                      unanimous plan may book itself
-POST /plans/{plan_id}/interest     {"yes": true}  -> stage 1 answer
-POST /plans/{plan_id}/time-vote    {"yes": true, "round_id": 3} -> stage 2 answer
+GET  /groups/{group_id}/plans      -> polls for a group, each carrying THIS
+                                      member's ballot (and, for the host, the
+                                      decision box)
+POST /groups/{group_id}/plans      -> create a poll from the app UI. No times =
+                                      Float-an-idea ("who's in?"); times = a
+                                      time poll. See plan_rules.mode_of.
+PATCH /plans/{plan_id}             {"deadline_iso": ..., "minimum": 4}
+                                   -> host: when voting closes, and how many
+                                      members must be able to make a time
+                                      before it books without anyone
+POST /plans/{plan_id}/rounds       -> ANY member adds candidate times
+POST /plans/{plan_id}/spotlight    {"round_id": 3 | null} -> host: lean toward
+                                      one time. Resets no votes.
+POST /plans/{plan_id}/lock-in      {"round_id": 3} -> host: book that time
+POST /plans/{plan_id}/interest     {"yes": true}  -> Float only
+POST /plans/{plan_id}/time-vote    {"round_id": 3, "answer": "yes"|"no"|"if_needed"}
 
-The cascade is visible in the responses: answering interest=yes comes straight
-back with `ballot.stage == "time"` — that one yes opened the time question for
-that member, without waiting on anybody else.
+Every candidate time is votable at once, so a member's ballot is "which of these
+work for you?", not one question at a time. There is no active round and no
+queue (docs/poll-edit-redesign.md §1.2).
 
-Note what is NOT here: no rule fires on a vote. Voting never rejects and never
-advances a time; those are host moves (deterministic endpoints below, or the
-agent's use_next_time / lock_in_time), which is what keeps a human in the loop
-before anything reaches a calendar. The single exception is opt-in auto-book,
-and it only fires on unanimity — when there was nothing left for a human to
-decide. See tools/plan_deadlines.py.
+What a vote CAN now do that it couldn't before: finish the poll. When the last
+outstanding answer lands and a time meets the minimum, the poll books itself —
+see plan_service.converge. That is safe because booking only ever invites people
+who said yes or if-needed, so nothing reaches the calendar of somebody who
+declined or stayed silent. The host is never gated by the minimum; they can lock
+in any time for whoever can make it.
 """
 from __future__ import annotations
 
@@ -39,9 +43,10 @@ from app.db.models import Plan, User
 from app.db import repo
 from app.db.session import get_session
 from app.realtime import events_changed, plans_changed
+from app.tools.plan_rules import VOTE_STATES, mode_of
 from app.tools.plan_service import (
-    HOST_DECIDABLE, advance_to_next_time, confirm_active_time, day_label,
-    load_plan_state, maybe_auto_book, member_ballot, plan_tally, time_label,
+    HOST_DECIDABLE, confirm_time, converge, day_label, load_plan_state,
+    member_ballot, minimum_for, plan_tally, set_spotlight, time_label,
 )
 
 log = logging.getLogger("nudgy.agent")
@@ -54,8 +59,8 @@ class InterestBody(BaseModel):
 
 
 class TimeVoteBody(BaseModel):
-    yes: bool
     round_id: int
+    answer: str
 
 
 class SlotBody(BaseModel):
@@ -67,19 +72,27 @@ class CreatePlanBody(BaseModel):
     title: str = Field(min_length=1, max_length=200)
     location: str | None = Field(default=None, max_length=200)
     slots: list[SlotBody] = Field(default_factory=list, max_length=6)
+    # how many MEMBERS must be able to make a time before it books itself.
+    # Omitted -> the whole group, the safe default: a poll can then only converge
+    # on everybody, and lowering the bar is always a deliberate human act.
     expected_count: int | None = Field(default=None, ge=1, le=100)
-    # async convergence, both optional — a plan with neither behaves exactly as
-    # it did before this existed
     deadline_iso: str | None = None
-    auto_book: bool = False
 
 
 class PlanSettingsBody(BaseModel):
-    """Host edits to how a plan converges. Every field is optional AND
+    """Host edits to how a poll converges. Every field is optional AND
     nullable-meaningful, so `unset` (leave alone) has to be distinguishable from
     `null` (clear the deadline) — hence the sentinel default on deadline_iso."""
     deadline_iso: str | None = Field(default="__unset__")
-    auto_book: bool | None = None
+    minimum: int | None = Field(default=None, ge=1, le=100)
+
+
+class SpotlightBody(BaseModel):
+    round_id: int | None = None
+
+
+class LockInBody(BaseModel):
+    round_id: int
 
 
 class AddRoundsBody(BaseModel):
@@ -87,13 +100,19 @@ class AddRoundsBody(BaseModel):
 
 
 def _plan_json(session: Session, plan: Plan, viewer: User, tz_name: str) -> dict:
-    # one fetch of the plan's vote state, reused by both the ballot and (for the
-    # host) the tally — see plan_service.load_plan_state
+    # one fetch of the poll's vote state, reused by the ballot, the per-time
+    # counts and (for the host) the tally — see plan_service.load_plan_state
     state = load_plan_state(session, plan)
-    active = state.active
     ballot = member_ballot(session, plan, viewer, state=state)
     is_host = viewer.id == plan.created_by
     host = session.get(User, plan.created_by)
+    t = plan_tally(session, plan, tz_name, state=state)
+    by_key = {r.key: r for r in t.times}
+    my_votes = state.votes_by_time
+    # who suggested each time, resolved once rather than per round
+    suggesters = {
+        u.id: u.email for u in repo.get_group_members(session, plan.group_id)
+    }
 
     out = {
         "id": plan.id,
@@ -103,48 +122,63 @@ def _plan_json(session: Session, plan: Plan, viewer: User, tz_name: str) -> dict
         "status": plan.status,
         "host": host.email if host else None,
         "is_host": is_host,
-        "expected_count": plan.expected_count,
-        # async convergence: the deadline instant (UTC, the frontend renders the
-        # countdown in local time), whether the plan may book itself, and whether
-        # the ballot is still answerable at all
+        "mode": mode_of(asks_interest=plan.asks_interest, times_total=len(plan.rounds)),
+        "asks_interest": plan.asks_interest,
+        # The bar for booking without a human. `requires_all_members` says which
+        # KIND it is: the default rule (those specific people, guests can't
+        # substitute) or a count the creator typed (guests count toward it).
+        "minimum": state.minimum,
+        "requires_all_members": state.explicit_minimum is None,
+        "guest_count": len(state.guest_labels),
+        "spotlight_round_id": plan.spotlight_round_id,
         "deadline_iso": plan.deadline.isoformat() if plan.deadline else None,
-        "auto_book": plan.auto_book,
         "voting_open": plan.status == "open",
         "times": [
             {
                 "round_id": r.id,
                 "ordinal": r.ordinal,
                 "label": time_label(r, tz_name),
-                "status": r.status,
                 "booked": r.booked,
                 "event_link": r.event_link,
+                "spotlit": r.id == plan.spotlight_round_id,
                 # raw instants so the frontend can place booked times on the
                 # calendar and detect duplicate proposals
                 "start_iso": r.start.astimezone(timezone.utc).isoformat(),
                 "end_iso": r.end.astimezone(timezone.utc).isoformat(),
+                # every time's standing, so the whole grid renders from one GET
+                "yes": by_key[r.id].member_yes,
+                "if_needed": len(by_key[r.id].if_needed),
+                "no": len(by_key[r.id].no),
+                "waiting": len(by_key[r.id].waiting),
+                "guest_yes": len(by_key[r.id].guest_yes) + len(by_key[r.id].guest_if_needed),
+                "qualifies": by_key[r.id].qualifies(
+                    minimum=state.explicit_minimum,
+                    member_total=len(state.member_emails),
+                ),
+                # "suggested by X" on the card. Only the suggester may remove it,
+                # and never once it's booked.
+                "suggested_by": suggesters.get(r.created_by),
+                "can_remove": (r.created_by == viewer.id and not r.booked
+                               and plan.status == "open"),
+                # what THIS viewer said, so their choice stays visible
+                "my_answer": my_votes.get(r.id, {}).get(viewer.email),
             }
             for r in plan.rounds
         ],
         "ballot": {
             "stage": ballot.stage,
             "note": ballot.note,
-            # the question the member is being asked, if any
-            "round_id": active.id if (active and ballot.stage == "time") else None,
-            "time_label": time_label(active, tz_name) if (active and ballot.stage == "time") else None,
+            "unanswered": ballot.unanswered,
         },
     }
     if is_host:
         # the link itself is host-only: it's a bearer credential, and a member
         # who wants to invite someone can ask the host for it
         out["share_url"] = share_url(plan.share_token)
-        t = plan_tally(session, plan, tz_name, state=state)
         out["host_box"] = {
             "interested": t.interested,
             "not_interested": t.not_interested,
             "no_answer": t.no_interest_answer,
-            "time_yes": t.time_yes,
-            "time_no": t.time_no,
-            "time_waiting": t.time_waiting,
             "note": t.host_note,
         }
     return out
@@ -238,16 +272,19 @@ def create_plan(
                  dup.id, user.email)
         return _plan_json(session, dup, user, user.timezone)
 
+    # expected_count omitted -> stored as NULL, which is the DEFAULT RULE: every
+    # account-holding member must be able to make a time before it books itself.
+    # Deliberately not written as a number here — a number could be satisfied by
+    # guests, and "the group agreed" is a statement about those specific people.
     plan = repo.create_plan(
         session, group, user, title=body.title.strip(),
         slots=slots, location=location,
-        expected_count=body.expected_count,
-        deadline=deadline, auto_book=body.auto_book,
+        expected_count=body.expected_count, deadline=deadline,
     )
-    log.info("[plan %d] %s created it directly from the app (%d candidate times%s%s)",
+    log.info("[plan %d] %s created it from the app (%d candidate times, bar %s%s)",
              plan.id, user.email, len(slots),
-             f", closes {deadline:%Y-%m-%d %H:%M}Z" if deadline else "",
-             ", auto-book" if body.auto_book else "")
+             body.expected_count or "all members",
+             f", closes {deadline:%Y-%m-%d %H:%M}Z" if deadline else "")
     # Everyone else in the group is looking at a plan list that no longer has
     # this in it. Poke them so their card appears now, not at the next poll —
     # here and after every other mutation below (see app/realtime).
@@ -262,12 +299,13 @@ def update_plan_settings(
     user: User = Depends(get_current_user),
     session: Session = Depends(get_session),
 ):
-    """Host-only: set/move/clear the vote deadline and toggle auto-book.
+    """Host-only: set/move/clear the vote deadline, and change the minimum.
 
-    Works on an EXPIRED plan too — that's the point. Giving a plan that ran out
+    Works on an EXPIRED poll too — that's the point. Giving a poll that ran out
     of time a fresh deadline reopens voting (repo.set_plan_deadline), which is
     how a host says "a couple of you never answered, take another day" instead
-    of rebuilding the plan from scratch.
+    of rebuilding it from scratch. Lowering the minimum on an expired poll is the
+    other way back: the group answered, just not in the numbers first asked for.
     """
     plan = repo.get_plan(session, plan_id)
     if plan is None:
@@ -276,22 +314,22 @@ def update_plan_settings(
     if user.id != plan.created_by:
         raise HTTPException(status_code=403,
                             detail="Only the host who suggested this plan can change it.")
-    if plan.status in ("scheduled", "dead"):
-        raise HTTPException(status_code=400, detail=f"This plan is {plan.status}.")
+    if plan.status == "booked":
+        raise HTTPException(status_code=400, detail="This plan is already booked.")
 
-    if body.auto_book is not None:
-        repo.set_plan_auto_book(session, plan, body.auto_book)
+    if body.minimum is not None:
+        repo.set_plan_minimum(session, plan, body.minimum)
+        log.info("[plan %d] host %s set the minimum to %d", plan.id, user.email, body.minimum)
     if body.deadline_iso != "__unset__":
         repo.set_plan_deadline(session, plan, _parse_deadline(body.deadline_iso))
         log.info("[plan %d] host %s set the vote deadline to %s",
                  plan.id, user.email, body.deadline_iso or "none")
 
-    # Turning auto-book ON can land on an already-unanimous plan — book it now
-    # rather than making the host wait for a vote that may never come.
-    if plan.status == "open" and plan.auto_book:
-        maybe_auto_book(session, plan, user.timezone)
+    # Lowering the bar can retroactively make an already-complete poll bookable,
+    # so re-check rather than making the host wait for a vote that won't come.
+    converge(session, plan, user.timezone)
     plans_changed(plan.group_id)
-    if plan.status == "scheduled":  # auto-book just put it on the calendar
+    if plan.status == "booked":
         events_changed(plan.group_id)
     return _plan_json(session, plan, user, user.timezone)
 
@@ -360,12 +398,15 @@ def add_rounds(
     user: User = Depends(get_current_user),
     session: Session = Depends(get_session),
 ):
-    """Host-only: append candidate times to an existing OPEN plan — the way a
-    timeless "who's in?" check grows into a timed poll without starting over.
-    If the plan had no live time, the first appended one activates immediately."""
+    """ANY member adds candidate times to an open poll.
+
+    Members propose, the host decides (docs/poll-edit-redesign.md §1.6). This was
+    `[LOCKED]` on 2026-07-25 as "members can propose alternative times" and was
+    host-only in code until now — someone who spots a time that works for
+    everyone can put it up, and nobody but the host commits the group to it.
+
+    New times are votable immediately and disturb no existing vote."""
     plan = _get_plan_for_member(session, user, plan_id)
-    if user.id != plan.created_by:
-        raise HTTPException(status_code=403, detail="Only the host can add times.")
     if len(plan.rounds) + len(body.slots) > 8:
         raise HTTPException(status_code=400, detail="A plan can hold at most 8 candidate times.")
     slots = []
@@ -375,9 +416,46 @@ def add_rounds(
         if end <= start:
             raise HTTPException(status_code=400, detail=f"slots[{i}]: end must be after start.")
         slots.append((start, end))
-    repo.append_rounds(session, plan, slots)
-    log.info("[plan %d] %s appended %d candidate time(s)", plan.id, user.email, len(slots))
+    repo.append_rounds(session, plan, slots, suggested_by=user)
+    log.info("[plan %d] %s suggested %d candidate time(s)", plan.id, user.email, len(slots))
     plans_changed(plan.group_id)
+    return _plan_json(session, plan, user, user.timezone)
+
+
+@router.delete("/plans/{plan_id}/rounds/{round_id}")
+def remove_round(
+    plan_id: int,
+    round_id: int,
+    user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+):
+    """Take back a time YOU suggested. Only yours, and only before it's booked.
+
+    Scoped to your own suggestion rather than gated on the host: adding a time is
+    open to every member, so being able to undo your own mistake is part of the
+    same affordance. Removing someone else's would let one member quietly delete
+    the option the group was converging on — and the votes cast on it.
+    """
+    plan = _get_plan_for_member(session, user, plan_id)
+    round_ = next((r for r in plan.rounds if r.id == round_id), None)
+    if round_ is None:
+        raise HTTPException(status_code=404,
+                            detail="That time isn't one of this poll's candidates.")
+    if round_.created_by != user.id:
+        raise HTTPException(
+            status_code=403,
+            detail="You can only remove a time you suggested yourself.",
+        )
+    if round_.booked:
+        raise HTTPException(status_code=400,
+                            detail="That time is booked — it can't be removed.")
+    repo.delete_round(session, plan, round_)
+    log.info("[plan %d] %s removed their suggested time %d", plan.id, user.email, round_id)
+    # Removing a candidate can leave the remaining ones complete, so re-check.
+    converge(session, plan, user.timezone)
+    plans_changed(plan.group_id)
+    if plan.status == "booked":
+        events_changed(plan.group_id)
     return _plan_json(session, plan, user, user.timezone)
 
 
@@ -418,18 +496,49 @@ def _host_open_plan(session: Session, user: User, plan_id: int) -> Plan:
     return plan
 
 
-@router.post("/plans/{plan_id}/lock-in")
-def lock_in_time(
+@router.post("/plans/{plan_id}/spotlight")
+def spotlight_time(
     plan_id: int,
+    body: SpotlightBody,
     user: User = Depends(get_current_user),
     session: Session = Depends(get_session),
 ):
-    """Host move — commit the active time and book ONLY its yes-voters. This is a
-    direct, deterministic path to the calendar; the agent can also do it via chat,
-    but a real booking should never hinge on the model interpreting a sentence.
-    The host guard + revert-on-failure live in plan_service.confirm_active_time."""
+    """Host move — lean toward one time (or clear it). Replaces /next-time.
+
+    Nothing is skipped, nothing is reset, and it can be moved back. That is the
+    entire point: the endpoint it replaces made every prior vote irrelevant, so
+    hosts avoided using it.
+    """
     plan = _host_open_plan(session, user, plan_id)
-    result = confirm_active_time(session, plan, user, user.timezone)
+    result = set_spotlight(session, plan, user, body.round_id, user.timezone)
+    if result.get("error"):
+        raise HTTPException(status_code=400, detail=result["error"])
+    log.info("[plan %d] host %s moved the spotlight", plan.id, user.email)
+    plans_changed(plan.group_id)
+    return {"action": result.get("action"), "note": result.get("note"),
+            "plan": _plan_json(session, plan, user, user.timezone)}
+
+
+@router.post("/plans/{plan_id}/lock-in")
+def lock_in_time(
+    plan_id: int,
+    body: LockInBody,
+    user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+):
+    """Host move — book the time the host NAMES, for everyone who said yes or
+    if-needed to it.
+
+    The host picks explicitly rather than inheriting the spotlight: "what we're
+    leaning toward" and "what we're committing to" are different statements, and
+    coupling them would make locking in a different time a two-step dance.
+
+    Deliberately not gated by the minimum — that bar governs what happens without
+    a human. This is a direct, deterministic path to the calendar; the agent can
+    do it via chat too, but a real booking should never hinge on the model
+    interpreting a sentence."""
+    plan = _host_open_plan(session, user, plan_id)
+    result = confirm_time(session, plan, user, body.round_id, user.timezone)
     # book_failed FIRST: those results carry an "error" too, so checking the
     # generic error branch first made every calendar failure a 400 and left the
     # 502 unreachable — i.e. "you asked wrong" for something that was a
@@ -439,29 +548,22 @@ def lock_in_time(
                             detail=result.get("error") or "The calendar booking failed — try again.")
     if result.get("error"):
         raise HTTPException(status_code=400, detail=result["error"])
-    log.info("[plan %d] host %s locked in via API", plan.id, user.email)
+    log.info("[plan %d] host %s locked in round %d via API",
+             plan.id, user.email, body.round_id)
     # The card settles AND an event lands on the group's calendar — both views
     # are stale for every other member until they hear about it.
     plans_changed(plan.group_id)
     events_changed(plan.group_id)
-    return {"action": result.get("action"), "plan": _plan_json(session, plan, user, user.timezone)}
-
-
-@router.post("/plans/{plan_id}/next-time")
-def next_time(
-    plan_id: int,
-    user: User = Depends(get_current_user),
-    session: Session = Depends(get_session),
-):
-    """Host move — drop the active time and ask the next queued one to the whole
-    interested cohort. Out of times -> the plan closes (dead)."""
-    plan = _host_open_plan(session, user, plan_id)
-    result = advance_to_next_time(session, plan, user, user.timezone)
-    if result.get("error"):
-        raise HTTPException(status_code=400, detail=result["error"])
-    log.info("[plan %d] host %s advanced time via API (%s)", plan.id, user.email, result.get("action"))
-    plans_changed(plan.group_id)
-    return {"action": result.get("action"), "plan": _plan_json(session, plan, user, user.timezone)}
+    return {
+        "action": result.get("action"),
+        # WHICH time was committed, and who it went to. The card needs this to
+        # say "booked Fri 7pm for 4 of you" without re-deriving it from the plan.
+        "round_id": result.get("round_id"),
+        "time": result.get("time"),
+        "attendees": result.get("attendees"),
+        "event_link": result.get("event_link"),
+        "plan": _plan_json(session, plan, user, user.timezone),
+    }
 
 
 @router.post("/plans/{plan_id}/interest")
@@ -471,15 +573,22 @@ def vote_interest(
     user: User = Depends(get_current_user),
     session: Session = Depends(get_session),
 ):
-    """Stage 1. A yes here immediately opens the active time question for this
-    member — the response's ballot already carries it."""
+    """Float-an-idea only: "are you in at all?".
+
+    A poll created with candidate times never asks this — a yes on any time is
+    the interest signal, and asking separately is a redundant tap."""
     plan = _get_plan_for_member(session, user, plan_id)
+    if not plan.asks_interest:
+        raise HTTPException(
+            status_code=400,
+            detail="This poll asks about times directly — just answer the times.",
+        )
     repo.cast_interest(session, plan, user, body.yes)
     log.info("[plan %d] %s is %s for the plan", plan.id, user.email,
              "IN" if body.yes else "OUT")
-    maybe_auto_book(session, plan, user.timezone)
+    converge(session, plan, user.timezone)
     plans_changed(plan.group_id)
-    if plan.status == "scheduled":
+    if plan.status == "booked":
         events_changed(plan.group_id)
     return _plan_json(session, plan, user, user.timezone)
 
@@ -491,31 +600,34 @@ def vote_time(
     user: User = Depends(get_current_user),
     session: Session = Depends(get_session),
 ):
-    """Stage 2. Only the interested cohort may answer, and only the time that is
-    active right now — round_id is required so a vote cast while the host was
-    switching times can't silently land on the wrong one."""
+    """Answer ONE candidate time: yes, no, or if_needed.
+
+    Every time is answerable independently and at any moment — there is no
+    active round to race against, which is what removed the old 409 ("the host
+    moved on"). `round_id` still identifies which time is being answered.
+    """
     plan = _get_plan_for_member(session, user, plan_id)
-    if not repo.get_interest_votes(session, plan).get(user.email):
+    if body.answer not in VOTE_STATES:
+        raise HTTPException(status_code=400,
+                            detail=f"answer must be one of {', '.join(VOTE_STATES)}.")
+    if plan.asks_interest and not repo.get_interest_votes(session, plan).get(user.email):
         raise HTTPException(
             status_code=403,
             detail="Say you're in for the plan first — times are only asked of people who are.",
         )
-    active = repo.get_active_round(session, plan)
-    if active is None:
-        raise HTTPException(status_code=400, detail="No time is on the table for this plan.")
-    if active.id != body.round_id:
-        raise HTTPException(
-            status_code=409,
-            detail=f"The host moved on — the question is now {time_label(active, user.timezone)}.",
-        )
+    round_ = next((r for r in plan.rounds if r.id == body.round_id), None)
+    if round_ is None:
+        raise HTTPException(status_code=404,
+                            detail="That time isn't one of this poll's candidates.")
 
-    repo.cast_time_vote(session, active, user, body.yes)
-    log.info("[plan %d] %s said %s to %s", plan.id, user.email,
-             "YES" if body.yes else "NO", time_label(active, user.timezone))
-    # The vote that completes a unanimous plan is the one that books it (opt-in
-    # only) — see plan_service.maybe_auto_book. A no-op for everything else.
-    maybe_auto_book(session, plan, user.timezone)
+    repo.cast_time_vote(session, round_, user, body.answer)
+    log.info("[plan %d] %s answered %s to %s", plan.id, user.email,
+             body.answer, time_label(round_, user.timezone))
+    # The vote that completes a poll is the one that books it: when this was the
+    # last outstanding answer and a time meets the minimum, there is nothing left
+    # for anyone to decide. See plan_service.converge.
+    converge(session, plan, user.timezone)
     plans_changed(plan.group_id)
-    if plan.status == "scheduled":
+    if plan.status == "booked":
         events_changed(plan.group_id)
     return _plan_json(session, plan, user, user.timezone)

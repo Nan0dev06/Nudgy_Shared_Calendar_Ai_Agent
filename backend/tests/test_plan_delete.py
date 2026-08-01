@@ -32,7 +32,7 @@ def test_delete_plan_takes_its_rounds_and_votes_with_it(session):
     plan = repo.create_plan(session, group, host, "Coffee",
                             slots=[FIVE_PM, SEVEN_PM], location="Blend Cafe")
     repo.cast_interest(session, plan, other, True)
-    repo.cast_time_vote(session, repo.get_active_round(session, plan), other, True)
+    repo.cast_time_vote(session, plan.rounds[0], other, "yes")
     pid = plan.id
 
     repo.delete_plan(session, plan)

@@ -42,7 +42,7 @@ def ctx(monkeypatch):
     plan = repo.create_plan(s, group, host, title="Coffee", location="Cafe",
                             slots=[(DAY, DAY.replace(hour=18))])
     ids = {"host": host.id, "member": member.id, "outsider": outsider.id,
-           "group": group.id, "plan": plan.id}
+           "group": group.id, "plan": plan.id, "round": plan.rounds[0].id}
     s.close()
 
     app = FastAPI()
@@ -112,8 +112,13 @@ def test_a_members_vote_reaches_the_hosts_stream(ctx):
         session = TS()
         try:
             member = session.get(User, ids["member"])
-            plan_routes.vote_interest(ids["plan"], plan_routes.InterestBody(yes=True),
-                                      member, session)
+            # This poll was created WITH a time, so it never asks interest —
+            # answering the time is the member action that moves the host's box.
+            plan_routes.vote_time(
+                ids["plan"],
+                plan_routes.TimeVoteBody(round_id=ids["round"], answer="yes"),
+                member, session,
+            )
         finally:
             session.close()
 

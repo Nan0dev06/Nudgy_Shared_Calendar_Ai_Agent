@@ -80,8 +80,14 @@ _LATE_COLUMNS = [
     # WITH TIME ZONE matches DateTime(timezone=True) on Postgres; SQLite treats
     # any type name as an affinity hint, so the same DDL is portable
     ("plans", "deadline_utc", "TIMESTAMP WITH TIME ZONE"),
-    ("plans", "auto_book", "BOOLEAN DEFAULT FALSE NOT NULL"),
     ("plans", "reminder_sent_at", "TIMESTAMP WITH TIME ZONE"),
+    # poll redesign (docs/poll-edit-redesign.md §1). `auto_book` was dropped from
+    # the model here — convergence replaced it — but the column is deliberately
+    # NOT removed: dropping one is a table rebuild on SQLite, and an unread
+    # column costs nothing. Existing rows keep whatever they had.
+    ("plans", "asks_interest", "BOOLEAN DEFAULT FALSE NOT NULL"),
+    ("plans", "spotlight_round_id", "INTEGER"),
+    ("time_rounds", "created_by", "INTEGER"),
     ("plans", "share_token", "VARCHAR"),
     # TRUE/FALSE literals work on both SQLite (>=3.23) and Postgres
     ("events", "personal", "BOOLEAN DEFAULT FALSE NOT NULL"),
