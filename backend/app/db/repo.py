@@ -368,6 +368,7 @@ def create_plan(
     for i, (start, end) in enumerate(slots):
         session.add(TimeRound(
             plan_id=plan.id, ordinal=i, slot_start_utc=start, slot_end_utc=end,
+            created_by=host.id,
         ))
     if asks_interest:
         session.add(InterestVote(plan_id=plan.id, user_id=host.id, yes=True))
@@ -405,13 +406,16 @@ def find_duplicate_open_plan(
     return None
 
 
-def append_rounds(session: Session, plan: Plan, slots: list[tuple]) -> list[TimeRound]:
+def append_rounds(session: Session, plan: Plan, slots: list[tuple],
+                  suggested_by: User | None = None) -> list[TimeRound]:
     """Add candidate times to an existing plan — ANY member may do this.
+
+    `suggested_by` is stored so the card can say who put a time up, and so that
+    person (and only that person) can take it back down again.
 
     Ordinals continue after the existing ones, which keeps display order stable
     and gives the convergence rule its final tiebreak. New times are votable
-    immediately, like every other one; nothing needs activating and no existing
-    vote is disturbed.
+    immediately; no existing vote is disturbed.
     """
     next_ordinal = max((r.ordinal for r in plan.rounds), default=-1) + 1
     made: list[TimeRound] = []
@@ -419,12 +423,27 @@ def append_rounds(session: Session, plan: Plan, slots: list[tuple]) -> list[Time
         r = TimeRound(
             plan_id=plan.id, ordinal=next_ordinal + i,
             slot_start_utc=start, slot_end_utc=end,
+            created_by=suggested_by.id if suggested_by else None,
         )
         session.add(r)
         made.append(r)
     session.commit()
     session.refresh(plan)
     return made
+
+
+def delete_round(session: Session, plan: Plan, round_: TimeRound) -> None:
+    """Remove one candidate time, and its votes with it (delete-orphan cascade).
+
+    Clears the spotlight if it pointed here — a spotlight on a time that no
+    longer exists would read as "no spotlight" everywhere anyway, and leaving a
+    dangling id behind invites a stale match against a future round's id.
+    """
+    if plan.spotlight_round_id == round_.id:
+        plan.spotlight_round_id = None
+    session.delete(round_)
+    session.commit()
+    session.refresh(plan)
 
 
 def get_plan(session: Session, plan_id: int) -> Plan | None:
@@ -659,6 +678,21 @@ def find_guest_by_name(session: Session, plan: Plan, name: str) -> PlanGuest | N
     key = name.strip().casefold()
     return next((g for g in get_plan_guests(session, plan)
                  if g.name.casefold() == key), None)
+
+
+def find_guest_by_email(session: Session, plan: Plan, email: str) -> PlanGuest | None:
+    """The strongest identity signal a guest ever gives us.
+
+    Used to hand a returning guest their EXISTING ballot when their cookie is
+    gone (different device, cleared browser) instead of minting a second row.
+    That matters beyond tidiness: a guest's vote counts toward a creator-typed
+    minimum, so duplicates would let one person raise a plan over its own bar.
+    """
+    key = email.strip().casefold()
+    if not key:
+        return None
+    return next((g for g in get_plan_guests(session, plan)
+                 if (g.email or "").casefold() == key), None)
 
 
 def create_guest(session: Session, plan: Plan, name: str,

@@ -101,10 +101,14 @@ TOOL_SCHEMAS = [
                 "minimum": {
                     "type": "integer",
                     "description": (
-                        "How many GROUP MEMBERS must be able to make a time before it "
-                        "books itself. ASK THE USER for this — do not pick it yourself "
-                        "unless their stored preferences state a default. It is what "
-                        "stops a 10-person outing booking for the 3 who replied."
+                        "How many people must be able to make a time before it books "
+                        "itself WITHOUT anyone pressing a button. OMIT IT to use the "
+                        "default, which is that every member of the group has to be "
+                        "able to make it. Only pass a number when the user actually "
+                        "says a smaller group is fine ('4 of us is enough') or their "
+                        "stored preferences set one — ASK rather than guessing. A "
+                        "number also lets share-link guests count toward it; the "
+                        "default never does."
                     ),
                 },
                 "times": {
@@ -125,7 +129,7 @@ TOOL_SCHEMAS = [
                     },
                 },
             },
-            "required": ["title", "times", "minimum"],
+            "required": ["title", "times"],
         },
     },
     {
@@ -357,7 +361,10 @@ def _create_plan(ctx: ToolContext, args: dict) -> dict:
         }
 
     members = repo.get_group_members(ctx.session, ctx.group.id)
-    minimum = args.get("minimum") or len(members)
+    # None means the default rule (every member must be able to make it), which
+    # is stored as NULL rather than as len(members) — a number could be reached
+    # by guests, and the rule is about these specific people.
+    minimum = args.get("minimum")
     plan = repo.create_plan(
         ctx.session, ctx.group, ctx.user,
         title=args["title"],
@@ -365,32 +372,34 @@ def _create_plan(ctx: ToolContext, args: dict) -> dict:
         location=args.get("location"),
         expected_count=minimum,
     )
-    log.info("[plan %d] created by %s: %d candidate time(s), min %d, asked %d member(s)",
-             plan.id, ctx.user.email, len(slots), minimum, len(members))
+    log.info("[plan %d] created by %s: %d candidate time(s), bar %s, asked %d member(s)",
+             plan.id, ctx.user.email, len(slots), minimum or "all members", len(members))
     return {
         "plan_id": plan.id,
         "title": plan.title,
         "location": plan.location,
         "day": day_label(plan, ctx.tz_name),
         "asked": [m.email for m in members],
-        "minimum": minimum,
+        "minimum": minimum or f"all {len(members)} members",
         "times": [{"round_id": r.id, "label": time_label(r, ctx.tz_name)}
                   for r in plan.rounds],
         "note": ("Everyone can vote on every time straight away (yes / no / if "
-                 f"needed). It books itself only once {minimum} member(s) can make "
-                 "the same time AND nobody is left to answer; otherwise the host "
-                 "locks one in. Tell the user the minimum you used."),
+                 "needed). It books itself only once the bar above is met AND "
+                 "nobody is left to answer; otherwise the host locks one in. Tell "
+                 "the user which bar is in force — they need to know whether it "
+                 "waits for everybody."),
     }
 
 
 def _plan_json(ctx: ToolContext, plan) -> dict:
     from app.tools.plan_service import plan_tally
 
-    from app.tools.plan_service import minimum_for
+    from app.tools.plan_service import minimum_for, requires_all_members
 
     t = plan_tally(ctx.session, plan, ctx.tz_name)
     labels = {r.id: time_label(r, ctx.tz_name) for r in plan.rounds}
     minimum = minimum_for(ctx.session, plan)
+    all_members = requires_all_members(plan)
     return {
         "plan_id": plan.id,
         "title": plan.title,
@@ -398,7 +407,8 @@ def _plan_json(ctx: ToolContext, plan) -> dict:
         "day": day_label(plan, ctx.tz_name),
         "status": plan.status,
         "you_are_host": ctx.user.id == plan.created_by,
-        "minimum_to_book_itself": minimum,
+        "minimum_to_book_itself": (f"all {minimum} members" if all_members
+                                   else minimum),
         "in_for_the_plan": t.interested,
         "out_of_the_plan": t.not_interested,
         "no_answer_on_the_plan": t.no_interest_answer,
@@ -412,7 +422,8 @@ def _plan_json(ctx: ToolContext, plan) -> dict:
                 "cannot_make_it": r.no,
                 "silent": r.waiting,
                 "guests_coming": len(r.guest_yes) + len(r.guest_if_needed),
-                "clears_the_minimum": r.member_committed >= minimum,
+                "clears_the_minimum": r.qualifies(
+                    minimum=plan.expected_count, member_total=t.member_total),
                 "spotlit": r.key == plan.spotlight_round_id,
             }
             for r in t.times

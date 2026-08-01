@@ -201,6 +201,20 @@ def join_shared_plan(
         raise HTTPException(status_code=400, detail="A name is needed — any name.")
 
     mine = _resolve_guest(session, plan, nudgy_guest)
+    email = (body.email or "").strip() or None
+
+    # RECLAIM BY EMAIL. A guest's vote now counts toward a creator-typed minimum,
+    # so one person appearing twice doesn't just look untidy — it inflates the
+    # bar's denominator and can book a plan on votes from a single browser.
+    # A cookie is easily lost (a different device, a cleared browser), and the
+    # old behaviour minted a second guest row every time. An email is the only
+    # identity signal we ask for, so when it matches an existing guest on this
+    # plan, that IS them: hand back their ballot instead of a fresh one.
+    if mine is None and email:
+        by_email = repo.find_guest_by_email(session, plan, email)
+        if by_email is not None:
+            mine = by_email
+
     existing = repo.find_guest_by_name(session, plan, name)
     if existing is not None and (mine is None or existing.id != mine.id):
         raise HTTPException(
@@ -211,8 +225,8 @@ def join_shared_plan(
     if mine is not None:
         guest = mine
         guest.name = name
-        if body.email:
-            guest.email = body.email.strip() or None
+        if email:
+            guest.email = email
         session.commit()
     else:
         if len(repo.get_plan_guests(session, plan)) >= repo.MAX_GUESTS_PER_PLAN:

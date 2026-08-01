@@ -109,6 +109,10 @@ def _plan_json(session: Session, plan: Plan, viewer: User, tz_name: str) -> dict
     t = plan_tally(session, plan, tz_name, state=state)
     by_key = {r.key: r for r in t.times}
     my_votes = state.votes_by_time
+    # who suggested each time, resolved once rather than per round
+    suggesters = {
+        u.id: u.email for u in repo.get_group_members(session, plan.group_id)
+    }
 
     out = {
         "id": plan.id,
@@ -120,10 +124,11 @@ def _plan_json(session: Session, plan: Plan, viewer: User, tz_name: str) -> dict
         "is_host": is_host,
         "mode": mode_of(asks_interest=plan.asks_interest, times_total=len(plan.rounds)),
         "asks_interest": plan.asks_interest,
-        # the bar for booking without a human, and how many guests are in play.
-        # Guests never count toward the minimum, so the UI shows them beside it
-        # rather than inside it.
+        # The bar for booking without a human. `requires_all_members` says which
+        # KIND it is: the default rule (those specific people, guests can't
+        # substitute) or a count the creator typed (guests count toward it).
         "minimum": state.minimum,
+        "requires_all_members": state.explicit_minimum is None,
         "guest_count": len(state.guest_labels),
         "spotlight_round_id": plan.spotlight_round_id,
         "deadline_iso": plan.deadline.isoformat() if plan.deadline else None,
@@ -146,7 +151,15 @@ def _plan_json(session: Session, plan: Plan, viewer: User, tz_name: str) -> dict
                 "no": len(by_key[r.id].no),
                 "waiting": len(by_key[r.id].waiting),
                 "guest_yes": len(by_key[r.id].guest_yes) + len(by_key[r.id].guest_if_needed),
-                "qualifies": by_key[r.id].member_committed >= state.minimum,
+                "qualifies": by_key[r.id].qualifies(
+                    minimum=state.explicit_minimum,
+                    member_total=len(state.member_emails),
+                ),
+                # "suggested by X" on the card. Only the suggester may remove it,
+                # and never once it's booked.
+                "suggested_by": suggesters.get(r.created_by),
+                "can_remove": (r.created_by == viewer.id and not r.booked
+                               and plan.status == "open"),
                 # what THIS viewer said, so their choice stays visible
                 "my_answer": my_votes.get(r.id, {}).get(viewer.email),
             }
@@ -259,17 +272,18 @@ def create_plan(
                  dup.id, user.email)
         return _plan_json(session, dup, user, user.timezone)
 
-    # Default the minimum to the whole group. Anything lower is a deliberate
-    # human decision, which is precisely what makes automatic booking safe.
-    minimum = body.expected_count or len(repo.get_group_members(session, group_id))
-
+    # expected_count omitted -> stored as NULL, which is the DEFAULT RULE: every
+    # account-holding member must be able to make a time before it books itself.
+    # Deliberately not written as a number here — a number could be satisfied by
+    # guests, and "the group agreed" is a statement about those specific people.
     plan = repo.create_plan(
         session, group, user, title=body.title.strip(),
         slots=slots, location=location,
-        expected_count=minimum, deadline=deadline,
+        expected_count=body.expected_count, deadline=deadline,
     )
-    log.info("[plan %d] %s created it from the app (%d candidate times, min %d%s)",
-             plan.id, user.email, len(slots), minimum,
+    log.info("[plan %d] %s created it from the app (%d candidate times, bar %s%s)",
+             plan.id, user.email, len(slots),
+             body.expected_count or "all members",
              f", closes {deadline:%Y-%m-%d %H:%M}Z" if deadline else "")
     # Everyone else in the group is looking at a plan list that no longer has
     # this in it. Poke them so their card appears now, not at the next poll —
@@ -402,9 +416,46 @@ def add_rounds(
         if end <= start:
             raise HTTPException(status_code=400, detail=f"slots[{i}]: end must be after start.")
         slots.append((start, end))
-    repo.append_rounds(session, plan, slots)
-    log.info("[plan %d] %s appended %d candidate time(s)", plan.id, user.email, len(slots))
+    repo.append_rounds(session, plan, slots, suggested_by=user)
+    log.info("[plan %d] %s suggested %d candidate time(s)", plan.id, user.email, len(slots))
     plans_changed(plan.group_id)
+    return _plan_json(session, plan, user, user.timezone)
+
+
+@router.delete("/plans/{plan_id}/rounds/{round_id}")
+def remove_round(
+    plan_id: int,
+    round_id: int,
+    user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+):
+    """Take back a time YOU suggested. Only yours, and only before it's booked.
+
+    Scoped to your own suggestion rather than gated on the host: adding a time is
+    open to every member, so being able to undo your own mistake is part of the
+    same affordance. Removing someone else's would let one member quietly delete
+    the option the group was converging on — and the votes cast on it.
+    """
+    plan = _get_plan_for_member(session, user, plan_id)
+    round_ = next((r for r in plan.rounds if r.id == round_id), None)
+    if round_ is None:
+        raise HTTPException(status_code=404,
+                            detail="That time isn't one of this poll's candidates.")
+    if round_.created_by != user.id:
+        raise HTTPException(
+            status_code=403,
+            detail="You can only remove a time you suggested yourself.",
+        )
+    if round_.booked:
+        raise HTTPException(status_code=400,
+                            detail="That time is booked — it can't be removed.")
+    repo.delete_round(session, plan, round_)
+    log.info("[plan %d] %s removed their suggested time %d", plan.id, user.email, round_id)
+    # Removing a candidate can leave the remaining ones complete, so re-check.
+    converge(session, plan, user.timezone)
+    plans_changed(plan.group_id)
+    if plan.status == "booked":
+        events_changed(plan.group_id)
     return _plan_json(session, plan, user, user.timezone)
 
 

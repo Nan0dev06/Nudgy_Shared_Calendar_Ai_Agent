@@ -1,14 +1,30 @@
-"""The pure async-convergence rules (app/tools/plan_deadlines.py): when a plan
-nudges, when it closes, and when it is allowed to book itself."""
+"""The pure convergence rules (app/tools/plan_deadlines.py): when a poll nudges,
+when it closes, and which candidate time is allowed to book itself.
+
+Rewritten for the 2026-08-01 engine (docs/poll-edit-redesign.md §1.5). The
+reminder half is unchanged — it never depended on how times were voted on.
+"""
 from datetime import datetime, timedelta, timezone
 
 from app.tools.plan_deadlines import (
-    BOOK, EXPIRE, NOTHING, deadline_outcome, everyone_said_yes,
-    next_reminder_at, reminder_due,
+    BOOK, EXPIRE, NOTHING, choose_winner, deadline_outcome, next_reminder_at,
+    ready_to_book_early, reminder_due,
 )
+from app.tools.plan_rules import TimeResult
 
 NOW = datetime(2026, 7, 20, 12, tzinfo=timezone.utc)
 HALF_DAY = timedelta(hours=12)
+
+
+def _time(key, *, yes=0, if_needed=0, no=0, waiting=0, guest_yes=0, guest_if_needed=0):
+    """A TimeResult with the given counts — names don't matter to the rules."""
+    who = lambda n, tag: [f"{tag}{i}@x.com" for i in range(n)]
+    return TimeResult(
+        key=key,
+        yes=who(yes, "y"), if_needed=who(if_needed, "m"),
+        no=who(no, "n"), waiting=who(waiting, "w"),
+        guest_yes=who(guest_yes, "gy"), guest_if_needed=who(guest_if_needed, "gm"),
+    )
 
 
 # ----------------------------------------------------------------- reminders
@@ -67,77 +83,141 @@ def test_no_nudging_after_voting_has_closed():
     )
 
 
+# ------------------------------------------------- the default bar: everyone in
+
+def test_default_bar_needs_every_member_not_just_a_majority():
+    """expected_count is None -> the rule is "all of them", so 4 of 5 is not
+    enough no matter how lopsided."""
+    assert choose_winner(
+        [_time(1, yes=4, waiting=1)], minimum=None, member_total=5, spotlight=None,
+    ) is None
+
+
+def test_default_bar_books_when_every_member_is_in():
+    assert choose_winner(
+        [_time(1, yes=5)], minimum=None, member_total=5, spotlight=None,
+    ) == 1
+
+
+def test_guests_cannot_substitute_for_a_member_under_the_default_bar():
+    """The reason the default is a RULE and not the number len(members): three
+    members plus two guests must not pass for "the whole group agreed"."""
+    assert choose_winner(
+        [_time(1, yes=3, waiting=2, guest_yes=2)],
+        minimum=None, member_total=5, spotlight=None,
+    ) is None
+
+
+def test_if_needed_can_carry_the_default_bar_when_nothing_else_does():
+    assert choose_winner(
+        [_time(1, yes=3, if_needed=2)], minimum=None, member_total=5, spotlight=None,
+    ) == 1
+
+
+# --------------------------------------------- a typed count: guests do count
+
+def test_typed_count_is_reached_by_members_and_guests_together():
+    """Once the creator says "4 is enough", a guest who said yes is one of them."""
+    assert choose_winner(
+        [_time(1, yes=2, guest_yes=2)], minimum=4, member_total=5, spotlight=None,
+    ) == 1
+
+
+def test_typed_count_below_the_bar_does_not_book():
+    assert choose_winner(
+        [_time(1, yes=2, guest_yes=1)], minimum=4, member_total=5, spotlight=None,
+    ) is None
+
+
+# ----------------------------------------------------------------- ranking
+
+def test_a_firm_yes_winner_beats_one_that_needs_the_maybes():
+    """Tier 1 excludes tier 2 entirely: an "if needed" majority never outranks a
+    real one, even when its raw total is higher."""
+    firm = _time(1, yes=3)
+    maybes = _time(2, yes=1, if_needed=3)
+    assert choose_winner([maybes, firm], minimum=3, member_total=5,
+                         spotlight=None) == 1
+
+
+def test_among_qualifiers_the_most_yes_wins():
+    assert choose_winner(
+        [_time(1, yes=3), _time(2, yes=5)], minimum=3, member_total=5, spotlight=None,
+    ) == 2
+
+
+def test_the_spotlight_breaks_a_tie():
+    assert choose_winner(
+        [_time(1, yes=3), _time(2, yes=3)],
+        minimum=3, member_total=5, spotlight=2, order=[1, 2],
+    ) == 2
+
+
+def test_without_a_spotlight_a_tie_goes_to_the_earliest_time():
+    assert choose_winner(
+        [_time(2, yes=3), _time(1, yes=3)],
+        minimum=3, member_total=5, spotlight=None, order=[1, 2],
+    ) == 1
+
+
+def test_the_spotlight_only_breaks_ties_it_does_not_win_on_its_own():
+    """Spelled out because it's the promise made to the host: spotlighting is
+    not a thumb on the scale, so a better-supported time still wins."""
+    assert choose_winner(
+        [_time(1, yes=5), _time(2, yes=3)],
+        minimum=3, member_total=5, spotlight=2, order=[1, 2],
+    ) == 1
+
+
+def test_no_candidates_means_no_winner():
+    assert choose_winner([], minimum=None, member_total=3, spotlight=None) is None
+
+
+# --------------------------------------------------------------- early booking
+
+def test_early_booking_waits_for_the_last_outstanding_answer():
+    """The guard that stops a lowered bar booking on three quick replies while
+    the rest of the group is still asleep."""
+    assert not ready_to_book_early(winner=1, pending_answers=2)
+
+
+def test_early_booking_fires_once_nobody_is_pending():
+    assert ready_to_book_early(winner=1, pending_answers=0)
+
+
+def test_nothing_books_early_without_a_qualifying_time():
+    assert not ready_to_book_early(winner=None, pending_answers=0)
+
+
 # ----------------------------------------------------------------- deadline
 
 def test_nothing_happens_before_the_deadline():
     assert deadline_outcome(
-        now=NOW, deadline=NOW + timedelta(hours=1), status="open",
-        auto_book=False, has_active_time=True, time_yes_count=2,
+        now=NOW, deadline=NOW + timedelta(hours=1), status="open", winner=1,
     ) == NOTHING
 
 
-def test_deadlineless_plans_are_never_touched():
+def test_deadlineless_polls_are_never_touched():
     assert deadline_outcome(
-        now=NOW, deadline=None, status="open",
-        auto_book=True, has_active_time=True, time_yes_count=2,
+        now=NOW, deadline=None, status="open", winner=1,
     ) == NOTHING
 
 
-def test_passed_deadline_expires_a_normal_plan():
+def test_passed_deadline_books_the_qualifying_time():
     assert deadline_outcome(
-        now=NOW, deadline=NOW, status="open",
-        auto_book=False, has_active_time=True, time_yes_count=3,
-    ) == EXPIRE
-
-
-def test_passed_deadline_books_an_auto_book_plan():
-    assert deadline_outcome(
-        now=NOW + timedelta(minutes=1), deadline=NOW, status="open",
-        auto_book=True, has_active_time=True, time_yes_count=1,
+        now=NOW + timedelta(minutes=1), deadline=NOW, status="open", winner=3,
     ) == BOOK
 
 
-def test_auto_book_with_nobody_available_still_just_expires():
+def test_passed_deadline_expires_when_nothing_qualifies():
+    """Votes are kept — expiring parks the poll for the host rather than
+    throwing the group's answers away."""
     assert deadline_outcome(
-        now=NOW, deadline=NOW, status="open",
-        auto_book=True, has_active_time=True, time_yes_count=0,
+        now=NOW, deadline=NOW, status="open", winner=None,
     ) == EXPIRE
 
 
-def test_an_already_settled_plan_is_left_alone():
+def test_an_already_settled_poll_is_left_alone():
     assert deadline_outcome(
-        now=NOW, deadline=NOW - timedelta(days=1), status="scheduled",
-        auto_book=True, has_active_time=True, time_yes_count=2,
+        now=NOW, deadline=NOW - timedelta(days=1), status="booked", winner=1,
     ) == NOTHING
-
-
-# ----------------------------------------------------------------- unanimity
-
-def test_unanimous_when_everyone_answered_and_everyone_said_yes():
-    assert everyone_said_yes(
-        interested=3, silent_on_interest=0, time_yes=3, time_no=0, time_waiting=0,
-    )
-
-
-def test_not_unanimous_while_someone_has_not_opened_the_app():
-    assert not everyone_said_yes(
-        interested=2, silent_on_interest=1, time_yes=2, time_no=0, time_waiting=0,
-    )
-
-
-def test_not_unanimous_with_a_single_no_on_the_time():
-    assert not everyone_said_yes(
-        interested=3, silent_on_interest=0, time_yes=2, time_no=1, time_waiting=0,
-    )
-
-
-def test_not_unanimous_while_a_yes_voter_still_owes_a_time_answer():
-    assert not everyone_said_yes(
-        interested=3, silent_on_interest=0, time_yes=2, time_no=0, time_waiting=1,
-    )
-
-
-def test_nobody_interested_is_not_unanimity():
-    assert not everyone_said_yes(
-        interested=0, silent_on_interest=0, time_yes=0, time_no=0, time_waiting=0,
-    )

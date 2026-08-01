@@ -87,6 +87,7 @@ _LATE_COLUMNS = [
     # column costs nothing. Existing rows keep whatever they had.
     ("plans", "asks_interest", "BOOLEAN DEFAULT FALSE NOT NULL"),
     ("plans", "spotlight_round_id", "INTEGER"),
+    ("time_rounds", "created_by", "INTEGER"),
     ("plans", "share_token", "VARCHAR"),
     # TRUE/FALSE literals work on both SQLite (>=3.23) and Postgres
     ("events", "personal", "BOOLEAN DEFAULT FALSE NOT NULL"),

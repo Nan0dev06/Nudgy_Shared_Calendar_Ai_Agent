@@ -193,10 +193,14 @@ class Plan(Base):
     title: Mapped[str] = mapped_column(String, default="Group hangout")
     location: Mapped[str | None] = mapped_column(String, default=None)
     status: Mapped[str] = mapped_column(String, default="open")
-    # how many MEMBERS must be able to make a time before it may book without a
-    # human. Set at creation (defaults to the whole group) and lowerable only by
-    # the host. None on legacy rows, read through plan_service.minimum_for, which
-    # falls back to the group size — never treated as "no minimum".
+    # The bar for booking WITHOUT a human, and it is two different things:
+    #   None -> the default RULE: every account-holding member must be able to
+    #           make the time. Not a count, so guests can never stand in for a
+    #           member — a group plan books itself only when the group agrees.
+    #   int  -> a count the creator typed. Now guests DO count toward it: the
+    #           host has said "this many people is enough", and a guest who
+    #           said yes is one of them.
+    # Read through plan_service.minimum_for / requires_all_members, never raw.
     expected_count: Mapped[int | None] = mapped_column(default=None)
     # Float-an-idea plans ask "are you in?" before any time exists. Fixed at
     # creation: re-deriving it from "has times yet" would change the question a
@@ -282,6 +286,11 @@ class TimeRound(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     plan_id: Mapped[int] = mapped_column(ForeignKey("plans.id"))
     ordinal: Mapped[int] = mapped_column()
+    # who put this time up. Any member may suggest one, so the card shows
+    # "suggested by X" — and it is the ONLY permission check on removing a time:
+    # you can take back your own suggestion and nobody else's. NULL on times
+    # created before this column, which read as the host's.
+    created_by: Mapped[int | None] = mapped_column(ForeignKey("users.id"), default=None)
     slot_start_utc: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     slot_end_utc: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     booked: Mapped[bool] = mapped_column(default=False)

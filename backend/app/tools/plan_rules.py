@@ -69,9 +69,14 @@ class Ballot:
 
 @dataclass
 class TimeResult:
-    """One candidate time's standing. Members and guests are kept apart all the
-    way through: the minimum is a statement about the GROUP, but a guest's yes is
-    still a person who is coming, so both numbers reach the UI."""
+    """One candidate time's standing.
+
+    Members and guests stay in separate lists because the DEFAULT rule is about
+    members specifically ("everyone with an account is in"), and a guest can
+    never stand in for one. Once the creator types an explicit minimum the
+    distinction stops mattering for qualifying — see `qualifies` — but the two
+    numbers still reach the UI separately.
+    """
     key: int                                              # the round's id
     yes: list[str] = field(default_factory=list)          # members
     if_needed: list[str] = field(default_factory=list)    # members
@@ -86,7 +91,7 @@ class TimeResult:
 
     @property
     def member_committed(self) -> int:
-        """Yes plus if-needed — everyone who COULD make this time."""
+        """Yes plus if-needed — every MEMBER who could make this time."""
         return len(self.yes) + len(self.if_needed)
 
     @property
@@ -95,10 +100,35 @@ class TimeResult:
         return len(self.yes) + len(self.guest_yes)
 
     @property
+    def total_committed(self) -> int:
+        return self.member_committed + len(self.guest_yes) + len(self.guest_if_needed)
+
+    @property
     def attendees(self) -> list[str]:
         """Who gets booked if this time wins: yes and if-needed, both kinds.
         `no` and silence never land on anyone's calendar."""
         return self.yes + self.if_needed + self.guest_yes + self.guest_if_needed
+
+    def qualifies(self, *, minimum: int | None, member_total: int,
+                  firm_only: bool = False) -> bool:
+        """May this time book without a human?
+
+        Two regimes (docs/poll-edit-redesign.md §1.4):
+          minimum is None -> the default: EVERY account-holding member can make
+              it. Guests are irrelevant to this test on purpose — a group plan
+              books itself when the group agrees, and people who joined through
+              a link are not the group.
+          minimum is an int -> the creator named a number, so anyone who said
+              yes counts toward it, guests included.
+
+        `firm_only` asks the same question counting plain yes alone, which is how
+        a time that clears the bar on real yeses beats one that needs the maybes.
+        """
+        if minimum is None:
+            if member_total <= 0:
+                return False
+            return (self.member_yes if firm_only else self.member_committed) >= member_total
+        return (self.total_yes if firm_only else self.total_committed) >= minimum
 
 
 @dataclass
@@ -109,7 +139,9 @@ class Tally:
     no_interest_answer: list[str] = field(default_factory=list)
     times: list[TimeResult] = field(default_factory=list)
     guests_total: int = 0
-    minimum: int = 0
+    minimum: int = 0                       # the bar as a number, for display
+    explicit_minimum: int | None = None    # None = the default all-members rule
+    member_total: int = 0
     host_note: str = ""
 
 
@@ -178,12 +210,15 @@ def tally(
     *,
     asks_interest: bool,
     time_keys: list[int],                       # every candidate time, in display order
-    minimum: int,
+    minimum: int,                               # the bar as a number, for wording
+    explicit_minimum: int | None,               # None = the default all-members rule
+    member_total: int,
     labels: dict[int, str],                     # round id -> human label
     spotlight: int | None,
 ) -> Tally:
     """Build the host's decision box across ALL candidate times at once."""
-    t = Tally(minimum=minimum, guests_total=len(guests))
+    t = Tally(minimum=minimum, guests_total=len(guests),
+              explicit_minimum=explicit_minimum, member_total=member_total)
 
     if asks_interest:
         for e in members + guests:
@@ -238,17 +273,22 @@ def _host_note(t: Tally, labels: dict[int, str], spotlight: int | None) -> str:
     ranked = sorted(t.times, key=lambda r: (-r.total_yes, r.key))
     best = ranked[0]
     label = labels.get(best.key, "the best time")
+    firm = best.qualifies(minimum=t.explicit_minimum,
+                          member_total=t.member_total, firm_only=True)
+    any_q = best.qualifies(minimum=t.explicit_minimum, member_total=t.member_total)
+    # The default bar is a rule about specific people; a typed one is a count.
+    # Saying "3 of 5" for the rule would be wrong — it needs those five.
+    bar = (f"all {t.member_total} of you" if t.explicit_minimum is None
+           else f"{t.explicit_minimum} people")
 
-    if best.member_yes >= t.minimum:
-        parts.append(f"{label} has {best.member_yes} of the {t.minimum} needed — "
-                     "it can book itself.")
-    elif best.member_committed >= t.minimum:
-        parts.append(f"{label} reaches {t.minimum} only by counting "
-                     f"\"if needed\" ({best.member_yes} firm yes, "
-                     f"{len(best.if_needed)} if needed).")
+    if firm:
+        parts.append(f"{label} works for {bar} — it can book itself.")
+    elif any_q:
+        parts.append(f"{label} reaches {bar} only by counting \"if needed\" "
+                     f"({best.member_yes} firm yes, {len(best.if_needed)} if needed).")
     else:
         parts.append(f"Best so far is {label} with {best.member_yes} yes — "
-                     f"{t.minimum} are needed to book without you.")
+                     f"it needs {bar} to book without you.")
 
     if best.guest_yes or best.guest_if_needed:
         parts.append(f"Plus {len(best.guest_yes) + len(best.guest_if_needed)} guest(s).")

@@ -21,13 +21,17 @@ rule was unanimity, which almost never fires. The new rule rests on two things:
      said yes or if-needed, so no automatic path can put an event on the calendar
      of somebody who did not agree to it. That was always true — the host's
      lock-in never protected anyone's calendar, it only chose which time.
-  2. The MINIMUM answers "how many of us make this worth doing?". Without it,
+  2. The BAR answers "how many of us make this worth doing?". Without it,
      "most-voted time wins" would book a 10-person outing for the 3 people who
-     replied. It defaults to the whole group and only a human can lower it, so
-     under-booking is never something the app decided by itself.
+     replied. By DEFAULT the bar is not a number at all but a rule — every
+     account-holding member must be able to make the time — so an unattended
+     booking always means the whole group agreed. Only a human lowering it to a
+     count makes anything less possible.
 
-The minimum counts MEMBERS only. Guests are real attendees and are counted for
-ranking, but they cannot be what makes a group plan reach its own bar.
+Guests count toward a creator-typed COUNT: the creator said that many people is
+enough, and a guest who said yes is one of them. They never count toward the
+DEFAULT rule — people who joined through a link are not the group, and letting
+them stand in for a member would mean sharing a link makes a plan book EASIER.
 
 `if needed` counts toward the minimum only as a fallback — a time that clears the
 bar on firm yeses always beats one that needs the maybes.
@@ -97,9 +101,10 @@ def reminder_due(
 
 
 def choose_winner(
-    candidates: list,          # TimeResult-shaped: .key .member_yes .member_committed .total_yes
+    candidates: list,          # TimeResult-shaped (see plan_rules.TimeResult)
     *,
-    minimum: int,
+    minimum: int | None,       # None = the default rule: every member is in
+    member_total: int,
     spotlight: int | None,
     order: list[int] | None = None,   # keys in display order, for the final tiebreak
 ) -> int | None:
@@ -107,21 +112,24 @@ def choose_winner(
 
     The order is deliberate (docs/poll-edit-redesign.md §1.5):
 
-      1. Times clearing the minimum on FIRM yeses. If any exist, only they are
+      1. Times that qualify on FIRM yeses. If any exist, only they are
          considered — an "if needed" majority never beats a real one.
-      2. Otherwise times that clear it once `if needed` is counted too.
-      3. Among the qualifiers, most total yes (members + guests) wins. Ranking
-         can afford to count guests because everything at this point already
-         cleared a members-only bar.
+      2. Otherwise times that qualify once `if needed` is counted too.
+      3. Among the qualifiers, most total yes wins.
       4. Tie -> the spotlit time. The host set it by hand, which makes it a
          better tiebreak than anything the app could infer.
       5. Still tied -> earliest in display order, which is chronological.
+
+    What "qualify" means is TimeResult.qualifies — either every member is in
+    (the default) or a creator-typed count is reached, guests included.
     """
-    if minimum <= 0 or not candidates:
+    if not candidates:
         return None
 
-    firm = [c for c in candidates if c.member_yes >= minimum]
-    pool = firm or [c for c in candidates if c.member_committed >= minimum]
+    firm = [c for c in candidates
+            if c.qualifies(minimum=minimum, member_total=member_total, firm_only=True)]
+    pool = firm or [c for c in candidates
+                    if c.qualifies(minimum=minimum, member_total=member_total)]
     if not pool:
         return None
 

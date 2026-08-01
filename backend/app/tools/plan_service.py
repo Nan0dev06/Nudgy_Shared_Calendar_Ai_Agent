@@ -79,7 +79,8 @@ class PlanState:
     interest_votes: dict[str, bool] = field(default_factory=dict)
     votes_by_time: dict[int, dict[str, str]] = field(default_factory=dict)
     guest_votes_by_time: dict[int, dict[str, str]] = field(default_factory=dict)
-    minimum: int = 0
+    minimum: int = 0                 # the bar as a number, for display
+    explicit_minimum: int | None = None   # None = the default all-members rule
     spotlight: int | None = None
 
     @property
@@ -99,12 +100,20 @@ class PlanState:
         }
 
 
-def minimum_for(session: Session, plan: Plan) -> int:
-    """How many MEMBERS must be able to make a time before it books itself.
+def requires_all_members(plan: Plan) -> bool:
+    """True when this poll uses the DEFAULT rule — every account-holding member
+    must be able to make a time before it books itself — rather than a count the
+    creator typed. Guests cannot satisfy this; see plan_rules.TimeResult."""
+    return not plan.expected_count
 
-    `expected_count` is set at creation and defaults to the whole group. Legacy
-    rows predate the column and read as the group size — never as "no minimum",
-    which would let an old poll book itself on a single yes.
+
+def minimum_for(session: Session, plan: Plan) -> int:
+    """The bar as a NUMBER, for display and for the agent's reporting.
+
+    Under the default rule that number is the group size, but it is not the same
+    thing: `requires_all_members` means those specific people, not any N. Use
+    this to show a bar, never to decide one — qualifying goes through
+    TimeResult.qualifies.
     """
     if plan.expected_count:
         return plan.expected_count
@@ -128,6 +137,7 @@ def load_plan_state(session: Session, plan: Plan) -> PlanState:
         votes_by_time=repo.get_votes_by_time(session, plan),
         guest_votes_by_time=repo.get_guest_votes_by_time(session, plan),
         minimum=minimum_for(session, plan),
+        explicit_minimum=plan.expected_count,
         spotlight=plan.spotlight_round_id,
     )
 
@@ -144,6 +154,8 @@ def plan_tally(session: Session, plan: Plan, tz_name: str,
         asks_interest=plan.asks_interest,
         time_keys=st.time_keys,
         minimum=st.minimum,
+        explicit_minimum=st.explicit_minimum,
+        member_total=len(st.member_emails),
         labels={r.id: time_label(r, tz_name) for r in st.rounds},
         spotlight=st.spotlight,
     )
@@ -226,8 +238,9 @@ def winning_round(session: Session, plan: Plan, tz_name: str,
     """Which time would book right now, or None if nothing qualifies."""
     st = state or load_plan_state(session, plan)
     t = plan_tally(session, plan, tz_name, state=st)
-    key = choose_winner(t.times, minimum=st.minimum, spotlight=st.spotlight,
-                        order=st.time_keys)
+    key = choose_winner(t.times, minimum=st.explicit_minimum,
+                        member_total=len(st.member_emails),
+                        spotlight=st.spotlight, order=st.time_keys)
     if key is None:
         return None
     return next((r for r in st.rounds if r.id == key), None)
