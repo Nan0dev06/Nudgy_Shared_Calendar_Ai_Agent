@@ -2,8 +2,12 @@
 
 GET    /groups/{group_id}/events   -> events + tasks for the group
 POST   /groups/{group_id}/events   -> create; optionally sync to Google Calendar
-PATCH  /events/{event_id}          {"done": true}  -> check a task off
+PATCH  /events/{event_id}          -> check a task off, and/or edit its fields
 DELETE /events/{event_id}          -> remove (and delete the Google event too)
+
+Who may do what lives in tools/event_rules.py, not here: personal events belong
+to their owner, shared events can't be edited by any one person (changes go to
+a group vote — not built yet), and only the creator deletes.
 
 Google sync uses the same pattern as booking.py: one event on the creator's
 primary calendar with chosen members as attendees, sendUpdates="all" — Google
@@ -27,6 +31,7 @@ from app.db.models import GroupEvent, User
 from app.db import repo
 from app.db.session import get_session
 from app.realtime import events_changed
+from app.tools import event_rules
 
 log = logging.getLogger("nudgy.api")
 
@@ -49,7 +54,28 @@ class CreateEventBody(BaseModel):
 
 
 class PatchEventBody(BaseModel):
-    done: bool
+    """Tick a task off, and/or edit an event's fields.
+
+    Every field is optional and "was it sent?" is read from `model_fields_set`,
+    not from the value — otherwise clearing a location (`null`) would be
+    indistinguishable from not mentioning it. `kind` and `personal` are absent
+    on purpose: see repo.update_event.
+    """
+    done: bool | None = None
+    title: str | None = Field(default=None, min_length=1, max_length=200)
+    category: str | None = Field(default=None, max_length=30)
+    location: str | None = Field(default=None, max_length=200)
+    start_iso: str | None = None
+    end_iso: str | None = None
+    # the owner revealing (or re-hiding) their own personal event's details
+    anonymous: bool | None = None
+
+
+# Everything here is a change to what the event IS, so all of it goes through
+# can_edit. `done` is the exception and is handled separately.
+EDIT_FIELDS = frozenset(
+    {"title", "category", "location", "start_iso", "end_iso", "anonymous"}
+)
 
 
 class RsvpBody(BaseModel):
@@ -201,6 +227,12 @@ def _sync_to_google(
         return {"ok": False, "reason": f"{type(exc).__name__}: {exc}"}
 
 
+def _check(decision) -> None:
+    """Turn an event_rules.Decision into a 403 carrying its own explanation."""
+    if not decision:
+        raise HTTPException(status_code=403, detail=decision.reason)
+
+
 @router.patch("/events/{event_id}")
 def patch_event(
     event_id: int,
@@ -208,13 +240,64 @@ def patch_event(
     user: User = Depends(get_current_user),
     session: Session = Depends(get_session),
 ):
+    """Tick a task off, and/or edit the event itself.
+
+    Two different permissions, checked separately: finishing shared work is
+    collaborative, changing what the thing IS is not. See tools/event_rules.py.
+    """
     event = repo.get_event(session, event_id)
     if event is None:
         raise HTTPException(status_code=404, detail="No such event.")
     _require_membership(session, user, event.group_id)
-    repo.set_event_done(session, event, body.done)
+
+    sent = body.model_fields_set
+    if not sent:
+        raise HTTPException(status_code=400, detail="Nothing to change.")
+    edits = sent & EDIT_FIELDS
+
+    creator = session.get(User, event.created_by)
+    creator_email = creator.email if creator else None
+    if "done" in sent:
+        _check(event_rules.can_toggle_done(event, user.id, creator_email))
+    if edits:
+        _check(event_rules.can_edit(event, user.id, creator_email))
+        # Only personal events are editable today, and those never sync out
+        # (see create_event), so this is unreachable — it exists so that if the
+        # group-vote path ever reaches here before the provider write is wired,
+        # it fails loudly instead of letting Nudgy and Google quietly disagree.
+        if event.synced and event.gcal_event_id:
+            raise HTTPException(
+                status_code=409,
+                detail="This event is on a real calendar and can't be edited here yet.",
+            )
+
+    fields: dict = {}
+    if "done" in sent:
+        fields["done"] = body.done
+    for name in ("title", "category", "location", "anonymous"):
+        if name in sent:
+            fields[name] = getattr(body, name)
+
+    if "start_iso" in sent or "end_iso" in sent:
+        start = _parse_iso(body.start_iso, "start_iso") if "start_iso" in sent else event.start
+        end = _parse_iso(body.end_iso, "end_iso") if "end_iso" in sent else event.end
+        if event.kind == "event":
+            if start is None or end is None:
+                raise HTTPException(status_code=400, detail="Events need a start and an end.")
+            if end <= start:
+                raise HTTPException(status_code=400, detail="Event end must be after start.")
+        else:
+            # A task's due date is start_utc and end_utc mirrors it — the same
+            # shape create_event builds (see the GroupEvent docstring).
+            end = start
+        fields["start_utc"] = start
+        fields["end_utc"] = end
+
+    repo.update_event(session, event, **fields)
     _announce(event)
-    return _event_json(event, user.timezone, viewer_id=user.id)
+    return _event_json(
+        event, user.timezone, viewer_id=user.id, creator_email=creator_email,
+    )
 
 
 @router.post("/events/{event_id}/rsvp")
@@ -259,6 +342,8 @@ def delete_event(
     if event is None:
         raise HTTPException(status_code=404, detail="No such event.")
     _require_membership(session, user, event.group_id)
+    creator = session.get(User, event.created_by)
+    _check(event_rules.can_delete(event, user.id, creator.email if creator else None))
 
     gcal_result = None
     if event.synced and event.gcal_event_id:

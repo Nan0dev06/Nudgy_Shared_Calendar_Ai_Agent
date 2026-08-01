@@ -241,7 +241,9 @@ function TaskModal() {
           className="hov-lift-sm"
           style={{ ...dpill(true), flex: 1, justifyContent: "center" }}
           onClick={async () => {
-            await setTaskDone(t.id, true);
+            // The server can refuse (it isn't yours). Only claim it happened,
+            // and only close, once it actually did.
+            if (!(await setTaskDone(t.id, true))) return;
             pushActivity({ dot: "#DCA744", pre: "You completed ", bold: t.title, post: "" });
             setModal(null);
           }}
@@ -252,8 +254,7 @@ function TaskModal() {
           className="hov-glass"
           style={{ ...gpill(true), flex: 1, justifyContent: "center", color: "#b08a80" }}
           onClick={async () => {
-            await removeEvent(t.id);
-            setModal(null);
+            if (await removeEvent(t.id)) setModal(null);
           }}
         >
           Remove
