@@ -316,8 +316,15 @@ def patch_event(
         sync = _push_edit_to_calendar(session, event)
 
     _announce(event)
+    # Carry the RSVPs like GET and the rsvp endpoint do. Without them a PATCH
+    # answered with an empty attendance list, so the client would blank the
+    # names right at the moment a material edit made them most worth showing.
+    members = repo.get_group_members(session, event.group_id)
+    email_of = {m.id: m.email for m in members}
     out = _event_json(
         event, user.timezone, viewer_id=user.id, creator_email=creator_email,
+        rsvps={email_of[r.user_id]: r.status
+               for r in event.rsvps if r.user_id in email_of},
     )
     # Who now owes an answer, so the UI can say "3 people need to re-confirm"
     # instead of the change looking like it cost nothing.

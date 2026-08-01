@@ -421,3 +421,17 @@ def test_a_personal_event_edit_resets_nothing(ctx):
     r = client.patch(f"/events/{ev}", json={"title": "Dentist"})
     assert r.status_code == 200
     assert r.json()["needs_reconfirm"] == []
+
+
+def test_patch_answers_with_the_attendance_it_just_changed(ctx):
+    """A PATCH used to answer with an empty rsvps map, so a client refreshing
+    from the response blanked the names exactly when a material edit made them
+    most worth showing."""
+    client, Session = ctx
+    owner_id, other_id, gid = _group_of_two(Session)
+    ev = _event(Session, gid, owner_id)
+    _rsvp(Session, ev, other_id, "going")
+
+    _auth(client, owner_id)
+    body = client.patch(f"/events/{ev}", json={"title": "Moved"}).json()
+    assert body["rsvps"] == {"mo@x.com": "needs_reconfirm"}
