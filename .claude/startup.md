@@ -49,14 +49,32 @@ Read these before doing anything else this session:
   distinguishes "clear it" from "don't touch it".
 - **Next up in Phase 2:** conversation persistence, model router + fallback.
 
-## Decided 2026-07-31, not yet built (see docs/v1-decisions.md)
+## Decided 2026-08-01, not yet built — READ `docs/poll-edit-redesign.md` FIRST
 
-- **Edit proposals + voting** — the next session. Any member proposes a change
-  to a shared event; EVERY field goes to a group vote (titles included);
-  majority wins but the CREATOR applies it, so nothing reaches a real calendar
-  by rule alone. This is where `update_event` (implemented in both providers,
-  called by nothing) finally gets wired, where the edit UI lands, and where
-  **change history** fits. Attendees are notified on every applied edit.
+The poll/voting/editing logic was redesigned from first principles on 2026-08-01
+and that doc is authoritative; the poll + editing sections of `v1-decisions.md`
+are marked superseded/amended and point at it. Headline changes:
+
+- **Poll modes finally built** (Quick / Pick-a-time / Float-an-idea) — they were
+  `[LOCKED]` since 2026-07-25 and never existed in code. Interest survives only
+  in Float-an-idea.
+- **Parallel time voting + a host spotlight** replaces the serial round queue.
+  Moving the spotlight resets nothing. Deletes `advance_to_next_time`, the
+  `queued/active/skipped` machine, and the `dead` status.
+- **Votes gain a third state** (yes / no / if needed).
+- **Every poll carries a required minimum** (`expected_count`, prefilled with a
+  group majority) and **converges by itself at the deadline** — best time that
+  meets the minimum books for its yes voters. Deletes `auto_book`.
+- **Members can add candidate times**; the host still decides.
+- **A booked poll becomes a `GroupEvent`** with the yes-voters as attendees —
+  today they're separate models, which is why a booked poll has no edit path.
+- **Editing = RSVP-reset, not a vote.** Creator-only edits; material ones
+  (title/start/end/location) reset attendees to `needs_reconfirm`, tentative
+  until the event. This is where `update_event` (implemented in both providers,
+  called by nothing, guarded by a deliberate 409) finally gets wired.
+- **Availability must learn about in-app events.** `fetch_busy_for_group` reads
+  ONLY external freebusy — in-app events and RSVPs affect nothing today, while
+  calendar-optional is `[LOCKED]`. `needs_reconfirm` counts as busy.
 - **Inbound sync** — the user considers this beta-critical: external events
   should be visible IN Nudgy, not merely block scheduling as opaque busy ranges.
   Titles are **opt-in per connected calendar**, visible to their **owner only**

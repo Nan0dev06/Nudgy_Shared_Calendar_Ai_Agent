@@ -38,6 +38,11 @@ Group plans/polls/events are scoped to the group; *time* is unified per person. 
 - **Process:** write tests once an idea is confirmed; PRs on feature branches into the integration branch; keep `main` untouched until told. [LOCKED]
 
 ## Redesigned poll/plan mechanism (answers "is it overkill?")
+> **SUPERSEDED 2026-08-01 by `docs/poll-edit-redesign.md`.** A verification pass found
+> none of the modes below were ever built. The redesign keeps them and adds parallel
+> time voting, a required minimum, and automatic convergence at the deadline. Read that
+> doc, not this section, before building.
+
 Keep the underlying engine (interest + time votes), but expose it as **modes** so the
 two-stage cascade is a *choice*, never mandatory:
 - **Quick plan** — place + time already set → one **yes/no**; yes-voters get it (auto-book if enabled, else host locks in).
@@ -51,7 +56,15 @@ deadlines/auto-expire, member-proposed times, auto-book-if-all-yes, reminders. [
 - Roles exist to gate: manage membership (invite/remove), rename/delete group, transfer ownership, (later) billing. Default group creator = owner = default host. [LOCKED]
 - **Default when a host cancels: keep the plan and auto-book-if-all-yes**, with a notification letting the group pick another rule (majority-by-deadline / designate a decider / elect a new host). The richer host-handover options are a specific edge case → **[LATER]**; v1 ships only the sensible default. [LOCKED]
 
-## Editing events & tasks (decided 2026-07-31)
+## Editing events & tasks (decided 2026-07-31, AMENDED 2026-08-01)
+> **The vote mechanism below was replaced by RSVP-reset — see `docs/poll-edit-redesign.md` §3.**
+> Rejected because it is a second vote engine beside the poll engine, and because
+> majority rule hands an event to people who voted against it. What survives: personal
+> events belong to their owner; shared events are not unilaterally editable by *members*;
+> every field including title is material; attendees are notified on every applied edit.
+> What changed: only the creator edits (others propose), and a material edit resets
+> attendance instead of opening a vote.
+
 - **Personal events belong to their owner.** Nobody else can edit, change or delete
   another member's personal event — not the group, not the group's creator. [LOCKED]
 - **Shared group events/tasks are not unilaterally editable — not even by their

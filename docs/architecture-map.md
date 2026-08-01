@@ -134,7 +134,7 @@ the same two functions. Consumed by `api/stream_routes.py`; knobs
 | `loop.py` | The multi-step agent loop (calls the model, dispatches tools). |
 | `prompt.py` | System-prompt assembly (incl. the user-memory block). |
 | `tools.py` | Agent tool definitions + implementations (find slots, suggest venues, create plan, …). |
-| `availability.py` | **Availability service:** `fetch_busy_for_group` (unions each member's calendars via the cache) + `compute_availability` (slots + partial windows). The bridge between DB and `tools/slots`. |
+| `availability.py` | **Availability service:** `fetch_busy_for_group` (unions each member's connected calendars via the cache **with their in-app Nudgy events**) + `compute_availability` (slots + partial windows). The bridge between DB and `tools/slots`. Busy has two sources — see `docs/poll-edit-redesign.md` §4. |
 | `fencing.py` | **The trust boundary.** Sanitizes text nobody on this side wrote (calendar locations, OSM venue/area names, group names, reviews, memory notes) and wraps it in `<untrusted>` blocks. Applied to the prompt in `prompt.py` and to *every* tool result in `loop._tool_message`, so a tool added later is covered by default. |
 
 ### `api/` — HTTP routes
@@ -176,7 +176,8 @@ the same two functions. Consumed by `api/stream_routes.py`; knobs
 ## "I want to work on X → read these first"
 - **Availability / free-busy:** `agent/availability.py`, `tools/slots.py`,
   `calendars/cache.py`, `calendars/google.py`, `tools/freebusy.py`,
-  `db/repo.py` (`get_calendar_accounts`).
+  `db/repo.py` (`get_calendar_accounts`, `get_busy_events_for_users`,
+  `BUSY_RSVP_STATUSES`).
 - **The agent (behavior, tools, prompt):** `agent/loop.py`, `agent/prompt.py`,
   `agent/tools.py`; `core/quota.py`; `core/config.py` (LLM_* settings).
 - **Prompt injection / untrusted text:** `agent/fencing.py`, the `UNTRUSTED DATA`

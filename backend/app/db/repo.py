@@ -9,7 +9,7 @@ from __future__ import annotations
 import secrets
 from datetime import datetime, timezone
 
-from sqlalchemy import select
+from sqlalchemy import and_, or_, select
 from sqlalchemy.orm import Session, joinedload
 
 from app.db.models import (
@@ -737,6 +737,85 @@ def get_group_events(
             )
         ))
     return sorted(rows, key=lambda e: (e.start is None, e.start or e.created_at))
+
+
+# RSVP statuses that make a member BUSY for a shared event. `maybe` counts:
+# tentatively attending still means the time is spoken for, and proposing a
+# competing plan on top of it is worse than losing a slot that frees up. `cant`
+# is the only status that leaves the time open. See docs/poll-edit-redesign.md §4
+# — `needs_reconfirm` joins this set when the edit flow lands.
+BUSY_RSVP_STATUSES = ("going", "maybe")
+
+
+def get_busy_events_for_users(
+    session: Session,
+    user_ids: list[int],
+    window_start: datetime,
+    window_end: datetime,
+) -> dict[int, list[tuple[datetime, datetime]]]:
+    """In-app events as busy intervals, per user id, for a time window.
+
+    The second half of "one user = one unified availability": external freebusy
+    covers the calendars a person connected, and this covers what they keep in
+    Nudgy. A user who never connects Google or Outlook still has real busy time,
+    which is what makes the calendar-optional promise true rather than nominal.
+
+    Whose time an event occupies:
+      personal -> its owner, and nobody else.
+      shared   -> its creator, plus members who RSVP'd going/maybe. NOT the
+                  whole group: a shared event one member created does not get to
+                  block another member's time until that member said they're
+                  coming. Same consent rule the plan cascade runs on.
+
+    Read ACROSS GROUPS on purpose. A member's Tuesday is equally busy whether the
+    thing filling it belongs to this group or another one, and a group is a
+    planning context, not a separate time universe.
+
+    Tasks are excluded: a task's end mirrors its due date, so it is a zero-length
+    instant, and a deadline is not an appointment — it should never eat a slot.
+    """
+    if not user_ids:
+        return {}
+    wanted = set(user_ids)
+    busy: dict[int, list[tuple[datetime, datetime]]] = {uid: [] for uid in wanted}
+
+    group_ids = list(session.scalars(
+        select(Membership.group_id).where(Membership.user_id.in_(wanted)).distinct()
+    ))
+    events = list(session.scalars(
+        select(GroupEvent).where(
+            GroupEvent.kind == "event",
+            GroupEvent.start_utc.is_not(None),
+            GroupEvent.end_utc.is_not(None),
+            # overlap, not containment: something that started before the window
+            # and runs into it is still busy time inside it
+            GroupEvent.start_utc < window_end,
+            GroupEvent.end_utc > window_start,
+            or_(
+                and_(GroupEvent.personal.is_(True), GroupEvent.created_by.in_(wanted)),
+                and_(GroupEvent.personal.is_(False), GroupEvent.group_id.in_(group_ids)),
+            ),
+        )
+    ))
+    if not events:
+        return busy
+
+    rsvps: dict[int, dict[int, str]] = {}
+    for r in session.scalars(
+        select(EventRsvp).where(EventRsvp.event_id.in_([e.id for e in events]))
+    ):
+        rsvps.setdefault(r.event_id, {})[r.user_id] = r.status
+
+    for e in events:
+        interval = (e.start, e.end)
+        if e.created_by in wanted:
+            busy[e.created_by].append(interval)
+        if e.personal:
+            continue
+        for uid, status in rsvps.get(e.id, {}).items():
+            if uid in wanted and uid != e.created_by and status in BUSY_RSVP_STATUSES:
+                busy[uid].append(interval)
+    return busy
 
 
 def set_event_done(session: Session, event: GroupEvent, done: bool) -> None:

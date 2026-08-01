@@ -1,11 +1,24 @@
 """Availability service — the bridge between the DB and the Phase 1 slot math.
 
-Given a group, this fetches LIVE freebusy for every connected member (fresh at
-call time, per the real-time requirement), then reuses app/tools/slots.py to
-compute common free windows and a partial-availability breakdown for graceful
+Given a group, this builds each member's busy time, then reuses app/tools/slots.py
+to compute common free windows and a partial-availability breakdown for graceful
 degradation when no window works for everyone.
 
-Privacy: only busy time ranges are ever read (freebusy). No event titles.
+BUSY HAS TWO SOURCES, unioned (see docs/poll-edit-redesign.md §4):
+  1. LIVE freebusy from every calendar the member connected (fresh at call time,
+     per the real-time requirement).
+  2. Events the member keeps IN NUDGY — their own, plus shared events they said
+     they're coming to (repo.get_busy_events_for_users).
+
+Both, not either. A member who connected nothing still has real busy time, which
+is what makes "usable with no external calendar" true rather than nominal; a
+member who connected two calendars and also uses Nudgy gets all three merged.
+Union is the right operator because it is idempotent — an in-app event synced out
+to Google arrives from both sources and merging it twice changes nothing.
+
+Privacy: only busy time RANGES cross this boundary. External calendars are read
+via freebusy, which has no titles to leak; in-app events are reduced to their
+start/end here and their titles never enter the result.
 Token refresh: if a member's OAuth token was refreshed during load, the new
 token is written back to the DB immediately so it never silently goes stale.
 """
@@ -37,8 +50,20 @@ log = logging.getLogger("nudgy.agent")
 @dataclass
 class MemberBusy:
     email: str
-    connected: bool
-    busy: list[Interval] = field(default_factory=list)
+    connected: bool                  # has at least one external calendar attached
+    busy: list[Interval] = field(default_factory=list)   # merged, both sources
+    in_app_blocks: int = 0           # how many of `busy` came from Nudgy events
+
+    @property
+    def has_source(self) -> bool:
+        """Do we know anything at all about this person's time?
+
+        The distinction slots.py warns about: an empty busy list means "free all
+        week" for somebody we can actually see, and "no idea" for somebody we
+        can't. A connected calendar is a source even when it returns nothing;
+        so is a Nudgy event. Only somebody with neither is unknown.
+        """
+        return self.connected or self.in_app_blocks > 0
 
 
 @dataclass
@@ -64,34 +89,42 @@ def _fmt(dt: datetime, tz: ZoneInfo) -> str:
 def fetch_busy_for_group(
     session: Session, group: Group, now: datetime, days_ahead: int
 ) -> list[MemberBusy]:
-    """Live freebusy for every member. Logs each call so the loop is visible."""
+    """Every member's busy time: connected calendars UNION their Nudgy events.
+
+    Logs each member so the loop is visible.
+    """
     window_end = now + timedelta(days=days_ahead or 1)  # 0 means "today" — still a 1-day window
     members = repo.get_group_members(session, group.id)
+    # One batched query for everyone's in-app events rather than a round-trip per
+    # member — this runs on every availability call, including the agent's.
+    in_app = repo.get_busy_events_for_users(
+        session, [m.id for m in members], now, window_end
+    )
     results: list[MemberBusy] = []
     for user in members:
+        nudgy = in_app.get(user.id, [])
         accounts = repo.get_calendar_accounts(session, user)
-        if not accounts:
-            log.info("[freebusy] %s — NOT connected, skipping", user.email)
-            results.append(MemberBusy(email=user.email, connected=False))
-            continue
         # Union busy across EVERY calendar this person connected — being busy on
         # any one of them (personal, work, …) makes them busy. This is what keeps
         # one user = one free/busy truth across all their calendars. Reads go
         # through the short-TTL cache; the provider (and its silent token refresh)
         # is built only on a cache miss.
-        busy: list[Interval] = []
+        external: list[Interval] = []
         for account in accounts:
-            busy += freebusy_cache.get_busy(
+            external += freebusy_cache.get_busy(
                 account.id,
                 lambda tmin, tmax, acct=account: (
                     provider_for_account(session, acct).get_busy(tmin, tmax)
                 ),
                 now, window_end,
             )
-        busy = merge_intervals(busy)
-        log.info("[freebusy] %s — %d busy block(s) across %d calendar(s)",
-                 user.email, len(busy), len(accounts))
-        results.append(MemberBusy(email=user.email, connected=True, busy=busy))
+        busy = merge_intervals(external + nudgy)
+        log.info("[freebusy] %s — %d busy block(s) from %d calendar(s) + %d Nudgy event(s)",
+                 user.email, len(busy), len(accounts), len(nudgy))
+        results.append(MemberBusy(
+            email=user.email, connected=bool(accounts),
+            busy=busy, in_app_blocks=len(nudgy),
+        ))
     return results
 
 
@@ -116,17 +149,23 @@ def compute_availability(
     window_end = now + timedelta(days=days_ahead or 1)  # 0 means "today" — still a 1-day window
     members = fetch_busy_for_group(session, group, now, days_ahead)
 
+    # Anyone we know something about takes part in the intersection — a connected
+    # calendar OR Nudgy events both count. Before in-app events fed this, only
+    # connected members did, which silently ignored everyone using Nudgy as their
+    # calendar. Members with neither source are left out rather than counted as
+    # free all week (see MemberBusy.has_source).
+    sourced = [m for m in members if m.has_source]
     connected = [m for m in members if m.connected]
     not_connected = [m.email for m in members if not m.connected]
 
-    busy_by_member = {m.email: m.busy for m in connected}
+    busy_by_member = {m.email: m.busy for m in sourced}
     slots = find_common_slots(
         busy_by_member, now, window_end,
         duration_minutes=duration_minutes, tz_name=tz_name,
         earliest_hour=earliest_hour, latest_hour=latest_hour,
     )
-    log.info("[intersect] %d common slot(s) across %d connected member(s)",
-             len(slots), len(connected))
+    log.info("[intersect] %d common slot(s) across %d member(s) with a source "
+             "(%d connected)", len(slots), len(sourced), len(connected))
 
     result = {
         "now_local": _fmt(now, tz),
@@ -136,7 +175,15 @@ def compute_availability(
         "reasonable_hours": f"{earliest_hour:02d}:00-{latest_hour:02d}:00",
         "members_total": len(members),
         "members_connected": len(connected),
+        # who the intersection actually covers — connected OR keeping events in
+        # Nudgy. `members_connected` alone understates this now.
+        "members_with_source": len(sourced),
         "members_not_connected": not_connected,
+        # The list the AGENT must surface: people we know NOTHING about, so the
+        # slots below may hide a conflict. Not the same as members_not_connected
+        # — somebody who keeps their events in Nudgy is fully accounted for
+        # without ever attaching Google.
+        "members_unknown": [m.email for m in members if not m.has_source],
         "common_slots": [
             {
                 "start": _fmt(s, tz),
@@ -170,16 +217,16 @@ def compute_availability(
 
     # Graceful degradation: if nobody-can-all-meet, compute windows where the
     # MOST members overlap, so the model can offer the closest alternatives.
-    if not slots and len(connected) >= 2:
+    if not slots and len(sourced) >= 2:
         result["partial_windows"] = _best_partial_windows(
-            connected, now, window_end, duration_minutes, tz_name,
+            sourced, now, window_end, duration_minutes, tz_name,
             earliest_hour, latest_hour, tz,
         )
     return result
 
 
 def _best_partial_windows(
-    connected: list[MemberBusy],
+    sourced: list[MemberBusy],
     now: datetime,
     window_end: datetime,
     duration_minutes: int,
@@ -196,7 +243,7 @@ def _best_partial_windows(
 
     # free intervals per member (within reasonable hours)
     free_per_member: dict[str, list[Interval]] = {}
-    for m in connected:
+    for m in sourced:
         member_free = complement(merge_intervals(m.busy), now, window_end)
         free_per_member[m.email] = intersect(member_free, hours)
 
@@ -208,8 +255,8 @@ def _best_partial_windows(
             continue
         free = [email for email, ivs in free_per_member.items()
                 if any(s <= a and b <= e for s, e in ivs)]
-        if 0 < len(free) < len(connected):
-            busy = [m.email for m in connected if m.email not in free]
+        if 0 < len(free) < len(sourced):
+            busy = [m.email for m in sourced if m.email not in free]
             windows.append(PartialWindow(a, b, free, busy))
 
     windows.sort(key=lambda w: (-len(w.free_emails), w.start))
