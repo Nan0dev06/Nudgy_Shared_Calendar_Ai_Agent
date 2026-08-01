@@ -8,9 +8,20 @@ import { api } from "../api.js";
 // has no router; same trick the password-reset link uses).
 //
 // The whole point is that nothing here asks you to sign up. Give a name, answer
-// the same two questions members answer, done. The one account-shaped thing —
-// an email — is optional and buys exactly one thing: the calendar invite if the
+// the same questions members answer, done. The one account-shaped thing — an
+// email — is optional and buys exactly one thing: the calendar invite if the
 // plan gets booked. Say so, so it doesn't read as a signup field in disguise.
+//
+// Rewritten for the 2026-08-01 engine: a guest sees the SAME grid a member does
+// — every candidate time answerable at once, three states each — because a
+// guest's vote is a real vote counted in the same tally. There is no "active
+// time" to single out any more.
+
+const ANSWERS = [
+  ["yes", "Yes", "#2A9D8F"],
+  ["if_needed", "If needed", "#DCA744"],
+  ["no", "Can't", "#D95D39"],
+];
 
 function readShareToken() {
   return new URLSearchParams(window.location.search).get("share");
@@ -101,7 +112,7 @@ export default function SharePage() {
 
   const me = view.me;
   const closes = closesLabel(view.deadline_iso);
-  const activeTime = view.times.find((t) => t.round_id === view.active_round_id);
+  const times = view.times || [];
 
   const choice = (label, sub, color, onClick) => (
     <div
@@ -116,6 +127,53 @@ export default function SharePage() {
     >
       <span style={{ fontSize: 14, fontWeight: 600, color }}>{label}</span>
       {sub && <span style={{ fontSize: 11.5, color: "#a09889" }}>{sub}</span>}
+    </div>
+  );
+
+  // A guest answers exactly the question a member does, on exactly the same
+  // grid — every candidate time at once, three states each. Rendered in the
+  // BROWSER's zone: a guest has no stored timezone for us to use.
+  const timeRow = (t) => (
+    <div
+      key={t.round_id}
+      style={{
+        borderRadius: 14, padding: "11px 13px", display: "flex",
+        flexDirection: "column", gap: 8,
+        background: t.spotlit ? "rgba(42,157,143,.07)" : "rgba(255,253,247,.5)",
+        border: t.spotlit
+          ? "1.4px solid rgba(42,157,143,.45)"
+          : "1px solid rgba(255,255,255,.6)",
+        opacity: busy ? 0.6 : 1, transition: "opacity .15s",
+      }}
+    >
+      <div style={{ display: "flex", alignItems: "baseline", gap: 8, flexWrap: "wrap" }}>
+        <span style={{ fontSize: 13.5, fontWeight: 600 }}>{localTime(t.start_iso)}</span>
+        {t.spotlit && (
+          <span style={{ fontSize: 10.5, fontWeight: 600, letterSpacing: ".06em", textTransform: "uppercase", color: "#2A9D8F" }}>
+            ★ they're leaning this way
+          </span>
+        )}
+      </div>
+      <div style={{ display: "flex", gap: 7 }}>
+        {ANSWERS.map(([value, label, color]) => (
+          <div
+            key={value}
+            className="hov-lift-sm"
+            onClick={() => act(() => api.guestTimeVote(token, t.round_id, value))}
+            style={{
+              flex: 1, textAlign: "center", borderRadius: 11, padding: "7px 9px",
+              fontSize: 12, fontWeight: 600, cursor: busy ? "default" : "pointer",
+              transition: "all .2s",
+              color: t.my_answer === value ? "#fff" : color,
+              background: t.my_answer === value ? color : "rgba(255,253,247,.7)",
+              border: t.my_answer === value ? `1.4px solid ${color}`
+                : `1px solid color-mix(in srgb, ${color} 30%, transparent)`,
+            }}
+          >
+            {label}
+          </div>
+        ))}
+      </div>
     </div>
   );
 
@@ -194,12 +252,15 @@ export default function SharePage() {
         </>
       )}
 
-      {/* ---- the same two questions members get ---------------------------- */}
+      {/* ---- the same questions members get -------------------------------- */}
+      {/* Interest is asked ONLY by a Float-an-idea poll (one started with no
+          times). Anywhere else a yes on a time IS the answer, so asking
+          separately would be a redundant tap. */}
       {me && view.voting_open && me.stage === "interest" && (
         <>
           <div style={{ fontSize: 14, fontWeight: 600 }}>Are you in, {me.name}?</div>
           <div style={{ display: "flex", gap: 11 }}>
-            {choice("I'm in", activeTime ? "you'll get the time question next" : null,
+            {choice("I'm in", "you'll be asked about times as they go up",
               "#2A9D8F", () => act(() => api.guestInterest(token, true)))}
             {choice("Not this time", null, "#D95D39",
               () => act(() => api.guestInterest(token, false)))}
@@ -207,17 +268,19 @@ export default function SharePage() {
         </>
       )}
 
-      {me && view.voting_open && me.stage === "time" && activeTime && (
+      {me && view.voting_open && me.stage !== "interest" && me.stage !== "out" && times.length > 0 && (
         <>
           <div style={{ fontSize: 14, fontWeight: 600 }}>
-            Does <span style={{ color: "#2B5B84" }}>{localTime(activeTime.start_iso)}</span> work
-            for you?
+            {times.length === 1
+              ? "Does this work for you?"
+              : `Which of these ${times.length} work for you?`}
           </div>
-          <div style={{ display: "flex", gap: 11 }}>
-            {choice("Works for me", null, "#2A9D8F",
-              () => act(() => api.guestTimeVote(token, true, activeTime.round_id)))}
-            {choice("Can't at that time", "you stay in — they may try another time",
-              "#D95D39", () => act(() => api.guestTimeVote(token, false, activeTime.round_id)))}
+          <div style={{ fontSize: 11.5, color: "#a09889", lineHeight: 1.5, marginTop: -8 }}>
+            Answer each one. “If needed” means you could make it work but would
+            rather not — it still counts, and it's how most of these get decided.
+          </div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            {times.map(timeRow)}
           </div>
         </>
       )}
@@ -228,20 +291,32 @@ export default function SharePage() {
 
       {err && me && <div style={{ fontSize: 12.5, color: "#D95D39" }}>{err}</div>}
 
-      {/* changing your mind is a normal thing to want, so don't hide it */}
-      {me && view.voting_open && me.stage !== "interest" && (
+      {/* changing your mind is a normal thing to want, so don't hide it. Only
+          a Float poll has an interest answer to flip; elsewhere the time
+          buttons above already are the change. */}
+      {me && view.voting_open && view.asks_interest && me.stage !== "interest" && (
         <div
           className="hov-row"
           style={{ fontSize: 12, fontWeight: 600, color: "#2B5B84", cursor: "pointer", alignSelf: "flex-start" }}
           onClick={() => act(() => api.guestInterest(token, me.stage === "out"))}
         >
-          {me.stage === "out" ? "Actually, I'm in →" : "Change my answer →"}
+          {me.stage === "out" ? "Actually, I'm in →" : "Actually, I'm out →"}
         </div>
       )}
 
-      {view.status === "scheduled" && (
-        <div style={{ fontSize: 13, color: "#2A9D8F", fontWeight: 600 }}>
-          It's booked. {me?.name ? "See you there." : ""}
+      {view.status === "booked" && (
+        <div style={{ fontSize: 13, color: "#2A9D8F", fontWeight: 600, lineHeight: 1.6 }}>
+          It's booked.{" "}
+          {me?.name
+            ? "If you said you could make it and left an email, the invite is on its way."
+            : ""}
+        </div>
+      )}
+
+      {view.status === "expired" && (
+        <div style={{ fontSize: 13, color: "#8c8577", lineHeight: 1.6 }}>
+          Voting closed without enough people on one time. Whoever organised it
+          can still pick one from the answers that came in — yours was kept.
         </div>
       )}
 

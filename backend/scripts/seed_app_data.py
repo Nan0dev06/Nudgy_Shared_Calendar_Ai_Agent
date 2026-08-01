@@ -246,41 +246,61 @@ def seed(session, me_email: str | None) -> None:
     for u, place, stars, text in REVIEWS:
         session.add(PlaceReview(user_id=u.id, place=place, stars=stars, text=text))
 
-    # ---- Plans (two-stage polls) in the crew group --------------------------
+    # ---- Plans (polls) in the crew group ------------------------------------
+    # Rebuilt for the 2026-08-01 engine (docs/poll-edit-redesign.md §1): there
+    # is no round status — every candidate time is votable at once — votes are
+    # three-state, and `asks_interest` (not "has times yet") decides whether the
+    # poll asks "are you in?" at all. `expected=None` is the DEFAULT RULE: every
+    # member must be able to make the time. A number means guests count too.
     def plan(g, host, title, location, slot_pairs, interest=(), time_votes=(),
-             status="open", expected=None):
+             status="open", expected=None, asks_interest=False, spotlight=None):
         p = Plan(group_id=g.id, created_by=host.id, title=title,
-                 location=location, status=status, expected_count=expected)
+                 location=location, status=status, expected_count=expected,
+                 asks_interest=asks_interest)
         session.add(p)
         session.flush()
         rounds = []
         for i, (s, e) in enumerate(slot_pairs):
-            r = TimeRound(plan_id=p.id, ordinal=i, slot_start_utc=s, slot_end_utc=e,
-                          status="active" if i == 0 else "queued")
+            r = TimeRound(plan_id=p.id, ordinal=i, slot_start_utc=s,
+                          slot_end_utc=e, created_by=host.id)
             session.add(r)
             rounds.append(r)
         session.flush()
-        session.add(InterestVote(plan_id=p.id, user_id=host.id, yes=True))
-        for u, yes in interest:
-            session.add(InterestVote(plan_id=p.id, user_id=u.id, yes=yes))
-        for u, yes in time_votes:
-            if rounds:
-                session.add(TimeVote(round_id=rounds[0].id, user_id=u.id, yes=yes))
+        if asks_interest:
+            session.add(InterestVote(plan_id=p.id, user_id=host.id, yes=True))
+            for u, yes in interest:
+                session.add(InterestVote(plan_id=p.id, user_id=u.id, yes=yes))
+        # (user, round index, "yes"|"no"|"if_needed") — every time is answerable
+        # independently, so the seed has to say WHICH one each answer is about.
+        for u, idx, answer in time_votes:
+            if idx < len(rounds):
+                session.add(TimeVote(round_id=rounds[idx].id, user_id=u.id,
+                                     answer=answer))
+        if spotlight is not None and spotlight < len(rounds):
+            p.spotlight_round_id = rounds[spotlight].id
         return p
 
+    # Pick-a-time: three candidates, all live, a spotlight on the second, and a
+    # mix of all three answers — the shape the new card is built to render.
     plan(
         g1, aya, "Karaoke night", "Cheers Broumana",
-        [(_at(5, 20), _at(5, 23))],
-        interest=[(karim, True), (lina, False)],
-        time_votes=[(karim, True)],
-        expected=3,
+        [(_at(5, 20), _at(5, 23)), (_at(6, 20), _at(6, 23)), (_at(7, 21), _at(7, 23))],
+        time_votes=[
+            (karim, 0, "yes"), (lina, 0, "no"), (omar, 0, "if_needed"),
+            (karim, 1, "yes"), (lina, 1, "yes"),
+            (omar, 2, "no"),
+        ],
+        spotlight=1,
     )
+    # Float-an-idea: no times yet, so this one really does ask "are you in?"
     plan(g1, karim, "Paintball next weekend?", None, [],
-         interest=[(aya, True)])  # pure interest check — no time yet
+         asks_interest=True, interest=[(aya, True), (lina, False)])
+    # Quick plan: one time, one question, and a typed bar so guests count.
     plan(
         g2, omar, "Group lunch after the mock exam", "Socrate Hamra",
         [(_at(4, 13), _at(4, 14, 30))],
-        interest=[(maya, True), (karim, False)],
+        time_votes=[(maya, 0, "yes"), (karim, 0, "if_needed")],
+        expected=3,
     )
 
     session.commit()
