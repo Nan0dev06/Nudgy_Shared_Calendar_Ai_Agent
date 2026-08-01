@@ -233,8 +233,11 @@ def group_availability(
     except Exception:  # a stale token or Google hiccup shouldn't 500 the UI
         log.exception("availability failed for group %d", group_id)
         return {"members_busy": [], "common_slots": [], "error": "Couldn't reach Google Calendar — try again."}
-    # With no connected calendars the slot math would call the whole window
-    # "free"; that's meaningless, so surface no free windows instead.
-    if result.get("members_connected", 0) == 0:
+    # With nothing known about anybody the slot math would call the whole window
+    # "free"; that's meaningless, so surface no free windows instead. The test is
+    # members_with_source, NOT members_connected: a group that keeps its events in
+    # Nudgy and connected no external calendar has a genuine availability picture
+    # and must get real slots (docs/poll-edit-redesign.md §4).
+    if result.get("members_with_source", 0) == 0:
         result["common_slots"] = []
     return result
