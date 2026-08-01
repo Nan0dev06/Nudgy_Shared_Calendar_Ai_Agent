@@ -20,7 +20,10 @@ Interval = tuple[datetime, datetime]
 
 # calendarList accessRoles that mean "this is my own commitment" — we skip
 # "reader" and "freeBusyReader", which are subscribed/read-only calendars.
-_OWNED_ROLES = {"owner", "writer"}
+# Public because inbound sync (calendars/google.py) must mirror exactly the set
+# of calendars that makes somebody busy here: a calendar that blocks your time
+# but is never mirrored shows up as an unexplainable block.
+OWNED_ROLES = {"owner", "writer"}
 
 
 def _to_utc_iso(dt: datetime) -> str:
@@ -45,7 +48,7 @@ def _owned_calendar_ids(service) -> list[str]:
     while True:
         resp = service.calendarList().list(pageToken=page_token).execute()
         for cal in resp.get("items", []):
-            if cal.get("accessRole") in _OWNED_ROLES:
+            if cal.get("accessRole") in OWNED_ROLES:
                 ids.append(cal["id"])
         page_token = resp.get("nextPageToken")
         if not page_token:

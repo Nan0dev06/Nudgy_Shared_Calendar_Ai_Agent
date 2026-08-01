@@ -91,6 +91,21 @@ CREATE TABLE event_rsvps (
     status VARCHAR NOT NULL,
     updated_at DATETIME NOT NULL
 );
+-- pre-inbound-sync: a connected calendar had no title opt-in and no bookmark
+CREATE TABLE calendar_accounts (
+    id INTEGER NOT NULL PRIMARY KEY,
+    user_id INTEGER NOT NULL,
+    provider VARCHAR NOT NULL,
+    external_email VARCHAR NOT NULL,
+    token_json VARCHAR,
+    color VARCHAR,
+    sync_setting VARCHAR NOT NULL,
+    is_primary BOOLEAN NOT NULL,
+    created_at DATETIME NOT NULL
+);
+INSERT INTO calendar_accounts VALUES
+    (1, 1, 'google', 'ada@example.com', 'tok', NULL, 'two_way', 1,
+     '2026-07-01 10:00:00');
 INSERT INTO events VALUES
     (1, 1, 1, 'event', 'Picnic', 'Event', 'Park', '2026-07-20 14:00:00',
      '2026-07-20 16:00:00', 0, 0, 1, 0, NULL, NULL, '2026-07-01 10:00:00');
@@ -259,3 +274,86 @@ def test_a_pre_existing_rsvp_is_untouched_by_the_upgrade(legacy_db):
     with engine.begin() as conn:
         got = conn.execute(text("SELECT status FROM event_rsvps WHERE id = 1")).scalar()
     assert got == "going"
+
+
+# ------------------------------------------------------------- inbound sync
+
+def test_existing_calendars_gain_read_titles_switched_OFF(legacy_db):
+    """The opt-in must arrive off for calendars connected before it existed.
+
+    This is the whole substance of the privacy decision (v1-decisions.md #5): a
+    consent switch that upgrades itself into the "on" position for people who
+    never saw it is not consent. A DEFAULT TRUE here would start reading titles
+    off every already-connected calendar on the next deploy.
+    """
+    path, engine = legacy_db
+    from app.db.session import init_db
+
+    init_db()
+
+    assert "read_titles" in _columns(engine, "calendar_accounts")
+    with engine.begin() as conn:
+        got = conn.execute(
+            text("SELECT read_titles FROM calendar_accounts WHERE id = 1")
+        ).scalar()
+    assert not got, "an existing calendar came back with titles already enabled"
+
+
+def test_connecting_a_calendar_still_works_after_the_upgrade(legacy_db):
+    """The failure mode a NOT NULL column with no default would cause.
+
+    An old `calendar_accounts` table gains `read_titles`; if the added column
+    were NOT NULL without DEFAULT FALSE, every subsequent INSERT that didn't
+    name it — including db/session.py's own backfill — would fail, and the app
+    would refuse to connect a calendar at all.
+    """
+    path, engine = legacy_db
+    from app.db.session import init_db
+
+    init_db()
+
+    with engine.begin() as conn:
+        conn.execute(text(
+            "INSERT INTO calendar_accounts "
+            "  (user_id, provider, external_email, token_json, sync_setting, "
+            "   is_primary, created_at) "
+            "VALUES (1, 'microsoft', 'ada@outlook.com', 'tok2', 'two_way', 0, "
+            "        '2026-08-01 10:00:00')"
+        ))
+        got = conn.execute(text(
+            "SELECT read_titles FROM calendar_accounts WHERE provider = 'microsoft'"
+        )).scalar()
+    assert not got
+
+
+def test_the_mirror_tables_are_created_on_an_existing_database(legacy_db):
+    """`calendar_sync_states` and `external_events` are brand-new TABLES, which
+    create_all builds even on an old database — no _LATE_COLUMNS entry needed.
+    Pinned because "new table" and "new column" have genuinely different
+    migration paths here, and getting them the wrong way round fails silently
+    (create_all never ALTERs an existing table)."""
+    path, engine = legacy_db
+    from app.db.session import init_db
+
+    init_db()
+
+    tables = set(inspect(engine).get_table_names())
+    assert {"calendar_sync_states", "external_events"} <= tables
+
+    with engine.begin() as conn:
+        conn.execute(text(
+            "INSERT INTO calendar_sync_states "
+            "  (account_id, calendar_id, name, sync_token) "
+            "VALUES (1, 'ada@example.com', 'Personal', 'tok-abc')"
+        ))
+        conn.execute(text(
+            "INSERT INTO external_events "
+            "  (user_id, account_id, calendar_id, external_id, start_utc, "
+            "   end_utc, all_day, busy, updated_at) "
+            "VALUES (1, 1, 'ada@example.com', 'evt-1', '2026-08-03 09:00:00', "
+            "        '2026-08-03 10:00:00', 0, 1, '2026-08-01 10:00:00')"
+        ))
+        title = conn.execute(
+            text("SELECT title FROM external_events WHERE external_id = 'evt-1'")
+        ).scalar()
+    assert title is None, "an untitled mirror row must be storable"

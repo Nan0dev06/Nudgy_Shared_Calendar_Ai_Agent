@@ -9,13 +9,13 @@ from __future__ import annotations
 import secrets
 from datetime import datetime, timezone
 
-from sqlalchemy import and_, or_, select
+from sqlalchemy import and_, delete, or_, select, update
 from sqlalchemy.orm import Session, joinedload
 
 from app.db.models import (
-    CalendarAccount, EventRsvp, Group, GroupEvent, GuestInterestVote,
-    GuestTimeVote, InterestVote, Membership, Plan, PlaceReview, PlanGuest,
-    TimeRound, TimeVote, User,
+    CalendarAccount, CalendarSyncState, EventRsvp, ExternalEvent, Group,
+    GroupEvent, GuestInterestVote, GuestTimeVote, InterestVote, Membership,
+    Plan, PlaceReview, PlanGuest, TimeRound, TimeVote, User,
 )
 
 
@@ -138,11 +138,28 @@ def set_primary_calendar_account(
 
 
 def disconnect_calendar_account(
-    session: Session, user: User, account: CalendarAccount,
+    session: Session, user: User, account: CalendarAccount, keep_events: bool = False,
 ) -> None:
     """Remove a connected calendar. If it was primary and other connected calendars
     remain, promote the earliest-connected survivor so writes still have a target
-    (calendar_accounts is ordered by created_at, so survivors[0] is earliest)."""
+    (calendar_accounts is ordered by created_at, so survivors[0] is earliest).
+
+    `keep_events` decides the fate of whatever inbound sync mirrored from this
+    calendar, and the caller is expected to have ASKED. Deleting somebody's
+    schedule because they unlinked an account is destructive and surprising;
+    silently keeping a copy of a calendar they just disconnected is worse. So
+    neither is a default the app picks on its own — the API requires the choice
+    and passes it through.
+
+    Keeping detaches rather than copies: the rows stay under the user with
+    account_id NULL, a frozen record that no longer syncs. Reconnecting the same
+    calendar re-adopts them, because the mirror's uniqueness key is the user's
+    (see ExternalEvent), so nothing duplicates.
+    """
+    if keep_events:
+        detach_external_events(session, account)
+    else:
+        delete_external_events_for_account(session, account)
     was_primary = account.is_primary
     user.calendar_accounts.remove(account)  # delete-orphan cascade deletes the row
     session.flush()
@@ -153,6 +170,254 @@ def disconnect_calendar_account(
                 a.is_primary = False
             survivors[0].is_primary = True
     session.commit()
+
+
+# ------------------------------------------------------------- inbound sync
+# The mirror of external events (docs/inbound-sync.md). Reads here are always
+# scoped to ONE user: an external event is the property of whoever's calendar it
+# came from, and groupmates only ever see it as anonymous busy time via
+# availability. Nothing in this section is group-scoped, on purpose.
+
+def set_account_read_titles(
+    session: Session, account: CalendarAccount, read_titles: bool,
+    keep_titles: bool = False,
+) -> None:
+    """Flip the per-calendar title opt-in (v1-decisions.md #5).
+
+    Two side effects, both required rather than tidy-up:
+
+    1. Every sync token on the account is cleared. Google's field mask is part
+       of the query frozen into a token, so a token minted while titles were off
+       can never start returning them — the next round has to be a full read
+       with the new mask. (Graph ignores the distinction, but one rule beats a
+       per-provider special case.)
+    2. Turning titles OFF purges the text already pulled in, unless the owner
+       said to keep it. That choice belongs to them: the titles are theirs, and
+       the app should neither hoard text somebody just withdrew consent for nor
+       quietly bin a schedule they may still be using. The times always stay —
+       they are what make the block a block.
+    """
+    account.read_titles = read_titles
+    clear_sync_tokens(session, account)
+    if not read_titles and not keep_titles:
+        purge_external_titles(session, account)
+    session.commit()
+
+
+def clear_sync_tokens(session: Session, account: CalendarAccount) -> None:
+    """Force every calendar on this account to re-read in full next tick.
+
+    Flushed, not committed — callers fold this into their own transaction.
+    """
+    session.execute(
+        update(CalendarSyncState)
+        .where(CalendarSyncState.account_id == account.id)
+        .values(sync_token=None)
+    )
+    session.flush()
+
+
+def purge_external_titles(session: Session, account: CalendarAccount) -> int:
+    """Strip titles/locations from this calendar's mirror, keeping the times."""
+    result = session.execute(
+        update(ExternalEvent)
+        .where(ExternalEvent.account_id == account.id)
+        .values(title=None, location=None)
+    )
+    session.flush()
+    return result.rowcount or 0
+
+
+def delete_external_events_for_account(session: Session, account: CalendarAccount) -> int:
+    result = session.execute(
+        delete(ExternalEvent).where(ExternalEvent.account_id == account.id)
+    )
+    session.flush()
+    return result.rowcount or 0
+
+
+def detach_external_events(session: Session, account: CalendarAccount) -> int:
+    """Keep the mirror but cut it loose from the connection being removed.
+
+    account_id NULL is what "the calendar this came from is gone" looks like:
+    the rows stay visible to their owner and stop being synced. They keep their
+    calendar_id, so reconnecting the same calendar re-adopts them on the next
+    round rather than inserting a second copy of everything.
+    """
+    result = session.execute(
+        update(ExternalEvent)
+        .where(ExternalEvent.account_id == account.id)
+        .values(account_id=None)
+    )
+    session.flush()
+    return result.rowcount or 0
+
+
+def get_sync_states(session: Session, account: CalendarAccount) -> list[CalendarSyncState]:
+    return list(session.scalars(
+        select(CalendarSyncState)
+        .where(CalendarSyncState.account_id == account.id)
+        .order_by(CalendarSyncState.id)
+    ))
+
+
+def upsert_sync_state(
+    session: Session, account: CalendarAccount, calendar_id: str,
+    name: str | None = None,
+) -> CalendarSyncState:
+    """The bookmark row for one calendar, created on first sight.
+
+    The name is refreshed every round so renaming a calendar in Google shows up
+    here, but never overwritten with None — a provider that declines to give a
+    display name should not erase one we already have.
+    """
+    state = session.scalar(
+        select(CalendarSyncState).where(
+            CalendarSyncState.account_id == account.id,
+            CalendarSyncState.calendar_id == calendar_id,
+        )
+    )
+    if state is None:
+        state = CalendarSyncState(account_id=account.id, calendar_id=calendar_id, name=name)
+        session.add(state)
+    elif name:
+        state.name = name
+    session.commit()
+    return state
+
+
+def accounts_with_tokens(session: Session) -> list[CalendarAccount]:
+    """Every connected calendar the sync job could poll (i.e. holding a token)."""
+    return list(session.scalars(
+        select(CalendarAccount).where(CalendarAccount.token_json.is_not(None))
+        .order_by(CalendarAccount.id)
+    ))
+
+
+def save_sync_round(
+    session: Session,
+    state: CalendarSyncState,
+    *,
+    changed: list,
+    deleted_ids: list[str],
+    next_token: str | None,
+    full: bool,
+    window_start: datetime,
+    window_end: datetime,
+    now: datetime,
+    store_titles: bool,
+) -> dict:
+    """Apply one completed sync round and advance the bookmark, atomically.
+
+    ORDER MATTERS AND IT IS NOT SYMMETRIC. Committing the token before the rows
+    loses those changes forever — neither provider will ever re-send them.
+    Committing the rows before the token merely means the next round replays work
+    already done, which is harmless because every write here is an idempotent
+    upsert keyed on (user, calendar, external id). So: one transaction, and if it
+    has to break, it breaks on the safe side.
+
+    `full` rounds additionally reconcile BY ABSENCE — anything mirrored for this
+    calendar that the provider did not just hand back is gone. That is the only
+    way to catch deletions that happened while we were holding a token the
+    provider had already forgotten about.
+    """
+    account = state.account
+    seen: set[str] = set()
+    counts = {"added": 0, "updated": 0, "deleted": 0}
+
+    existing = {
+        e.external_id: e
+        for e in session.scalars(
+            select(ExternalEvent).where(
+                ExternalEvent.user_id == account.user_id,
+                ExternalEvent.calendar_id == state.calendar_id,
+            )
+        )
+    }
+
+    for item in changed:
+        seen.add(item.external_id)
+        # store_titles is read from the account at round time, so an opt-in
+        # switched off mid-round can never write a title back in.
+        title = item.title if store_titles else None
+        location = item.location if store_titles else None
+        row = existing.get(item.external_id)
+        if row is None:
+            session.add(ExternalEvent(
+                user_id=account.user_id, account_id=account.id,
+                calendar_id=state.calendar_id, external_id=item.external_id,
+                title=title, location=location,
+                start_utc=item.start, end_utc=item.end,
+                all_day=item.all_day, busy=item.busy, updated_at=now,
+            ))
+            counts["added"] += 1
+        else:
+            # Re-adopt a row detached by an earlier disconnect: the same calendar
+            # is connected again, so it is live again.
+            row.account_id = account.id
+            row.title, row.location = title, location
+            row.start_utc, row.end_utc = item.start, item.end
+            row.all_day, row.busy = item.all_day, item.busy
+            row.updated_at = now
+            counts["updated"] += 1
+
+    drop = {eid for eid in deleted_ids if eid in existing}
+    if full:
+        drop |= {eid for eid in existing if eid not in seen}
+    for eid in drop:
+        session.delete(existing[eid])
+    counts["deleted"] = len(drop)
+
+    state.sync_token = next_token
+    state.window_start_utc, state.window_end_utc = window_start, window_end
+    state.synced_at = now
+    state.error = None
+    session.commit()
+    return counts
+
+
+def record_sync_error(session: Session, state: CalendarSyncState, message: str) -> None:
+    """Remember why a calendar stopped syncing, so Settings can say so.
+
+    The token is left alone: most failures are transient (an expired access
+    token, a 429, a network blip) and throwing away a valid bookmark would turn
+    every hiccup into a full re-read.
+    """
+    state.error = message[:500]
+    session.commit()
+
+
+def calendar_labels_for_user(session: Session, user_id: int) -> dict[tuple[int, str], str]:
+    """{(account_id, calendar_id): display name} for one user's calendars.
+
+    Built in one query so rendering N mirrored events doesn't cost N lookups.
+    Events detached by a disconnect (account_id NULL) are absent by construction
+    — there is no connection left to name them after.
+    """
+    rows = session.execute(
+        select(CalendarSyncState.account_id, CalendarSyncState.calendar_id,
+               CalendarSyncState.name)
+        .join(CalendarAccount, CalendarAccount.id == CalendarSyncState.account_id)
+        .where(CalendarAccount.user_id == user_id)
+    ).all()
+    return {(acc, cal): name for acc, cal, name in rows if name}
+
+
+def get_external_events(
+    session: Session, user_id: int, window_start: datetime, window_end: datetime,
+) -> list[ExternalEvent]:
+    """One person's mirrored external events overlapping a window.
+
+    Overlap, not containment — something that started before the window and runs
+    into it is still on their plate inside it.
+    """
+    return list(session.scalars(
+        select(ExternalEvent).where(
+            ExternalEvent.user_id == user_id,
+            ExternalEvent.start_utc < window_end,
+            ExternalEvent.end_utc > window_start,
+        ).order_by(ExternalEvent.start_utc)
+    ))
 
 
 def _login_with_provider(

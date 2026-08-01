@@ -16,9 +16,17 @@ member who connected two calendars and also uses Nudgy gets all three merged.
 Union is the right operator because it is idempotent — an in-app event synced out
 to Google arrives from both sources and merging it twice changes nothing.
 
-Privacy: only busy time RANGES cross this boundary. External calendars are read
-via freebusy, which has no titles to leak; in-app events are reduced to their
-start/end here and their titles never enter the result.
+Privacy: only busy time RANGES cross this boundary, with exactly one exception.
+External calendars are read via freebusy, which has no titles to leak, and in-app
+events are reduced to their start/end here. The exception is the VIEWER's own
+blocks: if they switched titles on for a calendar, inbound sync
+(docs/inbound-sync.md) has a mirror of what is actually in those hours, and
+`members_busy` labels their own rows with it. That never applies to anybody
+else's row, so what a groupmate can see is unchanged.
+
+Note the mirror is NOT a third source of busy time. Availability stays live —
+freebusy at call time — because the mirror is minutes stale by design; it only
+explains blocks the live read already found.
 Token refresh: if a member's OAuth token was refreshed during load, the new
 token is written back to the DB immediately so it never silently goes stale.
 """
@@ -48,11 +56,29 @@ log = logging.getLogger("nudgy.agent")
 
 
 @dataclass
+class LabeledBusy:
+    """A busy block the VIEWER is allowed to see the contents of.
+
+    Only ever built for the person asking (see `label_for_user_id`), and only
+    from calendars whose owner switched titles on. Groupmates' busy time never
+    becomes one of these — it stays an anonymous Interval, which is what keeps
+    the freebusy-only promise made to everyone else intact.
+    """
+    start: datetime
+    end: datetime
+    title: str
+    where: str | None = None
+    calendar: str | None = None      # which connected calendar it came from
+
+
+@dataclass
 class MemberBusy:
     email: str
     connected: bool                  # has at least one external calendar attached
     busy: list[Interval] = field(default_factory=list)   # merged, both sources
     in_app_blocks: int = 0           # how many of `busy` came from Nudgy events
+    # Populated for the viewer alone; empty for every other member.
+    labeled: list[LabeledBusy] = field(default_factory=list)
 
     @property
     def has_source(self) -> bool:
@@ -86,10 +112,74 @@ def _fmt(dt: datetime, tz: ZoneInfo) -> str:
     return dt.astimezone(tz).strftime("%a %d %b %H:%M")
 
 
+def _labels_for_viewer(
+    session: Session, user_id: int, now: datetime, window_end: datetime,
+    busy: list[Interval],
+) -> list[LabeledBusy]:
+    """The viewer's own mirrored external events, as labels ON their busy time.
+
+    Requires a TITLE to qualify. An untitled mirror row (the calendar never opted
+    in) carries nothing a plain busy block doesn't, and emitting it would only
+    fragment the merged blocks for nothing — which is why availability output is
+    byte-identical to before until somebody opts in.
+
+    CLIPPED TO `busy`, WHICH IS THE POINT. These labels EXPLAIN blocks the live
+    read already found; they never assert new ones. The mirror is minutes stale
+    by design, so a meeting deleted a minute ago is still sitting in it — and
+    without clipping, the calendar would draw "Dentist, 15:00" over an hour the
+    slot math is simultaneously offering as free. Intersecting means the worst a
+    stale mirror can do is fail to label a block, which is just the old
+    behaviour.
+
+    `busy=False` rows are skipped for the same reason: an event marked
+    free/transparent is on the calendar without occupying it, so there is no
+    block for it to explain.
+    """
+    events = repo.get_external_events(session, user_id, now, window_end)
+    if not events or not busy:
+        return []
+    names = repo.calendar_labels_for_user(session, user_id)
+    labeled: list[LabeledBusy] = []
+    for ev in events:
+        if not ev.title or not ev.busy:
+            continue
+        for start, end in intersect([(ev.start, ev.end)], busy):
+            labeled.append(LabeledBusy(
+                start=start, end=end, title=ev.title, where=ev.location,
+                calendar=names.get((ev.account_id, ev.calendar_id)),
+            ))
+    return sorted(labeled, key=lambda lb: lb.start)
+
+
+def _split_busy(
+    busy: list[Interval], labeled: list[LabeledBusy],
+    now: datetime, window_end: datetime,
+) -> list[Interval]:
+    """The part of `busy` that no label already accounts for.
+
+    Without this the viewer would see the same hour twice: once as a titled
+    block from the mirror and once inside the merged free/busy range that
+    produced it. Subtracting is the right operator rather than replacing,
+    because the mirror is a few minutes stale by design while free/busy is live
+    — anything live-but-unmirrored has to survive as an anonymous block.
+    """
+    if not labeled:
+        return busy
+    covered = merge_intervals([(lb.start, lb.end) for lb in labeled])
+    return intersect(busy, complement(covered, now, window_end))
+
+
 def fetch_busy_for_group(
-    session: Session, group: Group, now: datetime, days_ahead: int
+    session: Session, group: Group, now: datetime, days_ahead: int,
+    label_for_user_id: int | None = None,
 ) -> list[MemberBusy]:
     """Every member's busy time: connected calendars UNION their Nudgy events.
+
+    `label_for_user_id` opts ONE member — always the person making the request —
+    into seeing what their own busy blocks actually are, drawn from the inbound
+    mirror (docs/inbound-sync.md). Nobody else's blocks are ever labelled, and
+    the parameter defaults to None so every existing caller (the agent included)
+    keeps getting pure ranges.
 
     Logs each member so the loop is visible.
     """
@@ -119,11 +209,18 @@ def fetch_busy_for_group(
                 now, window_end,
             )
         busy = merge_intervals(external + nudgy)
+        labeled = (
+            _labels_for_viewer(session, user.id, now, window_end, busy)
+            if user.id == label_for_user_id else []
+        )
         log.info("[freebusy] %s — %d busy block(s) from %d calendar(s) + %d Nudgy event(s)",
                  user.email, len(busy), len(accounts), len(nudgy))
         results.append(MemberBusy(
             email=user.email, connected=bool(accounts),
-            busy=busy, in_app_blocks=len(nudgy),
+            # The merged list stays WHOLE — it is what the slot math runs on, and
+            # labelling must never change who is free. Only the display split
+            # below (members_busy) knows about labels.
+            busy=busy, in_app_blocks=len(nudgy), labeled=labeled,
         ))
     return results
 
@@ -138,16 +235,24 @@ def compute_availability(
     earliest_hour: int = 9,
     latest_hour: int = 22,
     include_member_busy: bool = False,
+    viewer_id: int | None = None,
 ) -> dict:
     """Full availability picture for the agent: common slots + partial windows.
 
     Returns a plain dict (JSON-serializable) — this is exactly what the agent
     tool hands back to the model, so keep it readable and free of raw datetimes
     the model would have to parse. All times are pre-formatted in tz_name.
+
+    `viewer_id` is who is looking, and it only ever affects `members_busy`: that
+    one person's own blocks may come back carrying the title of the external
+    event behind them. It does NOT reach the slot math, and it is not the agent's
+    to pass — the agent gets ranges, as it always has.
     """
     tz = ZoneInfo(tz_name)
     window_end = now + timedelta(days=days_ahead or 1)  # 0 means "today" — still a 1-day window
-    members = fetch_busy_for_group(session, group, now, days_ahead)
+    members = fetch_busy_for_group(
+        session, group, now, days_ahead, label_for_user_id=viewer_id,
+    )
 
     # Anyone we know something about takes part in the intersection — a connected
     # calendar OR Nudgy events both count. Before in-app events fed this, only
@@ -197,20 +302,17 @@ def compute_availability(
         ],
     }
 
-    # For the calendar UI: raw busy ranges per member (still only ranges —
-    # freebusy never exposes titles/details, so neither can this).
+    # For the calendar UI: busy ranges per member. Anonymous for everyone except
+    # the viewer, whose own blocks may carry the title of the external event
+    # behind them (docs/inbound-sync.md). Groupmates' entries are exactly what
+    # they always were — freebusy has no titles to leak, and the mirror's are
+    # never read for anybody but their owner.
     if include_member_busy:
         result["members_busy"] = [
             {
                 "email": m.email,
                 "connected": m.connected,
-                "busy": [
-                    {
-                        "start_iso": s.astimezone(tz).isoformat(),
-                        "end_iso": e.astimezone(tz).isoformat(),
-                    }
-                    for s, e in m.busy
-                ],
+                "busy": _busy_json(m, now, window_end, tz),
             }
             for m in members
         ]
@@ -223,6 +325,31 @@ def compute_availability(
             earliest_hour, latest_hour, tz,
         )
     return result
+
+
+def _busy_json(
+    m: MemberBusy, now: datetime, window_end: datetime, tz: ZoneInfo,
+) -> list[dict]:
+    """One member's busy blocks for the calendar UI.
+
+    Labelled blocks and the leftover anonymous ones are emitted as one
+    chronological list of the same shape, so the client renders a single kind of
+    thing and simply shows a title when there is one. `title`/`where`/`calendar`
+    are absent on every entry that isn't the viewer's own.
+    """
+    iso = lambda d: d.astimezone(tz).isoformat()  # noqa: E731
+    rows = [
+        {
+            "start_iso": iso(lb.start), "end_iso": iso(lb.end),
+            "title": lb.title, "where": lb.where, "calendar": lb.calendar,
+        }
+        for lb in m.labeled
+    ]
+    rows += [
+        {"start_iso": iso(s), "end_iso": iso(e)}
+        for s, e in _split_busy(m.busy, m.labeled, now, window_end)
+    ]
+    return sorted(rows, key=lambda r: r["start_iso"])
 
 
 def _best_partial_windows(

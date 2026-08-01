@@ -105,6 +105,12 @@ _LATE_COLUMNS = [
     # event came from. Nullable — every event that predates this was created
     # directly, and NULL is exactly what that means.
     ("events", "plan_id", "INTEGER"),
+    # inbound sync: the per-calendar title opt-in (v1-decisions.md #5). FALSE for
+    # every existing connection — an opt-in that arrived switched on for people
+    # who never saw the switch would not be an opt-in. The two tables inbound
+    # sync adds (calendar_sync_states, external_events) are BRAND NEW, so
+    # create_all builds them and they need nothing here.
+    ("calendar_accounts", "read_titles", "BOOLEAN DEFAULT FALSE NOT NULL"),
 ]
 
 # Columns the model no longer has, which an EXISTING database still carries as
@@ -230,16 +236,23 @@ def _backfill_calendar_accounts(engine) -> None:
 
     The token value is copied VERBATIM (still ciphertext, same key), so it reads
     back through EncryptedString exactly as before — no re-encryption, no
-    decrypt/re-encrypt round-trip. TRUE / CURRENT_TIMESTAMP are portable across
-    SQLite and Postgres.
+    decrypt/re-encrypt round-trip. TRUE / FALSE / CURRENT_TIMESTAMP are portable
+    across SQLite and Postgres.
+
+    MAINTENANCE TRAP: this is raw SQL, so it names every column it fills and
+    SQLAlchemy's Python-side defaults do not apply. Any NOT NULL column added to
+    CalendarAccount later must be listed here too, or a fresh database (where
+    create_all builds the column with no server default, unlike the _LATE_COLUMNS
+    path) fails this INSERT on boot. `read_titles` FALSE is the example: an
+    opt-in must never arrive switched on.
     """
     with engine.begin() as conn:
         conn.execute(text(
             "INSERT INTO calendar_accounts "
             "  (user_id, provider, external_email, token_json, color, "
-            "   sync_setting, is_primary, created_at) "
+            "   sync_setting, is_primary, read_titles, created_at) "
             "SELECT u.id, 'google', u.email, u.token_json, NULL, 'two_way', "
-            "       TRUE, CURRENT_TIMESTAMP "
+            "       TRUE, FALSE, CURRENT_TIMESTAMP "
             "  FROM users u "
             " WHERE u.token_json IS NOT NULL "
             "   AND NOT EXISTS (SELECT 1 FROM calendar_accounts ca "

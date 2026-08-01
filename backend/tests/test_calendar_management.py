@@ -193,6 +193,171 @@ def test_cannot_touch_another_users_calendar(ctx):
     assert client.get("/auth/me/calendars").json()[0]["color"] is None
 
 
+# ------------------------------------------------- inbound sync: titles opt-in
+
+def _mirror_row(Session, uid, account_id, title="Dentist"):
+    """One mirrored external event, as inbound sync would have written it.
+
+    An upsert, like the real thing: a purge nulls the title and leaves the row,
+    so re-syncing has to find it rather than insert a second copy.
+    """
+    from datetime import datetime, timedelta, timezone
+
+    from app.db.models import ExternalEvent
+
+    start = datetime(2026, 8, 3, 9, tzinfo=timezone.utc)
+    with Session() as s:
+        row = s.query(ExternalEvent).filter_by(user_id=uid, external_id="evt-1").first()
+        if row is None:
+            row = ExternalEvent(
+                user_id=uid, account_id=account_id, calendar_id="primary",
+                external_id="evt-1", start_utc=start,
+                end_utc=start + timedelta(hours=1), updated_at=start,
+            )
+            s.add(row)
+        row.title = title
+        s.commit()
+
+
+def _titles(Session, uid):
+    from app.db.models import ExternalEvent
+
+    with Session() as s:
+        return [e.title for e in s.query(ExternalEvent).filter_by(user_id=uid)]
+
+
+def test_titles_are_off_by_default(ctx):
+    """An opt-in that arrives switched on is not an opt-in (v1-decisions #5)."""
+    client, Session = ctx
+    uid = _seed_user_with_google(Session)
+    _auth(client, uid)
+    assert client.get("/auth/me/calendars").json()[0]["read_titles"] is False
+
+
+def test_turning_titles_on_and_off_through_the_api(ctx):
+    client, Session = ctx
+    uid = _seed_user_with_google(Session)
+    _auth(client, uid)
+    cal_id = client.get("/auth/me/calendars").json()[0]["id"]
+
+    r = client.patch(f"/auth/me/calendars/{cal_id}", json={"read_titles": True})
+    assert r.status_code == 200 and r.json()["read_titles"] is True
+    assert client.get("/auth/me/calendars").json()[0]["read_titles"] is True
+
+
+def test_turning_titles_off_purges_them_unless_the_user_keeps_them(ctx):
+    """The client asks the user; the answer rides on the same PATCH. Defaulting
+    `keep_titles` to False means a client that forgets to ask errs towards
+    deleting text somebody withdrew consent for."""
+    client, Session = ctx
+    uid = _seed_user_with_google(Session)
+    _auth(client, uid)
+    cal = client.get("/auth/me/calendars").json()[0]
+    client.patch(f"/auth/me/calendars/{cal['id']}", json={"read_titles": True})
+    _mirror_row(Session, uid, cal["id"])
+
+    client.patch(f"/auth/me/calendars/{cal['id']}", json={"read_titles": False})
+    assert _titles(Session, uid) == [None]
+
+    # ...and the "keep them" answer is honoured
+    client.patch(f"/auth/me/calendars/{cal['id']}", json={"read_titles": True})
+    _mirror_row(Session, uid, cal["id"])  # re-synced with its title
+    client.patch(
+        f"/auth/me/calendars/{cal['id']}",
+        json={"read_titles": False, "keep_titles": True},
+    )
+    assert _titles(Session, uid) == ["Dentist"]
+
+
+def test_disconnect_deletes_the_mirror_unless_asked_to_keep_it(ctx):
+    client, Session = ctx
+    uid = _seed_user_with_two(Session)
+    _auth(client, uid)
+    cals = client.get("/auth/me/calendars").json()
+    google = next(c for c in cals if c["provider"] == "google")
+    _mirror_row(Session, uid, google["id"])
+
+    r = client.delete(f"/auth/me/calendars/{google['id']}")
+    assert r.json() == {"ok": True, "kept_events": False}
+    assert _titles(Session, uid) == []
+
+
+def test_disconnect_can_keep_the_mirror(ctx):
+    """"Keep my events" has to survive the account row going away — which is why
+    ExternalEvent hangs off the user with a nullable account_id."""
+    client, Session = ctx
+    uid = _seed_user_with_two(Session)
+    _auth(client, uid)
+    cals = client.get("/auth/me/calendars").json()
+    google = next(c for c in cals if c["provider"] == "google")
+    _mirror_row(Session, uid, google["id"])
+
+    r = client.delete(f"/auth/me/calendars/{google['id']}?keep_events=true")
+    assert r.json() == {"ok": True, "kept_events": True}
+    assert _titles(Session, uid) == ["Dentist"]
+
+
+def test_list_reports_per_calendar_sync_state(ctx):
+    """One connection can carry several calendars that fail independently, so a
+    stale token on the uni calendar says so by name instead of making the whole
+    connection look broken."""
+    client, Session = ctx
+    uid = _seed_user_with_google(Session)
+    _auth(client, uid)
+    cal_id = client.get("/auth/me/calendars").json()[0]["id"]
+
+    from app.db.models import CalendarSyncState
+
+    with Session() as s:
+        s.add(CalendarSyncState(
+            account_id=cal_id, calendar_id="uni@x.com", name="Uni",
+            error="HttpError: 403",
+        ))
+        s.commit()
+
+    cal = client.get("/auth/me/calendars").json()[0]
+    assert cal["calendars"] == [
+        {"calendar_id": "uni@x.com", "name": "Uni", "synced_at": None,
+         "error": "HttpError: 403"},
+    ]
+
+
+def test_sync_now_runs_the_same_job_the_ticker_does(ctx, monkeypatch):
+    """The button must not be able to behave differently from the thing it is
+    impatient with, so it calls run_sync narrowed to one account."""
+    client, Session = ctx
+    uid = _seed_user_with_google(Session)
+    _auth(client, uid)
+    cal_id = client.get("/auth/me/calendars").json()[0]["id"]
+
+    seen = {}
+
+    def fake_run_sync(session, account_id=None, **kwargs):
+        seen["account_id"] = account_id
+        return {"accounts": 1, "calendars": 1, "added": 2, "updated": 0,
+                "deleted": 0, "failed": 0}
+
+    import app.api.auth_routes as ar
+    monkeypatch.setattr(ar, "run_sync", fake_run_sync)
+
+    r = client.post(f"/auth/me/calendars/{cal_id}/sync")
+    assert r.status_code == 200
+    assert seen["account_id"] == cal_id
+    assert r.json()["ok"] is True
+    assert r.json()["counts"]["added"] == 2
+
+
+def test_sync_now_is_ownership_checked(ctx):
+    client, Session = ctx
+    victim = _seed_user_with_google(Session, email="victim2@x.com")
+    attacker = _seed_user_with_google(Session, email="attacker2@x.com")
+    _auth(client, victim)
+    victim_cal = client.get("/auth/me/calendars").json()[0]["id"]
+
+    _auth(client, attacker)
+    assert client.post(f"/auth/me/calendars/{victim_cal}/sync").status_code == 404
+
+
 # ------------------------------- connect-flow core (upsert attaches to a user)
 
 def test_connect_second_provider_attaches_and_keeps_primary(ctx):
