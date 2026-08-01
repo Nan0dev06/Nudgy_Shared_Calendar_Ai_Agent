@@ -21,6 +21,7 @@ from datetime import datetime, timezone
 
 from openai import OpenAI
 
+from app.agent.fencing import fence, scrub
 from app.agent.prompt import build_system_prompt
 from app.agent.tools import TOOL_SCHEMAS, ToolContext, run_tool
 from app.core.config import (
@@ -45,6 +46,38 @@ def _estimate_tokens(messages: list[dict], tools: list[dict]) -> int:
     chars += sum(len(str(tc)) for m in messages for tc in (m.get("tool_calls") or []))
     chars += len(str(tools))
     return chars // 4
+
+
+# Keys in a tool result whose value is text WE wrote — guidance meant for the
+# model ("do NOT invent a venue", "call the tool again with valid JSON"). They
+# stay outside the fence so the model still follows them. Everything else a tool
+# returns came from the outside world (a map API, someone's calendar, another
+# member's typing) and gets fenced as data.
+# Adding a key here is a trust decision: its text must never interpolate an
+# untrusted value. tools/locations.py keeps that promise by having its notes
+# point at a field name instead of inlining the value.
+TRUSTED_RESULT_KEYS = ("note", "error", "search_failed")
+
+
+def _tool_message(name: str, result) -> str:
+    """What the model reads back from a tool call.
+
+    Our guidance in the clear; everything the tool gathered from outside inside
+    an <untrusted> block. Doing this HERE, in the one place tool output becomes
+    a message, is deliberate — a tool added later is covered without its author
+    having to remember anything.
+    """
+    if not isinstance(result, dict):
+        return fence(json.dumps(scrub(result), ensure_ascii=False), f"tool.{name}")
+    ours = {k: v for k, v in result.items()
+            if k in TRUSTED_RESULT_KEYS and v is not None}
+    data = {k: v for k, v in result.items() if k not in TRUSTED_RESULT_KEYS}
+    if not data:
+        return json.dumps(ours, ensure_ascii=False)
+    body = fence(json.dumps(scrub(data), ensure_ascii=False), f"tool.{name}")
+    if not ours:
+        return body
+    return f"{json.dumps(ours, ensure_ascii=False)}\n{body}"
 
 
 @dataclass
@@ -247,7 +280,7 @@ def run_agent(ctx: ToolContext, history: list[dict], user_message: str) -> Agent
                 messages.append({
                     "role": "tool",
                     "tool_call_id": tc.id,
-                    "content": json.dumps(err),
+                    "content": _tool_message(tc.function.name, err),
                 })
                 continue
             trace.append(TraceStep(kind="tool_call", name=tc.function.name, detail=args))
@@ -256,7 +289,7 @@ def run_agent(ctx: ToolContext, history: list[dict], user_message: str) -> Agent
             messages.append({
                 "role": "tool",
                 "tool_call_id": tc.id,
-                "content": json.dumps(result, ensure_ascii=False),
+                "content": _tool_message(tc.function.name, result),
             })
 
     log.warning("[loop] hit MAX_STEPS without finishing")
