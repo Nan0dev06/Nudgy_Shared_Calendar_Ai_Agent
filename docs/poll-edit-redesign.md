@@ -68,21 +68,39 @@ launch** — useful signal, another concept to teach.
 
 ### 1.4 Every poll carries a minimum
 
-`Plan.expected_count` becomes **required**, not optional. The composer prefills
-it with a majority of the group (rounded up); the host can set anything from 1 to
-everyone.
+> **Amended as built (2026-08-01, commit `aebfd96`).** The original text below
+> said the composer prefills a *majority of the group*. It doesn't, and shouldn't:
+> a prefilled number is still the app guessing, and any number can be reached by
+> the wrong people. What shipped is stricter.
+
+The bar is **a rule by default, a number only when a human types one**:
+
+- `Plan.expected_count` **NULL** → the default rule: *every account-holding
+  member must be able to make the time.* Not a count, so **guests can never
+  satisfy it** — people who joined through a link are not the group, and letting
+  them substitute would mean sharing a link makes a plan book *easier*.
+- `Plan.expected_count` **= an int** → the creator said how many people is
+  enough, so anyone who said yes counts toward it, **guests included**.
+
+Both regimes live in exactly one place, `plan_rules.TimeResult.qualifies`, so
+they cannot drift apart. `plan_service.minimum_for` renders the bar as a number
+for *display only*; `requires_all_members` says which regime is in force.
 
 This closes the gap that makes automatic convergence dangerous: without it, "the
 most-voted time wins" books a 10-person outing for the 3 people who answered.
-With it, booking below the minimum is impossible **unless a human deliberately
-typed that number**. The minimum is the group's stated answer to "how many of us
-make this worth doing?" — the app never guesses it.
+With it, booking below everyone is impossible **unless a human deliberately
+typed a smaller number**. The minimum is the group's stated answer to "how many
+of us make this worth doing?" — the app never guesses it.
+
+The bar constrains **automatic** convergence only. A host lock-in books whatever
+time they pick for whoever said yes, minimum or not (`plan_service.confirm_time`).
 
 ### 1.5 Convergence
 
 At the deadline, in order:
 
-1. Rank candidate times by **yes** count (members and guests count identically).
+1. Rank candidate times by **yes** count (for *ranking*, members and guests count
+   identically — they differ only in whether they can satisfy the bar, §1.4).
 2. If a time meets the minimum on yes alone → it wins.
 3. Otherwise, allow `if needed` to count toward the minimum. Among times that now
    reach it, most **yes** wins.
