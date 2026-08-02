@@ -14,7 +14,7 @@ import re
 import secrets
 from zoneinfo import ZoneInfo
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import JSONResponse, RedirectResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
@@ -35,6 +35,7 @@ from app.core.passwords import hash_password, verify_password
 from app.db.models import CalendarAccount, User
 from app.db import repo
 from app.db.session import get_session
+from app.jobs.calendar_sync import run_sync
 from app.mailer import send_email_safe
 
 router = APIRouter(prefix="/auth", tags=["auth"])
@@ -350,7 +351,15 @@ def logout():
 _SYNC_SETTINGS = {"none", "one_way", "two_way"}
 
 
-def _calendar_json(a: CalendarAccount) -> dict:
+def _calendar_json(session: Session, a: CalendarAccount) -> dict:
+    """One connected calendar, plus how inbound sync is getting on with it.
+
+    The sync block is per-CALENDAR because one Google connection can carry
+    several (personal, uni, work) and they fail independently — a stale token on
+    the uni calendar should say so by name rather than making the whole
+    connection look broken.
+    """
+    states = repo.get_sync_states(session, a)
     return {
         "id": a.id,
         "provider": a.provider,
@@ -358,6 +367,23 @@ def _calendar_json(a: CalendarAccount) -> dict:
         "color": a.color,
         "sync_setting": a.sync_setting,
         "is_primary": a.is_primary,
+        # Inbound only runs on two-way (repo.account_syncs_in). Sent explicitly
+        # rather than left for the client to re-derive from sync_setting, so the
+        # rule lives in one place.
+        "syncs_in": repo.account_syncs_in(a),
+        "read_titles": a.read_titles,
+        # Makes the keep-or-delete prompts concrete: "keep the 127 events
+        # already synced" is answerable, "keep your events" isn't.
+        "synced_events": repo.count_external_events(session, a),
+        "calendars": [
+            {
+                "calendar_id": s.calendar_id,
+                "name": s.name,
+                "synced_at": s.synced.isoformat() if s.synced else None,
+                "error": s.error,
+            }
+            for s in states
+        ],
     }
 
 
@@ -367,7 +393,7 @@ def list_calendars(
     session: Session = Depends(get_session),
 ):
     """The user's connected calendars (those holding a token)."""
-    return [_calendar_json(a) for a in repo.get_calendar_accounts(session, user)]
+    return [_calendar_json(session, a) for a in repo.get_calendar_accounts(session, user)]
 
 
 class PatchCalendarBody(BaseModel):
@@ -376,6 +402,16 @@ class PatchCalendarBody(BaseModel):
     # only `true` is meaningful — you PROMOTE a calendar to primary; there's always
     # exactly one, so it isn't something you toggle off directly.
     is_primary: bool | None = None
+    # Inbound sync's title opt-in. Switching it OFF raises the question of what
+    # to do with the titles already pulled in, so the client asks and answers it
+    # here; `keep_titles` is meaningless in any other combination and ignored.
+    # It defaults to False so a client that forgets to ask errs towards deleting
+    # text the user just withdrew consent for, not towards keeping it.
+    read_titles: bool | None = None
+    keep_titles: bool = False
+    # Dropping out of two-way stops inbound sync, which raises the same
+    # keep-or-bin question. Same default and the same reasoning as keep_titles.
+    keep_events: bool = False
 
 
 @router.patch("/me/calendars/{account_id}")
@@ -391,25 +427,58 @@ def patch_calendar(
     if body.sync_setting is not None:
         if body.sync_setting not in _SYNC_SETTINGS:
             raise HTTPException(status_code=400, detail="sync_setting must be none, one_way, or two_way.")
-        repo.set_account_sync_setting(session, account, body.sync_setting)
+        repo.set_account_sync_setting(
+            session, account, body.sync_setting, keep_events=body.keep_events,
+        )
     if body.color is not None:
         repo.set_account_color(session, account, body.color or None)  # "" clears it
     if body.is_primary:
         repo.set_primary_calendar_account(session, user, account)
-    return _calendar_json(account)
+    if body.read_titles is not None:
+        repo.set_account_read_titles(
+            session, account, body.read_titles, keep_titles=body.keep_titles,
+        )
+    return _calendar_json(session, account)
+
+
+@router.post("/me/calendars/{account_id}/sync")
+def sync_calendar_now(
+    account_id: int,
+    user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+):
+    """Poll this calendar right now instead of waiting for the next tick.
+
+    Same code path as the background job (`run_sync` narrowed to one account),
+    just with the per-calendar interval bypassed — so "Sync now" can never
+    behave differently from the thing it is impatient with. Runs inline: a
+    delta round is a couple of HTTP calls, and the button wants a real answer.
+    """
+    account = repo.get_calendar_account(session, user, account_id)
+    if account is None:
+        raise HTTPException(status_code=404, detail="No such calendar.")
+    counts = run_sync(session, account_id=account.id)
+    return {"ok": not counts["failed"], "counts": counts,
+            "calendar": _calendar_json(session, account)}
 
 
 @router.delete("/me/calendars/{account_id}")
 def disconnect_calendar(
     account_id: int,
+    keep_events: bool = Query(
+        default=False,
+        description="Keep the events already synced from this calendar as a "
+                    "frozen, no-longer-syncing copy. The client is expected to "
+                    "have asked the user; the default deletes them.",
+    ),
     user: User = Depends(get_current_user),
     session: Session = Depends(get_session),
 ):
     account = repo.get_calendar_account(session, user, account_id)
     if account is None:
         raise HTTPException(status_code=404, detail="No such calendar.")
-    repo.disconnect_calendar_account(session, user, account)
-    return {"ok": True}
+    repo.disconnect_calendar_account(session, user, account, keep_events=keep_events)
+    return {"ok": True, "kept_events": keep_events}
 
 
 # ============================================================ email / password

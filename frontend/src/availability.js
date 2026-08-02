@@ -18,10 +18,15 @@ function dayIntervals(membersBusy, day) {
         email: m.email,
         start: new Date(Math.max(s, d0)),
         end: new Date(Math.min(e, d1)),
-        // present only on non-anonymous personal events — the "see what
-        // they're doing" path; Google free/busy never carries these
+        // Present only where the server decided the VIEWER is entitled to the
+        // detail: a non-anonymous personal event, or their own external event
+        // from a calendar they switched titles on (docs/inbound-sync.md).
+        // Groupmates' rows never carry these — free/busy has no titles, and the
+        // mirror's are only ever read for their owner. Nothing here needs to
+        // enforce that; it is enforced before the payload is built.
         title: b.title || null,
         where: b.where || null,
+        calendar: b.calendar || null,
       });
     }
   }

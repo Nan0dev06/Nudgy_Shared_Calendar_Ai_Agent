@@ -57,7 +57,7 @@ frontend. Start here to see the whole route surface.
 ### `db/` — persistence
 | File | Owns |
 |---|---|
-| `models.py` | All ORM models: `User`, `CalendarAccount`, `Group`, `Membership`, `Plan`, `TimeRound`, `InterestVote`, `TimeVote`, `GroupEvent`, `EventRsvp`, `PlaceReview`, `AgentUsage`. |
+| `models.py` | All ORM models: `User`, `CalendarAccount`, `CalendarSyncState`, `ExternalEvent`, `Group`, `Membership`, `Plan`, `TimeRound`, `InterestVote`, `TimeVote`, `GroupEvent`, `EventRsvp`, `PlaceReview`, `AgentUsage`. |
 | `repo.py` | **Every DB query in the app.** Add queries here, not inline. |
 | `session.py` | Engine, `SessionLocal`, `get_session`, `init_db` + the migration/backfill machinery. |
 | `types.py` | `EncryptedString` column type (transparent encrypt-at-rest). |
@@ -71,8 +71,9 @@ frontend. Start here to see the whole route surface.
 ### `calendars/` — the calendar-provider seam
 | File | Owns |
 |---|---|
-| `base.py` | `CalendarProvider` ABC (`get_busy`, `get_event_locations`, `create_event`, `update_event`, `delete_event`) + `CreatedEvent`, `Interval`. |
-| `google.py` | `GoogleCalendarProvider` (reads delegate to `tools/freebusy` + `tools/locations`; writes centralized here). |
+| `base.py` | `CalendarProvider` ABC (`get_busy`, `get_event_locations`, `create_event`, `update_event`, `delete_event`, **`list_sync_calendars`, `sync_events`**) + `CreatedEvent`, `Interval`, `SyncCalendar`, `ExternalEventData`, `SyncResult`. |
+| `google.py` | `GoogleCalendarProvider` (reads delegate to `tools/freebusy` + `tools/locations`; writes centralized here; **inbound sync via `events.list` + `syncToken`**). |
+| `microsoft.py` | `MicrosoftCalendarProvider` (Graph; **inbound sync via `/me/calendarView/delta`**). |
 | `cache.py` | `FreebusyCache` — short-TTL busy-range cache (display only; booking bypasses it). |
 | `__init__.py` | `provider_for_account(session, account)` factory. Microsoft → `NotImplementedError` until built. |
 
@@ -100,6 +101,13 @@ Sends are best-effort — a dead mailbox must never abort a tick. **This is wher
 per-user Settings > Notifications preferences hook in when they land.**
 
 ### `jobs/` — work that runs on a clock, not on a request
+`calendar_sync.py`: every 5 minutes, ask each connected calendar what changed
+and mirror it into `external_events` (**docs/inbound-sync.md**). Same shape as
+the ticker — a plain `run_sync(session, now)` under an asyncio loop — and the
+single ingestion path a webhook handler would call, since a push notification
+from either provider carries no payload and just means "run the token loop".
+Knobs: `CALENDAR_SYNC_*`.
+
 `plan_ticker.py`: once a minute, resolve passed deadlines and nudge non-voters.
 `run_tick(session, now)` is plain and synchronous (tests drive months of plan
 life with a frozen clock); the asyncio loop around it is started/stopped by
@@ -190,6 +198,12 @@ the same two functions. Consumed by `api/stream_routes.py`; knobs
   `CalendarAccount`).
 - **Add a calendar provider:** `calendars/base.py`, `calendars/__init__.py`,
   new `calendars/<name>.py`, `auth/<name>.py`.
+- **Inbound sync / external event titles:** `docs/inbound-sync.md` first, then
+  `jobs/calendar_sync.py`, `calendars/base.py` (`sync_events`), the sync halves
+  of `calendars/google.py` + `calendars/microsoft.py`, `db/repo.py` (the inbound
+  sync section), `agent/availability.py` (`_labels_for_viewer`, `_split_busy`).
+  **Read `tests/test_external_labels.py` before changing who sees a title** —
+  the rule is "the owner and nobody else", and that file is what enforces it.
 - **Plans / voting / host actions:** `tools/plan_rules.py`,
   `tools/plan_service.py`, `api/plan_routes.py`, `db/models.py` (`Plan`,
   `TimeRound`, votes), `db/repo.py`.

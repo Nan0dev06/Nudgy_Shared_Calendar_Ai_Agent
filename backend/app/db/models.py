@@ -127,12 +127,163 @@ class CalendarAccount(Base):
     # how in-app events flow to this calendar: none | one_way | two_way. Defaults
     # to two_way per the v1 decision (applied after the user consents at connect).
     sync_setting: Mapped[str] = mapped_column(String, default="two_way")
+    # INBOUND sync's title opt-in (v1-decisions.md #5). False by default and only
+    # ever flipped by the owner: with it off, the mirror carries times and nothing
+    # else, so a synced event is an unlabelled busy block. With it on, titles and
+    # locations are stored and shown TO THEIR OWNER ONLY — groupmates keep seeing
+    # opaque busy time, which is what leaves the freebusy-only promise intact.
+    #
+    # Toggling this invalidates every sync token on the account: Google's field
+    # mask is part of the frozen query, so a token minted while titles were off
+    # cannot start returning them. See jobs/calendar_sync.py.
+    read_titles: Mapped[bool] = mapped_column(default=False)
     # the default WRITABLE calendar — where bookings and synced events land. The
     # first calendar a user connects becomes primary; they can move it later.
     is_primary: Mapped[bool] = mapped_column(default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
 
     user: Mapped["User"] = relationship(back_populates="calendar_accounts")
+    # Per-calendar incremental-sync bookmarks. These DO cascade: a sync token is
+    # meaningless without the credentials that minted it. The mirrored events
+    # deliberately do NOT — whether to keep them is the user's call at disconnect
+    # time (see repo.disconnect_calendar_account).
+    sync_states: Mapped[list["CalendarSyncState"]] = relationship(
+        back_populates="account", cascade="all, delete-orphan",
+    )
+
+
+class CalendarSyncState(Base):
+    """Where inbound sync got to on ONE external calendar.
+
+    Both providers do incremental sync the same shape — you hand back an opaque
+    token and get only what changed since — which is why this table is provider-
+    neutral and why webhooks will be an upgrade rather than a rewrite: a push
+    notification says "something changed", and the handler runs exactly this
+    token loop.
+
+    ONE ROW PER CALENDAR, not per account. A Google account with personal + uni +
+    work calendars is three independent change streams with three tokens, and
+    that matches what availability already reads (tools/freebusy queries every
+    calendar the account owns or can edit). Microsoft is one row: Graph's v1.0
+    delta is documented for the mailbox's own calendarView, which is likewise
+    exactly what MicrosoftCalendarProvider.get_busy reads.
+
+    `window_start_utc`/`window_end_utc` are part of the token's identity, not
+    decoration. Graph encodes the requested window INTO the delta token, so a
+    token minted for a +120d horizon is still a +120d horizon a month later and
+    has to be re-based before the horizon runs out. Google's equivalent (timeMin
+    on the full sync) cannot be re-sent on an incremental call at all, so the
+    window is re-applied on our side. Either way the bounds have to be stored.
+
+    `sync_token` is OPAQUE — Google hands back a short string, Graph a whole
+    deltaLink URL. Never parse one, never compare two for ordering; store and
+    replay it verbatim.
+    """
+    __tablename__ = "calendar_sync_states"
+    __table_args__ = (
+        UniqueConstraint("account_id", "calendar_id", name="uq_account_calendar"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    account_id: Mapped[int] = mapped_column(ForeignKey("calendar_accounts.id"), index=True)
+    # Google: the calendarList id (usually an email address). Microsoft: "" —
+    # the mailbox's default calendarView, the only form v1.0 documents.
+    calendar_id: Mapped[str] = mapped_column(String)
+    # what the provider calls this calendar ("Personal", "AUB timetable"), shown
+    # beside a synced event so the owner knows which calendar it came from
+    name: Mapped[str | None] = mapped_column(String, default=None)
+    # opaque; can be a long URL (Graph deltaLink), so no length limit
+    sync_token: Mapped[str | None] = mapped_column(String, default=None)
+    window_start_utc: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), default=None
+    )
+    window_end_utc: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), default=None
+    )
+    synced_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), default=None
+    )
+    # last failure, kept so Settings can say "reconnect this calendar" instead of
+    # the sync just going quiet. Cleared on the next success.
+    error: Mapped[str | None] = mapped_column(String, default=None)
+
+    account: Mapped["CalendarAccount"] = relationship(back_populates="sync_states")
+
+    @property
+    def window_start(self) -> datetime | None:
+        return _as_utc(self.window_start_utc)
+
+    @property
+    def window_end(self) -> datetime | None:
+        return _as_utc(self.window_end_utc)
+
+    @property
+    def synced(self) -> datetime | None:
+        return _as_utc(self.synced_at)
+
+
+class ExternalEvent(Base):
+    """One event mirrored IN from a connected calendar — the inbound half of sync.
+
+    Why a mirror exists at all: free/busy already stops Nudgy double-booking
+    anyone, but it is opaque by construction, so the app could block your Tuesday
+    without ever being able to tell you why. These rows are what let it say
+    "Dentist, 15:00" to the person whose calendar it came from.
+
+    PRIVACY. `title`/`location` are populated only while the source account has
+    `read_titles` on, and are only ever rendered to `user_id` — groupmates see
+    the same opaque busy block they always did. Switching the opt-in off, or
+    disconnecting the calendar, prompts the owner for what to do with what was
+    already pulled in; neither one silently keeps text they stopped consenting
+    to. Everything else on an event (description, attendees, organiser, body) is
+    dropped at ingestion and never reaches this table.
+
+    OWNED BY THE USER, NOT THE ACCOUNT. `account_id` is nullable on purpose: when
+    a calendar is disconnected the owner may choose to KEEP what was synced, and
+    a kept copy outlives the connection as a frozen record with account_id NULL.
+    Reconnecting the same calendar re-adopts those rows (the uniqueness key is
+    the user's, not the account's) rather than duplicating them.
+
+    Times are always UTC and always concrete: recurring series are expanded by
+    the provider (Google `singleEvents=True`, Graph's calendarView) so this table
+    never stores an RRULE it would have to expand itself.
+    """
+    __tablename__ = "external_events"
+    __table_args__ = (
+        UniqueConstraint(
+            "user_id", "calendar_id", "external_id", name="uq_user_calendar_event",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    # NULL once the source calendar is disconnected and the owner kept the copy
+    account_id: Mapped[int | None] = mapped_column(
+        ForeignKey("calendar_accounts.id"), default=None, index=True
+    )
+    calendar_id: Mapped[str] = mapped_column(String)
+    # the provider's id for this event. Stable per calendar; for Graph only
+    # because every request asks for immutable ids (Prefer: IdType).
+    external_id: Mapped[str] = mapped_column(String)
+    title: Mapped[str | None] = mapped_column(String, default=None)
+    location: Mapped[str | None] = mapped_column(String, default=None)
+    start_utc: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    end_utc: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    all_day: Mapped[bool] = mapped_column(default=False)
+    # does this event actually occupy the time? Google `transparency=transparent`
+    # and Graph `showAs=free` are on your calendar without blocking it, so they
+    # are mirrored (you still want to see them) but never drawn as busy.
+    busy: Mapped[bool] = mapped_column(default=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+
+    # same SQLite-drops-tzinfo guard as GroupEvent — always read via these
+    @property
+    def start(self) -> datetime:
+        return _as_utc(self.start_utc)
+
+    @property
+    def end(self) -> datetime:
+        return _as_utc(self.end_utc)
 
 
 class Group(Base):

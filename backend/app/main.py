@@ -26,6 +26,7 @@ from app.api.share_routes import router as share_router
 from app.api.stream_routes import router as stream_router
 from app.core.observability import init_sentry
 from app.db.session import init_db
+from app.jobs.calendar_sync import start_sync, stop_sync
 from app.jobs.plan_ticker import start_ticker, stop_ticker
 from app.mailer import configure_from_env as configure_mailer
 
@@ -38,12 +39,20 @@ init_sentry()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Own the background plan ticker for exactly as long as the app runs —
-    started here so a reload/shutdown cancels it instead of leaking a task."""
+    """Own the background jobs for exactly as long as the app runs — started
+    here so a reload/shutdown cancels them instead of leaking tasks.
+
+    Two of them now: the plan ticker (deadlines, nudges) and inbound calendar
+    sync (pulling external events in). Both are in-process asyncio tasks on
+    purpose — a broker would be another thing to host — and both are stopped in
+    reverse order of starting.
+    """
     ticker = start_ticker()
+    calendar_sync = start_sync()
     try:
         yield
     finally:
+        await stop_sync(calendar_sync)
         await stop_ticker(ticker)
 
 

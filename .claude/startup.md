@@ -79,10 +79,33 @@ Read these before doing anything else this session:
   2026-08-01. §2 and §3 both done; see the struck-through items below for what
   each landed. 460 tests green.
 
-- **Next up: inbound sync**, then the mobile-responsive pass, then doc
-  reconciliation, then the security review. Deferred past beta: conversation
-  persistence, model router + fallback, notification preferences, windowed
-  events fetch.
+- **Inbound sync** — `feat/inbound-calendar-sync`, built 2026-08-02.
+  **`docs/inbound-sync.md` is the doc; read it before touching any of this.**
+  External events are mirrored into `external_events` on a 5-min tick
+  (`jobs/calendar_sync.py`) via Google `syncToken` + Graph `calendarView/delta`
+  behind two new `CalendarProvider` methods. Titles are opt-in per calendar
+  (`CalendarAccount.read_titles`, default off) and `members_busy` labels **the
+  caller's own rows only** — same group, two viewers, two payloads. Labels are
+  clipped to live free/busy, so a stale mirror can never invent busy time, and
+  availability itself is unchanged (the mirror is not a source of busy time).
+  Turning titles off / disconnecting / leaving two-way all PROMPT for what to do
+  with what was already pulled in; "keep" survives via a nullable
+  `ExternalEvent.account_id`.
+  **`sync_setting` is finally three real behaviours** (resolved 2026-08-02) — a
+  TRUST LADDER: `none` = neither direction, `one_way` = **READ only** (mirrors
+  in, never writes out), `two_way` = both. `repo.account_syncs_in` (`!= "none"`)
+  and `repo.account_syncs_out` (`== "two_way"` — narrowed from `!= "none"`, so
+  one-way no longer receives bookings). One-way is the reading tier because
+  people trust an app to analyse their calendar long before writing to it; the
+  other way round you'd grant WRITE access to get your own titles back. The UI
+  labels it "Read only" — `one_way` is only the stored value. Free/busy is
+  unaffected by all three: it is not sync.
+  515 tests green. Verified against the REAL Google + Microsoft accounts on the
+  dev machine, not just fakes — see the doc's last section.
+
+- **Next up: the mobile-responsive pass**, then doc reconciliation, then the
+  security review. Deferred past beta: conversation persistence, model router +
+  fallback, notification preferences, windowed events fetch.
 
 > **Schema rule, learned the hard way:** every model change ships its
 > `_LATE_COLUMNS`/`_DROPPED_COLUMNS` entry AND a `tests/test_db_migration.py`
@@ -115,11 +138,15 @@ backend** — see the merged-work list above. The items still outstanding:
 - ~~**Availability must learn about in-app events.**~~ BUILT (PR #25), and §4 is
   now complete: `needs_reconfirm` joined `repo.BUSY_RSVP_STATUSES` with §3, so a
   pending re-confirm counts as busy and can't be double-booked.
-- **Inbound sync** — the user considers this beta-critical: external events
-  should be visible IN Nudgy, not merely block scheduling as opaque busy ranges.
-  Titles are **opt-in per connected calendar**, visible to their **owner only**
-  (groupmates still see busy blocks). Polling first, webhooks later — same
-  syncToken/delta machinery, so it's an upgrade, not a rewrite.
+- ~~**Inbound sync**~~ — BUILT 2026-08-02, exactly as specified: opt-in titles
+  per calendar, owner-only, polling now with the same syncToken/delta machinery
+  a webhook would call. `docs/inbound-sync.md`.
+  **Decided while building it (2026-08-02):** external events surface as
+  *titled busy blocks*, not as a new card type — colour on the calendar already
+  means "whose time this is", and a second colour axis for "which calendar"
+  would collide with it. A multi-person cluster shows a `Yours: …` line on the
+  block face and the calendar name in the hover. Real event cards were
+  deliberately deferred to solo mode, where a calendar-first surface pays off.
 
 ## Before beta testers (as of 2026-08-01)
 
@@ -129,7 +156,7 @@ the phone pass.** Phone beta is wanted, it is just not first.
 1. ~~**Poll UI rewrite**~~ — DONE (merged 2026-08-01), scripts and bundle with it.
 2. ~~**§2 booked poll → `GroupEvent`**~~ — DONE (merged 2026-08-01).
 3. ~~**§3 edit + RSVP-reset**~~ — DONE (merged 2026-08-01).
-4. **Inbound sync** — the next session.
+4. ~~**Inbound sync**~~ — DONE (`feat/inbound-calendar-sync`, 2026-08-02).
 5. **Mobile-responsive pass** — zero `@media` queries today; at 375px the
    sidebar squeezes the content column to ~119px.
 6. **Doc reconciliation** (`api.md` is stale on polls).

@@ -157,6 +157,39 @@ PLAN_REMINDER_INTERVAL_SECONDS = float(
     os.getenv("PLAN_REMINDER_INTERVAL_SECONDS", str(12 * 3600))
 )
 
+# --- inbound calendar sync (jobs/calendar_sync.py) --------------------------
+# How often the job looks for calendars due a poll. Five minutes: an external
+# event appearing in Nudgy a few minutes after it was created in Google is fine,
+# and both providers charge per request against a per-user quota.
+CALENDAR_SYNC_SECONDS = float(os.getenv("CALENDAR_SYNC_SECONDS", "300"))
+
+# Kill switch. Off in tests (they call run_sync directly with a frozen clock) and
+# necessary if the app ever runs as several processes, where one sync loop per
+# process would poll every calendar N times over.
+CALENDAR_SYNC_ENABLED = os.getenv("CALENDAR_SYNC_ENABLED", "1").lower() not in (
+    "0", "false", "no",
+)
+
+# Minimum gap between polls of the SAME calendar. Equal to the tick by default;
+# raising it makes the job cheaper without slowing down a freshly-connected
+# calendar, which syncs on its first tick regardless.
+CALENDAR_SYNC_INTERVAL_SECONDS = float(
+    os.getenv("CALENDAR_SYNC_INTERVAL_SECONDS", "300")
+)
+
+# The mirrored window. A week back, because an event that began yesterday can
+# still be occupying today; four months forward, so planning "sometime next
+# term" still sees real conflicts. Both providers bill by request, not by span,
+# so a wide window costs almost nothing beyond the first full read.
+CALENDAR_SYNC_PAST_DAYS = int(os.getenv("CALENDAR_SYNC_PAST_DAYS", "7"))
+CALENDAR_SYNC_DAYS_AHEAD = int(os.getenv("CALENDAR_SYNC_DAYS_AHEAD", "120"))
+
+# How close `now` may get to the mirrored horizon before the window is re-based
+# with a fresh full read. The window is frozen inside a sync token (Graph encodes
+# it literally; Google forbids re-sending it), so it does NOT roll forward on its
+# own — without this the horizon would creep up and eventually pass.
+CALENDAR_SYNC_REBASE_DAYS = int(os.getenv("CALENDAR_SYNC_REBASE_DAYS", "30"))
+
 # --- live updates / SSE (api/stream_routes.py) ------------------------------
 # How long a quiet stream waits before sending a heartbeat comment. Idle
 # connections are dropped by proxies (and phone radios) after ~60s of silence,

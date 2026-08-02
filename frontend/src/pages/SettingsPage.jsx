@@ -347,10 +347,14 @@ export default function SettingsPage() {
 
 // ---- connected calendars ---------------------------------------------------
 const SWATCHES = [SAGE, SLATE, TERRACOTTA, ROSE, MUSTARD, LILAC, AMBER];
+// A trust ladder, shown in that order. "One-way" is the stored value but never
+// the label: it doesn't say WHICH way, and the whole reason the tier exists is
+// that people want Nudgy to understand their calendar before they let it write
+// to one. "Read only" says that; "One-way" makes them guess.
 const SYNC_MODES = [
-  { key: "two_way", label: "Two-way" },
-  { key: "one_way", label: "One-way" },
-  { key: "none", label: "Off" },
+  { key: "two_way", label: "Two-way", hint: "Read this calendar and write to it" },
+  { key: "one_way", label: "Read only", hint: "Read this calendar, never write to it" },
+  { key: "none", label: "Off", hint: "Neither — free/busy only" },
 ];
 const PROVIDER_LABEL = { google: "Google Calendar", microsoft: "Outlook / Microsoft" };
 
@@ -377,6 +381,11 @@ function ProviderMark({ provider }) {
 function CalendarsSection() {
   const [cals, setCals] = useState(null); // null = loading
   const [err, setErr] = useState("");
+  // Which calendar is mid-question, and which question. Both destructive
+  // choices here (stop reading titles, disconnect) leave data behind that is
+  // the user's to keep or bin, so neither happens on a single click.
+  const [ask, setAsk] = useState(null);   // { id, kind, ...payload }
+  const [syncing, setSyncing] = useState(null);
 
   const load = () =>
     api.calendars().then(setCals).catch((e) => setErr(e.message || "Couldn't load calendars."));
@@ -407,14 +416,53 @@ function CalendarsSection() {
     }
   };
 
-  const disconnect = async (id) => {
+  // Turning titles ON is not destructive, so it just happens. Turning them OFF
+  // raises "what about the ones already here?", which only the user can answer.
+  const toggleTitles = (c) => {
+    if (c.read_titles) setAsk({ id: c.id, kind: "titles" });
+    else patch(c.id, { read_titles: true });
+  };
+
+  const stopTitles = (id, keep) => {
+    setAsk(null);
+    patch(id, { read_titles: false, keep_titles: keep });
+  };
+
+  // Everything except Off reads the calendar, so only Off stops inbound — and
+  // only that raises the keep-or-bin question. Two-way -> Read only withdraws
+  // WRITE permission and nothing else, so it applies straight away.
+  const setSyncMode = (c, mode) => {
+    if (c.syncs_in && mode === "none" && c.synced_events > 0)
+      setAsk({ id: c.id, kind: "syncMode", mode, count: c.synced_events });
+    else patch(c.id, { sync_setting: mode });
+  };
+
+  const applySyncMode = (id, mode, keep) => {
+    setAsk(null);
+    patch(id, { sync_setting: mode, keep_events: keep });
+  };
+
+  const disconnect = async (id, keepEvents) => {
+    setAsk(null);
     const prev = cals;
     setCals((cs) => cs.filter((c) => c.id !== id));
     try {
-      await api.disconnectCalendar(id);
+      await api.disconnectCalendar(id, keepEvents);
       load(); // a disconnect can promote a new primary — resync to see it
     } catch {
       setCals(prev);
+    }
+  };
+
+  const syncNow = async (id) => {
+    setSyncing(id);
+    try {
+      const res = await api.syncCalendar(id);
+      setCals((cs) => cs.map((c) => (c.id === id ? res.calendar : c)));
+    } catch {
+      load();
+    } finally {
+      setSyncing(null);
     }
   };
 
@@ -424,6 +472,14 @@ function CalendarsSection() {
         Calendars you've connected. Nudgy reads free/busy across all of them so it
         never double-books you; new events and bookings are written to your{" "}
         <b>primary</b> one. Colors tell them apart on your calendar.
+        <br />
+        <b>Sync</b> sets how far Nudgy goes: <b>Two-way</b> reads that calendar
+        and writes to it, <b>Read only</b> reads it and never writes — pick this
+        if you want Nudgy to understand your week without touching your calendar
+        — and <b>Off</b> does neither. Free/busy is read whatever you pick; it's
+        how Nudgy avoids double-booking you and it carries no detail. On anything
+        but Off, switch <b>Titles</b> on and your own busy blocks say what they
+        are — <b>only to you</b>; everyone else keeps seeing plain busy time.
       </div>
 
       {err && <div style={{ fontSize: 12.5, color: "#D95D39" }}>{err}</div>}
@@ -471,7 +527,8 @@ function CalendarsSection() {
                 return (
                   <span
                     key={m.key}
-                    onClick={() => !on && patch(c.id, { sync_setting: m.key })}
+                    title={m.hint}
+                    onClick={() => !on && setSyncMode(c, m.key)}
                     style={{
                       ...gpill(true),
                       cursor: on ? "default" : "pointer",
@@ -487,11 +544,79 @@ function CalendarsSection() {
             </div>
             <span
               style={{ marginLeft: "auto", fontSize: 12, fontWeight: 600, color: "#b08a80", cursor: "pointer" }}
-              onClick={() => disconnect(c.id)}
+              onClick={() => setAsk({ id: c.id, kind: "disconnect" })}
             >
               Disconnect
             </span>
           </div>
+
+          {/* Inbound sync: see what's actually in your busy blocks. Only a
+              two-way calendar sends anything back, so with any other mode this
+              row says so rather than offering a switch that does nothing. */}
+          <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", opacity: c.syncs_in ? 1 : 0.55 }}>
+            <span style={fieldLabel}>Titles</span>
+            <Toggle
+              on={!!c.read_titles && c.syncs_in}
+              disabled={!c.syncs_in}
+              onClick={() => c.syncs_in && toggleTitles(c)}
+            />
+            <span style={{ fontSize: 11.5, color: "#a09889", flex: 1, minWidth: 180, lineHeight: 1.45 }}>
+              {!c.syncs_in
+                ? "Sync is off, so nothing is read from this calendar."
+                : c.read_titles
+                  ? "Your busy blocks show what they are — to you only. Groupmates still see plain busy time."
+                  : "Off: this calendar's events show as unlabelled busy blocks, even to you."}
+            </span>
+            {c.syncs_in && (
+              <span
+                className="hov-glass"
+                style={{ ...gpill(true), opacity: syncing === c.id ? 0.55 : 1 }}
+                onClick={() => syncing !== c.id && syncNow(c.id)}
+              >
+                {syncing === c.id ? "Syncing…" : "Sync now"}
+              </span>
+            )}
+          </div>
+
+          {c.syncs_in && <SyncStatus calendars={c.calendars} />}
+
+          {ask?.id === c.id && ask.kind === "titles" && (
+            <ChoicePrompt
+              question="Stop reading titles from this calendar?"
+              detail="New events will come in unlabelled. What should happen to the titles already pulled in? The times stay either way — they're what makes a busy block."
+              options={[
+                { label: "Remove them", tone: "danger", onPick: () => stopTitles(c.id, false) },
+                { label: "Keep them", onPick: () => stopTitles(c.id, true) },
+              ]}
+              onCancel={() => setAsk(null)}
+            />
+          )}
+          {ask?.id === c.id && ask.kind === "syncMode" && (
+            <ChoicePrompt
+              question="Turn sync off for this calendar?"
+              detail={
+                "Nudgy stops reading this calendar and stops writing to it. " +
+                `The ${ask.count} event${ask.count === 1 ? "" : "s"} already synced can stay as a frozen copy. ` +
+                "Either way it still counts as busy time, so nobody double-books you."
+              }
+              options={[
+                { label: "Delete them", tone: "danger", onPick: () => applySyncMode(c.id, ask.mode, false) },
+                { label: "Keep them", onPick: () => applySyncMode(c.id, ask.mode, true) },
+              ]}
+              onCancel={() => setAsk(null)}
+            />
+          )}
+          {ask?.id === c.id && ask.kind === "disconnect" && (
+            <ChoicePrompt
+              question={`Disconnect ${c.external_email}?`}
+              detail="Nudgy stops reading this calendar. Events already synced from it can stay as a frozen copy — they'll show on your calendar but won't update any more."
+              options={[
+                { label: "Delete them too", tone: "danger", onPick: () => disconnect(c.id, false) },
+                { label: "Keep the events", onPick: () => disconnect(c.id, true) },
+              ]}
+              onCancel={() => setAsk(null)}
+            />
+          )}
         </div>
       ))}
 
@@ -506,6 +631,96 @@ function CalendarsSection() {
         </div>
       </div>
     </>
+  );
+}
+
+function Toggle({ on, onClick, disabled = false }) {
+  return (
+    <div
+      onClick={disabled ? undefined : onClick}
+      role="switch"
+      aria-checked={on}
+      aria-disabled={disabled}
+      style={{
+        width: 38, height: 22, borderRadius: 999, flex: "none",
+        cursor: disabled ? "not-allowed" : "pointer",
+        padding: 2, transition: "all .2s",
+        background: on ? "linear-gradient(160deg, #2A9D8F, #237c72)" : "rgba(150,142,128,.3)",
+      }}
+    >
+      <div style={{
+        width: 18, height: 18, borderRadius: "50%", background: "#FFFDF7",
+        transform: `translateX(${on ? 16 : 0}px)`, transition: "transform .2s",
+        boxShadow: "0 1px 3px rgba(96,78,54,.25)",
+      }} />
+    </div>
+  );
+}
+
+// Per-calendar sync state. One connected account can carry several calendars
+// (personal, uni, work) that fail independently, so a stale token on one says so
+// by name instead of making the whole connection look broken.
+function SyncStatus({ calendars }) {
+  if (!calendars || calendars.length === 0) return null;
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+      {calendars.map((s) => (
+        <div key={s.calendar_id} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 11.5 }}>
+          <div style={{
+            width: 6, height: 6, borderRadius: "50%", flex: "none",
+            background: s.error ? "#D95D39" : s.synced_at ? SAGE : "rgba(150,142,128,.5)",
+          }} />
+          <span style={{ color: "#8c8577", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+            {s.name || s.calendar_id || "Default calendar"}
+          </span>
+          <span style={{ marginLeft: "auto", color: s.error ? "#D95D39" : "#a09889", textAlign: "right" }}>
+            {s.error
+              ? "Couldn't sync — try reconnecting"
+              : s.synced_at
+                ? `synced ${relTime(new Date(s.synced_at).getTime())} ago`
+                : "waiting for first sync"}
+          </span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// A two-way question asked in place, rather than a confirm() that only offers
+// yes/no. Both uses here are "this leaves data behind — keep it or bin it?",
+// which has no safe default the app is entitled to pick on the user's behalf.
+function ChoicePrompt({ question, detail, options, onCancel }) {
+  return (
+    <div style={{
+      borderRadius: 14, padding: "12px 14px", display: "flex",
+      flexDirection: "column", gap: 9,
+      background: "rgba(220,167,68,.1)", border: "1px solid rgba(220,167,68,.4)",
+    }}>
+      <div style={{ fontSize: 13, fontWeight: 600 }}>{question}</div>
+      <div style={{ fontSize: 11.5, color: "#8c8577", lineHeight: 1.5 }}>{detail}</div>
+      <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+        {options.map((o) => (
+          <span
+            key={o.label}
+            className="hov-lift-sm"
+            onClick={o.onPick}
+            style={{
+              ...gpill(true),
+              color: o.tone === "danger" ? "#b08a80" : "#2D2D2D",
+              fontWeight: 600,
+            }}
+          >
+            {o.label}
+          </span>
+        ))}
+        <span
+          onClick={onCancel}
+          style={{ marginLeft: "auto", alignSelf: "center", fontSize: 12, color: "#a09889", cursor: "pointer" }}
+        >
+          Cancel
+        </span>
+      </div>
+    </div>
   );
 }
 

@@ -217,9 +217,15 @@ def group_availability(
     user: User = Depends(get_current_user),
     session: Session = Depends(get_session),
 ):
-    """Live free/busy picture for the calendar UI: per-member busy ranges
-    (never titles — freebusy only) plus the common free windows. Hits Google
-    live for every connected member, so expect a couple of seconds."""
+    """Live free/busy picture for the calendar UI: per-member busy ranges plus
+    the common free windows. Hits Google live for every connected member, so
+    expect a couple of seconds.
+
+    Ranges only, with one deliberate exception: the CALLER's own blocks come back
+    labelled with what is in them, for any calendar they switched titles on
+    (docs/inbound-sync.md). `viewer_id` is the caller's id and nobody else's, so
+    the same group loaded by two people yields two different payloads — each
+    person sees their own detail and everyone else's opaque busy time."""
     groups = {g.id for g in repo.get_user_groups(session, user)}
     if group_id not in groups:
         raise HTTPException(status_code=403, detail="You are not in this group.")
@@ -228,7 +234,7 @@ def group_availability(
         result = compute_availability(
             session, group, datetime.now(timezone.utc),
             days_ahead=days_ahead, duration_minutes=duration_minutes,
-            tz_name=user.timezone, include_member_busy=True,
+            tz_name=user.timezone, include_member_busy=True, viewer_id=user.id,
         )
     except Exception:  # a stale token or Google hiccup shouldn't 500 the UI
         log.exception("availability failed for group %d", group_id)

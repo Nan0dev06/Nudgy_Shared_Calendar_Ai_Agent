@@ -67,9 +67,10 @@ const freeStyle = {
 
 export default function CalendarPage() {
   const {
-    view, setView, calAnchor, setCalAnchor, events, tasks, members, activeGroup,
-    avail, setModal, focusId, hoverKey, setHoverKey, doSend,
+    me, view, setView, calAnchor, setCalAnchor, events, tasks, members,
+    activeGroup, avail, setModal, focusId, hoverKey, setHoverKey, doSend,
   } = useApp();
+  const myEmail = me?.email;
 
   const today = new Date();
   const isToday = sameDay(calAnchor, today);
@@ -120,16 +121,36 @@ export default function CalendarPage() {
     </div>
   );
 
-  // Gray overlap cluster block with the "who's busy" hover popover. Rows that
-  // came from a NON-anonymous personal event carry a title/place — those show
-  // what the person is actually doing; anonymous ones stay just "busy".
+  // Gray overlap cluster block with the "who's busy" hover popover. Rows can
+  // carry a title/place — from a NON-anonymous personal event, or from YOUR OWN
+  // external calendar once you switch titles on for it (docs/inbound-sync.md).
+  // Either way a title only ever reaches the person entitled to it; the server
+  // decides that, and rows without one stay plain "busy".
   // extraStyle positions the OUTER wrapper (the day rail passes absolute
   // top/height there); the tinted block itself always fills the wrapper.
   const clusterBlock = (c, key, popRight, extraStyle = {}) => {
     const single = c.count === 1;
-    const label = single
-      ? `${nameOf(c.emails[0])} busy`
-      : `${c.count} busy`;
+    // One person, one titled row: show what it actually is. That is the whole
+    // point of inbound sync — "Dentist" beats "Hussein busy" on your own
+    // calendar, and it costs no extra chrome.
+    const only = c.rows.length === 1 ? c.rows[0] : null;
+    const label = only?.title
+      ? only.title
+      : single
+        ? `${nameOf(c.emails[0])} busy`
+        : `${c.count} busy`;
+    // On a busy day your own block gets merged into a multi-person cluster, so
+    // the label above is "4 busy" and your detail would be hover-only — which
+    // defeats the point. Surface YOUR OWN titles on the face of the block
+    // instead. Only ever yours: the server sends nobody else's, so this is
+    // filtered by email as a second line of defence, not as the actual guard.
+    const mine = only
+      ? []
+      : c.rows.filter((r) => r.title && r.email === myEmail);
+    const mineLabel = mine
+      .slice(0, 2)
+      .map((r) => `${r.title} ${fmtRange(r.start, r.end)}`)
+      .join(" · ") + (mine.length > 2 ? ` · +${mine.length - 2}` : "");
     return (
       <div key={key} style={{ position: "relative", ...focusAdj(c.emails), ...extraStyle }}>
         <div
@@ -139,8 +160,14 @@ export default function CalendarPage() {
         >
           <div style={{ fontSize: 12.5, fontWeight: 600, color: "#5c564b" }}>{label}</div>
           <div style={{ fontSize: 11, color: "#7c7568" }}>
-            {fmtRange(c.start, c.end)}{single ? "" : " · hover to see"}
+            {fmtRange(c.start, c.end)}
+            {only?.where ? ` · ${only.where}` : single ? "" : " · hover to see"}
           </div>
+          {mine.length > 0 && (
+            <div style={{ fontSize: 11, fontWeight: 600, color: "#5c564b", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+              Yours: {mineLabel}
+            </div>
+          )}
         </div>
         {hoverKey === key && (
           <div style={popover(popRight)}>
@@ -162,6 +189,11 @@ export default function CalendarPage() {
                   <span style={{ fontSize: 11.5, color: "#5c564b", paddingLeft: 18 }}>
                     {r.title}
                     {r.where ? ` · ${r.where}` : ""}
+                    {/* which calendar it came from — the thing that tells you
+                        whether a block is movable (work vs personal vs uni) */}
+                    {r.calendar && (
+                      <span style={{ color: "#a09889" }}> · {r.calendar}</span>
+                    )}
                   </span>
                 )}
               </div>
