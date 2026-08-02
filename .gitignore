@@ -15,3 +15,7 @@ venv/
 
 # Frontend
 frontend/node_modules/
+
+# Backups of .env made while editing it — same secrets, same rules.
+.env.backup-*
+.env.*.backup

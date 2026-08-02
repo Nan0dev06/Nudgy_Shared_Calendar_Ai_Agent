@@ -119,9 +119,14 @@ Read these before doing anything else this session:
 `beta-readiness-map.md` §2/§3): dead `polls`/`votes` tables gone, stray
 `orbi.db` gone, the committed bundle is current (rebuilt in the same commit as
 the last `frontend/src` change), and no script imports a deleted symbol. What is
-left before beta, excluding mobile and hosting, is **doc reconciliation**
-(`docs/api.md` is stale on polls; `poll-edit-redesign.md` §1.4 still describes
-the superseded "prefilled majority" minimum) and the **security review, last**.
+left before beta, excluding mobile and hosting, is the **security review, last**.
+
+**Doc reconciliation — DONE 2026-08-03.** `docs/api.md`'s poll section was
+rewritten against the routes (it documented the pre-rewrite queue: an "active"
+round, the interest→time cascade, `next-time`, `scheduled`/`dead`). The
+`beta-readiness-map.md` header now carries a re-verified status block for every
+§2/§3/§4 item. `poll-edit-redesign.md` §1.4 needed nothing — it already carries
+its own "amended as built" note.
 
 > **Git hygiene, learned 2026-08-03:** an audit found 14 commits (poll engine
 > rewrite, poll UI rewrite, poll/event unification) committed locally and never
