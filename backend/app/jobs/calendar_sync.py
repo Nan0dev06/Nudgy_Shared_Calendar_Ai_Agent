@@ -189,8 +189,16 @@ def _sync_calendar(
 # ----------------------------------------------------------------- the loop
 
 async def _loop(interval_seconds: float) -> None:
+    # Sync FIRST, then sleep — see the matching note in jobs/plan_ticker.py. The
+    # mirror is at its most stale in the moments right after a cold start (it has
+    # been accumulating drift for however long the process was down), and a
+    # leading sleep meant the user who woke the service saw a mirror that was one
+    # whole interval older still. Cheap to repeat on restart: `_due` skips any
+    # calendar synced inside CALENDAR_SYNC_INTERVAL_SECONDS, so a restart storm
+    # costs one `list_sync_calendars` call per account and nothing per calendar,
+    # and the passes that do run are deltas (syncToken / calendarView delta),
+    # never a refetch.
     while True:
-        await asyncio.sleep(interval_seconds)
         session = SessionLocal()
         try:
             # run_sync is blocking (HTTP to two calendar APIs, plus DB), so it
@@ -204,6 +212,7 @@ async def _loop(interval_seconds: float) -> None:
             log.exception("calendar sync crashed")
         finally:
             session.close()
+        await asyncio.sleep(interval_seconds)
 
 
 def start_sync() -> asyncio.Task | None:

@@ -152,8 +152,15 @@ def _announce_booking(session: Session, plan: Plan, outcome: dict) -> None:
 # ----------------------------------------------------------------- the loop
 
 async def _loop(interval_seconds: float) -> None:
+    # Tick FIRST, then sleep. Sleeping first is the obvious shape and it costs
+    # exactly the window that matters: on a host that spins down when idle, every
+    # wake is a fresh process, so a leading sleep means nothing runs for a full
+    # interval after the service comes back — which is precisely when a deadline
+    # that elapsed during the sleep is sitting there waiting to be resolved.
+    # Safe to repeat on every restart because the work is idempotent:
+    # `plan.reminded_at` is persisted, so `reminder_due` will not re-send a nudge
+    # it already sent, and a restart loop cannot become reminder spam.
     while True:
-        await asyncio.sleep(interval_seconds)
         session = SessionLocal()
         try:
             # run_tick is blocking (DB + outbound mail); off the event loop it
@@ -167,6 +174,7 @@ async def _loop(interval_seconds: float) -> None:
             log.exception("plan tick crashed")
         finally:
             session.close()
+        await asyncio.sleep(interval_seconds)
 
 
 def start_ticker() -> asyncio.Task | None:

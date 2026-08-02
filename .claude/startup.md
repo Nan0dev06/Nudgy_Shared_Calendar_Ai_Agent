@@ -79,7 +79,9 @@ Read these before doing anything else this session:
   2026-08-01. §2 and §3 both done; see the struck-through items below for what
   each landed. 460 tests green.
 
-- **Inbound sync** — `feat/inbound-calendar-sync`, built 2026-08-02.
+- **Inbound sync** — `feat/inbound-calendar-sync`, built 2026-08-02, **merged into
+  `post-hackathon-submission-edits` 2026-08-03** (it sat unmerged for a day —
+  see the git-hygiene note at the bottom).
   **`docs/inbound-sync.md` is the doc; read it before touching any of this.**
   External events are mirrored into `external_events` on a 5-min tick
   (`jobs/calendar_sync.py`) via Google `syncToken` + Graph `calendarView/delta`
@@ -103,9 +105,30 @@ Read these before doing anything else this session:
   515 tests green. Verified against the REAL Google + Microsoft accounts on the
   dev machine, not just fakes — see the doc's last section.
 
+- **Free-tier survivability** — `fix/startup-tick-and-deploy-notes`, 2026-08-03.
+  Both job loops run once immediately instead of sleeping first
+  (`tests/test_job_loops.py` pins it), and `docs/deploy.md` §6 was inverted: it
+  used to recommend an uptime pinger that would have exhausted Neon's free
+  compute quota mid-month. Hosting settled — see the hosting section below.
+
 - **Next up: the mobile-responsive pass**, then doc reconciliation, then the
   security review. Deferred past beta: conversation persistence, model router +
   fallback, notification preferences, windowed events fetch.
+
+**Verified clean 2026-08-03** (the last unchecked items in
+`beta-readiness-map.md` §2/§3): dead `polls`/`votes` tables gone, stray
+`orbi.db` gone, the committed bundle is current (rebuilt in the same commit as
+the last `frontend/src` change), and no script imports a deleted symbol. What is
+left before beta, excluding mobile and hosting, is **doc reconciliation**
+(`docs/api.md` is stale on polls; `poll-edit-redesign.md` §1.4 still describes
+the superseded "prefilled majority" minimum) and the **security review, last**.
+
+> **Git hygiene, learned 2026-08-03:** an audit found 14 commits (poll engine
+> rewrite, poll UI rewrite, poll/event unification) committed locally and never
+> pushed, plus `feat/inbound-calendar-sync` unmerged for a day. Four of those
+> branches had no PR at all, so GitHub showed nothing amiss. Open a PR even when
+> merging locally, and check
+> `git rev-list --count origin/<branch>..<branch>` at session start.
 
 > **Schema rule, learned the hard way:** every model change ships its
 > `_LATE_COLUMNS`/`_DROPPED_COLUMNS` entry AND a `tests/test_db_migration.py`
@@ -175,21 +198,37 @@ What that actually costs, read from the code rather than assumed:
 - **Reminders can be missed outright.** `reminder_due` returns False once the
   deadline has passed, so a nudge whose window elapsed during sleep is never
   sent — the reminder is the part that genuinely degrades.
-- **Cold start hits the first real user**, and `_loop` sleeps
-  `PLAN_TICK_SECONDS` *before* its first tick, so the service must stay up ~60s
-  past wake for anything to run. Render keeps it up 15 min after a request, so
-  it does.
+- **Cold start hits the first real user.** ~~`_loop` sleeps before its first
+  tick~~ — FIXED 2026-08-03 (`fix/startup-tick-and-deploy-notes`): both loops now
+  run once immediately and sleep afterwards, so a wake costs boot time, not boot
+  time plus a full interval. `tests/test_job_loops.py` pins the order.
 - A calendar write does wake the service, but nothing writes when the group is
   simply idle — which is exactly when a deadline is waiting.
 
-Keep-alive pinging works technically but is **not officially supported by
-Render**; their answer to cold starts is a paid instance. It is a workaround
-against the spirit of the free tier, not a sanctioned configuration, and it
-should not be what a beta depends on. Not decided yet: a no-sleep free tier
-(Koyeb Nano, Northflank), a paid always-on Render instance, or an external free
-scheduler (GitHub Actions cron / cron-job.org) hitting a tick endpoint — which
-is a legitimate "run my job on a schedule" use, unlike pinging `/healthz` purely
-to defeat sleep.
+**Hosting decided 2026-08-03: Render free + Neon free, Frankfurt for both,
+Sentry EU, and NO keep-alive pinger.** The pinger is the part that was wrong
+before, and not for the reason previously written down.
+
+**The finding that settles it — always-on and Neon free are in conflict.** Neon
+Free is 100 CU-hours per project per month, minimum compute 0.25 CU, auto-suspend
+after 5 min idle (not disableable) = **400 wall-clock hours of DB-active time per
+month** against a ~730-hour month. `plan_ticker` opens a session every 60s
+regardless of traffic, so any always-on process — a pinger keeping Render awake,
+Koyeb, Northflank, or a paid Render instance — keeps Neon from ever suspending
+and **exhausts the quota around day 17 every month**, at which point Neon drops
+live connections and refuses new ones until the next cycle. `docs/deploy.md` §6
+carries the arithmetic; it used to recommend the pinger and now argues against
+it, having reasoned only that `/healthz` avoids the DB (true, and irrelevant —
+the ping wakes the *process*, and the process ticks).
+
+Consequence for any future always-on move: ship `PLAN_TICK_SECONDS=900` +
+`CALENDAR_SYNC_SECONDS=900` with it (~64 CU-h/month; 10 min is ~93 and too
+tight), or move off Neon. Rejected for now: Koyeb (sleeps at 1h anyway, 512 MB /
+0.1 vCPU, no worker services), Northflank (genuinely always-on and sanctioned,
+with a bundled persistent Postgres that would sidestep the quota — but the
+sandbox is documented as not-for-production with no published vCPU/RAM figure,
+and it needs a whole new deploy path). The upgrade path when reminders start
+mattering is Render Starter at $7/mo.
 
 Everything else is the user's to do, outside the repo: live-test SMTP delivery,
 verify Google + Microsoft calendars actually sync, create the Neon project and
