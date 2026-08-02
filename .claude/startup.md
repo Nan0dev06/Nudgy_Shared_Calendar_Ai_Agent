@@ -79,7 +79,9 @@ Read these before doing anything else this session:
   2026-08-01. §2 and §3 both done; see the struck-through items below for what
   each landed. 460 tests green.
 
-- **Inbound sync** — `feat/inbound-calendar-sync`, built 2026-08-02.
+- **Inbound sync** — `feat/inbound-calendar-sync`, built 2026-08-02, **merged into
+  `post-hackathon-submission-edits` 2026-08-03** (it sat unmerged for a day —
+  see the git-hygiene note at the bottom).
   **`docs/inbound-sync.md` is the doc; read it before touching any of this.**
   External events are mirrored into `external_events` on a 5-min tick
   (`jobs/calendar_sync.py`) via Google `syncToken` + Graph `calendarView/delta`
@@ -103,9 +105,30 @@ Read these before doing anything else this session:
   515 tests green. Verified against the REAL Google + Microsoft accounts on the
   dev machine, not just fakes — see the doc's last section.
 
+- **Free-tier survivability** — `fix/startup-tick-and-deploy-notes`, 2026-08-03.
+  Both job loops run once immediately instead of sleeping first
+  (`tests/test_job_loops.py` pins it), and `docs/deploy.md` §6 was inverted: it
+  used to recommend an uptime pinger that would have exhausted Neon's free
+  compute quota mid-month. Hosting settled — see the hosting section below.
+
 - **Next up: the mobile-responsive pass**, then doc reconciliation, then the
   security review. Deferred past beta: conversation persistence, model router +
   fallback, notification preferences, windowed events fetch.
+
+**Verified clean 2026-08-03** (the last unchecked items in
+`beta-readiness-map.md` §2/§3): dead `polls`/`votes` tables gone, stray
+`orbi.db` gone, the committed bundle is current (rebuilt in the same commit as
+the last `frontend/src` change), and no script imports a deleted symbol. What is
+left before beta, excluding mobile and hosting, is **doc reconciliation**
+(`docs/api.md` is stale on polls; `poll-edit-redesign.md` §1.4 still describes
+the superseded "prefilled majority" minimum) and the **security review, last**.
+
+> **Git hygiene, learned 2026-08-03:** an audit found 14 commits (poll engine
+> rewrite, poll UI rewrite, poll/event unification) committed locally and never
+> pushed, plus `feat/inbound-calendar-sync` unmerged for a day. Four of those
+> branches had no PR at all, so GitHub showed nothing amiss. Open a PR even when
+> merging locally, and check
+> `git rev-list --count origin/<branch>..<branch>` at session start.
 
 > **Schema rule, learned the hard way:** every model change ships its
 > `_LATE_COLUMNS`/`_DROPPED_COLUMNS` entry AND a `tests/test_db_migration.py`
