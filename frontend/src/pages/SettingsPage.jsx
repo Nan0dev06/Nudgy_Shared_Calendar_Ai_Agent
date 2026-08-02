@@ -377,6 +377,11 @@ function ProviderMark({ provider }) {
 function CalendarsSection() {
   const [cals, setCals] = useState(null); // null = loading
   const [err, setErr] = useState("");
+  // Which calendar is mid-question, and which question. Both destructive
+  // choices here (stop reading titles, disconnect) leave data behind that is
+  // the user's to keep or bin, so neither happens on a single click.
+  const [ask, setAsk] = useState(null);   // { id, kind: "titles" | "disconnect" }
+  const [syncing, setSyncing] = useState(null);
 
   const load = () =>
     api.calendars().then(setCals).catch((e) => setErr(e.message || "Couldn't load calendars."));
@@ -407,14 +412,39 @@ function CalendarsSection() {
     }
   };
 
-  const disconnect = async (id) => {
+  // Turning titles ON is not destructive, so it just happens. Turning them OFF
+  // raises "what about the ones already here?", which only the user can answer.
+  const toggleTitles = (c) => {
+    if (c.read_titles) setAsk({ id: c.id, kind: "titles" });
+    else patch(c.id, { read_titles: true });
+  };
+
+  const stopTitles = (id, keep) => {
+    setAsk(null);
+    patch(id, { read_titles: false, keep_titles: keep });
+  };
+
+  const disconnect = async (id, keepEvents) => {
+    setAsk(null);
     const prev = cals;
     setCals((cs) => cs.filter((c) => c.id !== id));
     try {
-      await api.disconnectCalendar(id);
+      await api.disconnectCalendar(id, keepEvents);
       load(); // a disconnect can promote a new primary — resync to see it
     } catch {
       setCals(prev);
+    }
+  };
+
+  const syncNow = async (id) => {
+    setSyncing(id);
+    try {
+      const res = await api.syncCalendar(id);
+      setCals((cs) => cs.map((c) => (c.id === id ? res.calendar : c)));
+    } catch {
+      load();
+    } finally {
+      setSyncing(null);
     }
   };
 
@@ -423,7 +453,9 @@ function CalendarsSection() {
       <div style={{ fontSize: 13, color: "#8c8577", marginTop: -6, lineHeight: 1.5 }}>
         Calendars you've connected. Nudgy reads free/busy across all of them so it
         never double-books you; new events and bookings are written to your{" "}
-        <b>primary</b> one. Colors tell them apart on your calendar.
+        <b>primary</b> one. Colors tell them apart on your calendar. Switch{" "}
+        <b>Titles</b> on for a calendar and your own busy blocks say what they
+        are — <b>only to you</b>; everyone else keeps seeing plain busy time.
       </div>
 
       {err && <div style={{ fontSize: 12.5, color: "#D95D39" }}>{err}</div>}
@@ -487,11 +519,54 @@ function CalendarsSection() {
             </div>
             <span
               style={{ marginLeft: "auto", fontSize: 12, fontWeight: 600, color: "#b08a80", cursor: "pointer" }}
-              onClick={() => disconnect(c.id)}
+              onClick={() => setAsk({ id: c.id, kind: "disconnect" })}
             >
               Disconnect
             </span>
           </div>
+
+          {/* Inbound sync: see what's actually in your busy blocks. */}
+          <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+            <span style={fieldLabel}>Titles</span>
+            <Toggle on={!!c.read_titles} onClick={() => toggleTitles(c)} />
+            <span style={{ fontSize: 11.5, color: "#a09889", flex: 1, minWidth: 180, lineHeight: 1.45 }}>
+              {c.read_titles
+                ? "Your busy blocks show what they are — to you only. Groupmates still see plain busy time."
+                : "Off: this calendar's events show as unlabelled busy blocks, even to you."}
+            </span>
+            <span
+              className="hov-glass"
+              style={{ ...gpill(true), opacity: syncing === c.id ? 0.55 : 1 }}
+              onClick={() => syncing !== c.id && syncNow(c.id)}
+            >
+              {syncing === c.id ? "Syncing…" : "Sync now"}
+            </span>
+          </div>
+
+          <SyncStatus calendars={c.calendars} />
+
+          {ask?.id === c.id && ask.kind === "titles" && (
+            <ChoicePrompt
+              question="Stop reading titles from this calendar?"
+              detail="New events will come in unlabelled. What should happen to the titles already pulled in? The times stay either way — they're what makes a busy block."
+              options={[
+                { label: "Remove them", tone: "danger", onPick: () => stopTitles(c.id, false) },
+                { label: "Keep them", onPick: () => stopTitles(c.id, true) },
+              ]}
+              onCancel={() => setAsk(null)}
+            />
+          )}
+          {ask?.id === c.id && ask.kind === "disconnect" && (
+            <ChoicePrompt
+              question={`Disconnect ${c.external_email}?`}
+              detail="Nudgy stops reading this calendar. Events already synced from it can stay as a frozen copy — they'll show on your calendar but won't update any more."
+              options={[
+                { label: "Delete them too", tone: "danger", onPick: () => disconnect(c.id, false) },
+                { label: "Keep the events", onPick: () => disconnect(c.id, true) },
+              ]}
+              onCancel={() => setAsk(null)}
+            />
+          )}
         </div>
       ))}
 
@@ -506,6 +581,94 @@ function CalendarsSection() {
         </div>
       </div>
     </>
+  );
+}
+
+function Toggle({ on, onClick }) {
+  return (
+    <div
+      onClick={onClick}
+      role="switch"
+      aria-checked={on}
+      style={{
+        width: 38, height: 22, borderRadius: 999, cursor: "pointer", flex: "none",
+        padding: 2, transition: "all .2s",
+        background: on ? "linear-gradient(160deg, #2A9D8F, #237c72)" : "rgba(150,142,128,.3)",
+      }}
+    >
+      <div style={{
+        width: 18, height: 18, borderRadius: "50%", background: "#FFFDF7",
+        transform: `translateX(${on ? 16 : 0}px)`, transition: "transform .2s",
+        boxShadow: "0 1px 3px rgba(96,78,54,.25)",
+      }} />
+    </div>
+  );
+}
+
+// Per-calendar sync state. One connected account can carry several calendars
+// (personal, uni, work) that fail independently, so a stale token on one says so
+// by name instead of making the whole connection look broken.
+function SyncStatus({ calendars }) {
+  if (!calendars || calendars.length === 0) return null;
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+      {calendars.map((s) => (
+        <div key={s.calendar_id} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 11.5 }}>
+          <div style={{
+            width: 6, height: 6, borderRadius: "50%", flex: "none",
+            background: s.error ? "#D95D39" : s.synced_at ? SAGE : "rgba(150,142,128,.5)",
+          }} />
+          <span style={{ color: "#8c8577", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+            {s.name || s.calendar_id || "Default calendar"}
+          </span>
+          <span style={{ marginLeft: "auto", color: s.error ? "#D95D39" : "#a09889", textAlign: "right" }}>
+            {s.error
+              ? "Couldn't sync — try reconnecting"
+              : s.synced_at
+                ? `synced ${relTime(new Date(s.synced_at).getTime())} ago`
+                : "waiting for first sync"}
+          </span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// A two-way question asked in place, rather than a confirm() that only offers
+// yes/no. Both uses here are "this leaves data behind — keep it or bin it?",
+// which has no safe default the app is entitled to pick on the user's behalf.
+function ChoicePrompt({ question, detail, options, onCancel }) {
+  return (
+    <div style={{
+      borderRadius: 14, padding: "12px 14px", display: "flex",
+      flexDirection: "column", gap: 9,
+      background: "rgba(220,167,68,.1)", border: "1px solid rgba(220,167,68,.4)",
+    }}>
+      <div style={{ fontSize: 13, fontWeight: 600 }}>{question}</div>
+      <div style={{ fontSize: 11.5, color: "#8c8577", lineHeight: 1.5 }}>{detail}</div>
+      <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+        {options.map((o) => (
+          <span
+            key={o.label}
+            className="hov-lift-sm"
+            onClick={o.onPick}
+            style={{
+              ...gpill(true),
+              color: o.tone === "danger" ? "#b08a80" : "#2D2D2D",
+              fontWeight: 600,
+            }}
+          >
+            {o.label}
+          </span>
+        ))}
+        <span
+          onClick={onCancel}
+          style={{ marginLeft: "auto", alignSelf: "center", fontSize: 12, color: "#a09889", cursor: "pointer" }}
+        >
+          Cancel
+        </span>
+      </div>
+    </div>
   );
 }
 

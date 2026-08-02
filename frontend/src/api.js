@@ -129,10 +129,20 @@ export const api = {
   // mode / which is primary / disconnect. Adding one goes via the OAuth connect
   // URLs below, not here.
   calendars: () => req("/auth/me/calendars"),
+  // `read_titles` is inbound sync's per-calendar opt-in. Turning it OFF must be
+  // paired with `keep_titles`, the user's answer to "keep the titles already
+  // pulled in?" — the server defaults it to false (purge), so a caller that
+  // forgets to ask errs towards deleting text somebody withdrew consent for.
   patchCalendar: (id, body) =>
     req(`/auth/me/calendars/${id}`, { method: "PATCH", body }),
-  disconnectCalendar: (id) =>
-    req(`/auth/me/calendars/${id}`, { method: "DELETE" }),
+  // Poll this calendar now instead of waiting for the 5-minute tick. Same job
+  // the background ticker runs, narrowed to one account.
+  syncCalendar: (id) =>
+    req(`/auth/me/calendars/${id}/sync`, { method: "POST" }),
+  // keepEvents: the user's answer to "keep what was already synced from this
+  // calendar?". Kept events survive as a frozen copy that no longer syncs.
+  disconnectCalendar: (id, keepEvents = false) =>
+    req(`/auth/me/calendars/${id}?keep_events=${keepEvents}`, { method: "DELETE" }),
   events: (groupId) => req(`/groups/${groupId}/events`),
   createEvent: (groupId, body) =>
     req(`/groups/${groupId}/events`, { method: "POST", body }),
