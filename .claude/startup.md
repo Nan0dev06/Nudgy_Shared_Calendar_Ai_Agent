@@ -88,8 +88,13 @@ Read these before doing anything else this session:
   caller's own rows only** — same group, two viewers, two payloads. Labels are
   clipped to live free/busy, so a stale mirror can never invent busy time, and
   availability itself is unchanged (the mirror is not a source of busy time).
-  Turning titles off / disconnecting both PROMPT for what to do with what was
-  already pulled in; "keep" survives via a nullable `ExternalEvent.account_id`.
+  Turning titles off / disconnecting / leaving two-way all PROMPT for what to do
+  with what was already pulled in; "keep" survives via a nullable
+  `ExternalEvent.account_id`.
+  **`sync_setting` is finally three real behaviours** (resolved 2026-08-02):
+  `none` = neither direction, `one_way` = writes out only, `two_way` = both.
+  `repo.account_syncs_out` (`!= "none"`) and `repo.account_syncs_in`
+  (`== "two_way"`). Free/busy is unaffected by all three — it is not sync.
   515 tests green. Verified against the REAL Google + Microsoft accounts on the
   dev machine, not just fakes — see the doc's last section.
 

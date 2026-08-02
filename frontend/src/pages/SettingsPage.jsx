@@ -380,7 +380,7 @@ function CalendarsSection() {
   // Which calendar is mid-question, and which question. Both destructive
   // choices here (stop reading titles, disconnect) leave data behind that is
   // the user's to keep or bin, so neither happens on a single click.
-  const [ask, setAsk] = useState(null);   // { id, kind: "titles" | "disconnect" }
+  const [ask, setAsk] = useState(null);   // { id, kind, ...payload }
   const [syncing, setSyncing] = useState(null);
 
   const load = () =>
@@ -424,6 +424,20 @@ function CalendarsSection() {
     patch(id, { read_titles: false, keep_titles: keep });
   };
 
+  // Only two-way pulls events back in. Leaving it therefore stops inbound sync
+  // and raises the same keep-or-bin question — but only when there is actually
+  // a mirror to decide about, otherwise this is just a mode change.
+  const setSyncMode = (c, mode) => {
+    if (c.syncs_in && mode !== "two_way" && c.synced_events > 0)
+      setAsk({ id: c.id, kind: "syncMode", mode, count: c.synced_events });
+    else patch(c.id, { sync_setting: mode });
+  };
+
+  const applySyncMode = (id, mode, keep) => {
+    setAsk(null);
+    patch(id, { sync_setting: mode, keep_events: keep });
+  };
+
   const disconnect = async (id, keepEvents) => {
     setAsk(null);
     const prev = cals;
@@ -453,8 +467,13 @@ function CalendarsSection() {
       <div style={{ fontSize: 13, color: "#8c8577", marginTop: -6, lineHeight: 1.5 }}>
         Calendars you've connected. Nudgy reads free/busy across all of them so it
         never double-books you; new events and bookings are written to your{" "}
-        <b>primary</b> one. Colors tell them apart on your calendar. Switch{" "}
-        <b>Titles</b> on for a calendar and your own busy blocks say what they
+        <b>primary</b> one. Colors tell them apart on your calendar.
+        <br />
+        <b>Sync</b> sets the direction: <b>Two-way</b> writes your events out and
+        reads that calendar's back in, <b>One-way</b> only writes out, <b>Off</b>{" "}
+        does neither. Free/busy is read either way — that's how Nudgy avoids
+        double-booking you, and it never carries any detail. On a two-way
+        calendar, switch <b>Titles</b> on and your own busy blocks say what they
         are — <b>only to you</b>; everyone else keeps seeing plain busy time.
       </div>
 
@@ -503,7 +522,7 @@ function CalendarsSection() {
                 return (
                   <span
                     key={m.key}
-                    onClick={() => !on && patch(c.id, { sync_setting: m.key })}
+                    onClick={() => !on && setSyncMode(c, m.key)}
                     style={{
                       ...gpill(true),
                       cursor: on ? "default" : "pointer",
@@ -525,25 +544,35 @@ function CalendarsSection() {
             </span>
           </div>
 
-          {/* Inbound sync: see what's actually in your busy blocks. */}
-          <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+          {/* Inbound sync: see what's actually in your busy blocks. Only a
+              two-way calendar sends anything back, so with any other mode this
+              row says so rather than offering a switch that does nothing. */}
+          <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", opacity: c.syncs_in ? 1 : 0.55 }}>
             <span style={fieldLabel}>Titles</span>
-            <Toggle on={!!c.read_titles} onClick={() => toggleTitles(c)} />
+            <Toggle
+              on={!!c.read_titles && c.syncs_in}
+              disabled={!c.syncs_in}
+              onClick={() => c.syncs_in && toggleTitles(c)}
+            />
             <span style={{ fontSize: 11.5, color: "#a09889", flex: 1, minWidth: 180, lineHeight: 1.45 }}>
-              {c.read_titles
-                ? "Your busy blocks show what they are — to you only. Groupmates still see plain busy time."
-                : "Off: this calendar's events show as unlabelled busy blocks, even to you."}
+              {!c.syncs_in
+                ? "Nothing is read from this calendar — set Sync to Two-way first."
+                : c.read_titles
+                  ? "Your busy blocks show what they are — to you only. Groupmates still see plain busy time."
+                  : "Off: this calendar's events show as unlabelled busy blocks, even to you."}
             </span>
-            <span
-              className="hov-glass"
-              style={{ ...gpill(true), opacity: syncing === c.id ? 0.55 : 1 }}
-              onClick={() => syncing !== c.id && syncNow(c.id)}
-            >
-              {syncing === c.id ? "Syncing…" : "Sync now"}
-            </span>
+            {c.syncs_in && (
+              <span
+                className="hov-glass"
+                style={{ ...gpill(true), opacity: syncing === c.id ? 0.55 : 1 }}
+                onClick={() => syncing !== c.id && syncNow(c.id)}
+              >
+                {syncing === c.id ? "Syncing…" : "Sync now"}
+              </span>
+            )}
           </div>
 
-          <SyncStatus calendars={c.calendars} />
+          {c.syncs_in && <SyncStatus calendars={c.calendars} />}
 
           {ask?.id === c.id && ask.kind === "titles" && (
             <ChoicePrompt
@@ -552,6 +581,27 @@ function CalendarsSection() {
               options={[
                 { label: "Remove them", tone: "danger", onPick: () => stopTitles(c.id, false) },
                 { label: "Keep them", onPick: () => stopTitles(c.id, true) },
+              ]}
+              onCancel={() => setAsk(null)}
+            />
+          )}
+          {ask?.id === c.id && ask.kind === "syncMode" && (
+            <ChoicePrompt
+              question={
+                ask.mode === "none"
+                  ? "Turn sync off for this calendar?"
+                  : "Switch to one-way sync?"
+              }
+              detail={
+                (ask.mode === "none"
+                  ? "Nudgy stops writing to this calendar and stops reading from it. "
+                  : "Nudgy keeps writing your events to this calendar, but stops reading anything back. ") +
+                `The ${ask.count} event${ask.count === 1 ? "" : "s"} already synced can stay as a frozen copy. ` +
+                "Either way it still counts as busy time so nobody double-books you."
+              }
+              options={[
+                { label: "Delete them", tone: "danger", onPick: () => applySyncMode(c.id, ask.mode, false) },
+                { label: "Keep them", onPick: () => applySyncMode(c.id, ask.mode, true) },
               ]}
               onCancel={() => setAsk(null)}
             />
@@ -584,14 +634,16 @@ function CalendarsSection() {
   );
 }
 
-function Toggle({ on, onClick }) {
+function Toggle({ on, onClick, disabled = false }) {
   return (
     <div
-      onClick={onClick}
+      onClick={disabled ? undefined : onClick}
       role="switch"
       aria-checked={on}
+      aria-disabled={disabled}
       style={{
-        width: 38, height: 22, borderRadius: 999, cursor: "pointer", flex: "none",
+        width: 38, height: 22, borderRadius: 999, flex: "none",
+        cursor: disabled ? "not-allowed" : "pointer",
         padding: 2, transition: "all .2s",
         background: on ? "linear-gradient(160deg, #2A9D8F, #237c72)" : "rgba(150,142,128,.3)",
       }}

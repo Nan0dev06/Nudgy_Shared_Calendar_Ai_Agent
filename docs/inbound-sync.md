@@ -139,22 +139,46 @@ towards deleting text somebody withdrew consent for.
 > every NOT NULL column added to `CalendarAccount` must be named in it. Missing
 > that made a fresh database fail to boot.
 
-## Open question: `sync_setting` vs inbound
+## `sync_setting` — resolved 2026-08-02
 
-Inbound sync is gated on `read_titles`, **not** on `sync_setting`. A calendar set
-to `one_way` — or even `none` — still has its events mirrored (untitled, unless
-titles are on).
+Until inbound existed, `one_way` and `two_way` were **behaviourally identical**
+(`account_syncs_out` was just `!= "none"`), because there was only ever one
+direction to have an opinion about. Now there are two, and the setting means
+what its name says:
 
-That follows the position already written into `repo.account_syncs_out`: *"the
-inbound half is the freebusy availability read, which is independent of this and
-always happens."* Under that reading `sync_setting` governs only what Nudgy
-WRITES, and mirroring is just a better-informed read of what it was already
-allowed to see.
+| | writes out | mirrors in | free/busy |
+|---|---|---|---|
+| `none` | — | — | ✅ |
+| `one_way` | ✅ | — | ✅ |
+| `two_way` (default) | ✅ | ✅ | ✅ |
 
-But the names invite the other reading — `one_way` sounding like "Nudgy →
-calendar only". Worth settling before beta. Note `one_way` and `two_way` are
-still behaviourally identical today (`!= "none"`), so whatever is decided should
-probably resolve both at once.
+Two predicates, both in `db/repo.py`: `account_syncs_out` (unchanged, `!=
+"none"`) and `account_syncs_in` (new, `== "two_way"`).
+
+**Why out-only and not in-only.** "One-way" doesn't say which way on its own, but
+`models.py` defines the field as *"how in-app events flow **to** this calendar"*
+— an outbound framing. So one-way is Nudgy → calendar.
+
+**Free/busy is not sync.** None of the three touch it. Availability reads every
+connected calendar's busy ranges regardless, because that is how the app
+functions at all and it is opaque by construction. Disconnecting is how you stop
+it; this switch isn't.
+
+**Titles sit on top.** `read_titles` is a further opt-in *within* two-way:
+two-way alone mirrors times and says nothing about reading what is in them. The
+Settings UI disables the Titles switch on a non-two-way calendar and says why,
+rather than offering a control that silently does nothing.
+
+**Leaving two-way asks.** It stops inbound, so it raises the same keep-or-bin
+question as switching titles off — same prompt, same default (delete), and the
+sync tokens are cleared either way so re-enabling starts from a full read
+instead of resuming a bookmark that is missing everything that changed while
+inbound was off.
+
+> This resolution deleted 127 rows on the dev machine that had been mirrored
+> from a Google account explicitly set to `none` — which is exactly the bug it
+> exists to fix. No migration ships for it: the feature has never been deployed,
+> so no other database can contain rows collected under the old rule.
 
 ## Known limits
 

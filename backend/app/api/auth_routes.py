@@ -367,7 +367,14 @@ def _calendar_json(session: Session, a: CalendarAccount) -> dict:
         "color": a.color,
         "sync_setting": a.sync_setting,
         "is_primary": a.is_primary,
+        # Inbound only runs on two-way (repo.account_syncs_in). Sent explicitly
+        # rather than left for the client to re-derive from sync_setting, so the
+        # rule lives in one place.
+        "syncs_in": repo.account_syncs_in(a),
         "read_titles": a.read_titles,
+        # Makes the keep-or-delete prompts concrete: "keep the 127 events
+        # already synced" is answerable, "keep your events" isn't.
+        "synced_events": repo.count_external_events(session, a),
         "calendars": [
             {
                 "calendar_id": s.calendar_id,
@@ -402,6 +409,9 @@ class PatchCalendarBody(BaseModel):
     # text the user just withdrew consent for, not towards keeping it.
     read_titles: bool | None = None
     keep_titles: bool = False
+    # Dropping out of two-way stops inbound sync, which raises the same
+    # keep-or-bin question. Same default and the same reasoning as keep_titles.
+    keep_events: bool = False
 
 
 @router.patch("/me/calendars/{account_id}")
@@ -417,7 +427,9 @@ def patch_calendar(
     if body.sync_setting is not None:
         if body.sync_setting not in _SYNC_SETTINGS:
             raise HTTPException(status_code=400, detail="sync_setting must be none, one_way, or two_way.")
-        repo.set_account_sync_setting(session, account, body.sync_setting)
+        repo.set_account_sync_setting(
+            session, account, body.sync_setting, keep_events=body.keep_events,
+        )
     if body.color is not None:
         repo.set_account_color(session, account, body.color or None)  # "" clears it
     if body.is_primary:

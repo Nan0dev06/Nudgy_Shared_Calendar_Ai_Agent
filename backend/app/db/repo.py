@@ -9,7 +9,7 @@ from __future__ import annotations
 import secrets
 from datetime import datetime, timezone
 
-from sqlalchemy import and_, delete, or_, select, update
+from sqlalchemy import and_, delete, func, or_, select, update
 from sqlalchemy.orm import Session, joinedload
 
 from app.db.models import (
@@ -53,15 +53,42 @@ def get_primary_calendar_account(session: Session, user: User) -> CalendarAccoun
     return accounts[0]  # calendar_accounts is ordered by created_at
 
 
+# sync_setting, resolved 2026-08-02 now that inbound sync exists (see
+# docs/inbound-sync.md). Until then "one_way" and "two_way" were indistinguishable
+# because there was only ever one direction to have an opinion about:
+#
+#   none     -> Nudgy neither writes to this calendar nor mirrors from it.
+#   one_way  -> Nudgy writes to it. Nothing comes back.
+#   two_way  -> both.
+#
+# The names read as outbound ("how in-app events flow TO this calendar"), which
+# is what settles "one-way" as meaning out-only rather than in-only.
+#
+# FREE/BUSY IS NOT SYNC and none of the three touch it. Availability reads every
+# connected calendar's busy ranges whatever this says, because that is how the
+# app functions at all, and it is opaque by construction — disconnecting is how
+# you stop it, not this switch.
+
 def account_syncs_out(account: CalendarAccount) -> bool:
     """Whether Nudgy should WRITE in-app events / bookings to this calendar.
 
-    sync_setting "none" opts the calendar out of outbound sync; "one_way" and
-    "two_way" both write out. (The inbound half of two_way is the freebusy
-    availability read, which is independent of this and always happens.) The write
-    paths — event_routes._sync_to_google and tools.booking — consult this before
-    creating a calendar event."""
+    Consulted by the write paths — event_routes._sync_to_google,
+    event_routes._push_edit_to_calendar and tools.booking — before creating or
+    updating a calendar event."""
     return account.sync_setting != "none"
+
+
+def account_syncs_in(account: CalendarAccount) -> bool:
+    """Whether inbound sync should MIRROR this calendar's events into Nudgy.
+
+    Only "two_way" does. A calendar set to "one_way" is being told to accept
+    Nudgy's events and send nothing back, and "none" is being told to stay out
+    of it entirely — mirroring either into our database would be doing the exact
+    thing the setting asked us not to.
+
+    Titles are a further opt-in ON TOP of this (`read_titles`): two_way alone
+    mirrors times, and says nothing about reading what is in them."""
+    return account.sync_setting == "two_way"
 
 
 def upsert_calendar_account(
@@ -119,11 +146,40 @@ def set_account_color(session: Session, account: CalendarAccount, color: str | N
 
 def set_account_sync_setting(
     session: Session, account: CalendarAccount, sync_setting: str,
+    keep_events: bool = False,
 ) -> None:
-    """Store how in-app events flow to this calendar (none|one_way|two_way).
-    Stored only for now — the sync path doesn't yet read it (v1 decision)."""
+    """Set the sync direction (none|one_way|two_way) — see account_syncs_in.
+
+    Dropping OUT of two_way stops inbound, which raises the same question that
+    switching titles off or disconnecting does: what happens to what was already
+    mirrored? Same answer — the caller is expected to have ASKED, and
+    `keep_events` carries the reply. Kept rows stay visible to their owner and
+    simply stop updating.
+
+    Either way the sync tokens go, so re-enabling two_way starts from a full
+    read rather than resuming a bookmark that is now missing everything that
+    changed while inbound was off.
+    """
+    was_inbound = account_syncs_in(account)
     account.sync_setting = sync_setting
+    if was_inbound and not account_syncs_in(account):
+        clear_sync_tokens(session, account)
+        if not keep_events:
+            delete_external_events_for_account(session, account)
     session.commit()
+
+
+def count_external_events(session: Session, account: CalendarAccount) -> int:
+    """How many mirrored events this calendar is responsible for.
+
+    Only used to make the keep-or-delete prompts concrete — "keep the 127 events
+    already synced" is a question somebody can actually answer, where "keep your
+    events" is not.
+    """
+    return session.scalar(
+        select(func.count()).select_from(ExternalEvent)
+        .where(ExternalEvent.account_id == account.id)
+    ) or 0
 
 
 def set_primary_calendar_account(
