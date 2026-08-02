@@ -1,10 +1,19 @@
-"""sync_setting enforcement: "none" opts a calendar out of OUTBOUND writes.
+"""sync_setting enforcement on the OUTBOUND (write) paths.
 
-Reads (freebusy/availability) are unaffected — a "none" calendar still counts
-toward busy time. Only the write paths honour it: booking a plan and syncing an
-in-app event skip the calendar create when the target's primary is "none". The
-group's decision still stands (the round is booked in Nudgy), just no calendar
-event / Google invite goes out.
+Only "two_way" writes. Amended 2026-08-02, when inbound sync gave the setting a
+second direction to describe and turned it into a trust ladder — none / read-only
+/ read-and-write (see repo.account_syncs_out and docs/inbound-sync.md). Before
+that, "one_way" also wrote, because writing was the only thing there was; it is
+now the READ-ONLY tier, so it must not.
+
+Reads are unaffected in two different senses, both asserted below:
+  - freebusy/availability ignores the setting entirely — a "none" calendar still
+    counts toward busy time, because that is how the app avoids double-booking
+    anyone and it carries no detail;
+  - inbound mirroring is governed by the separate account_syncs_in predicate.
+
+When a write is skipped the group's decision still stands (the round is booked
+in Nudgy), just no calendar event / Google invite goes out.
 """
 from datetime import datetime, timezone
 from types import SimpleNamespace
@@ -49,10 +58,52 @@ def test_account_syncs_out_predicate(Session):
         user = repo.login_with_google(s, "u@x.com", SECRET)
         acct = repo.get_primary_calendar_account(s, user)
         assert repo.account_syncs_out(acct) is True  # default two_way
+        # one_way is READ-only as of 2026-08-02: it takes events in and sends
+        # nothing back, which is the point of offering it at all.
         repo.set_account_sync_setting(s, acct, "one_way")
-        assert repo.account_syncs_out(acct) is True
+        assert repo.account_syncs_out(acct) is False
+        assert repo.account_syncs_in(acct) is True
         repo.set_account_sync_setting(s, acct, "none")
         assert repo.account_syncs_out(acct) is False
+        assert repo.account_syncs_in(acct) is False
+
+
+def test_a_read_only_calendar_receives_no_bookings(Session, monkeypatch):
+    """The promise one-way makes. If this ever passes a provider through, the
+    app has written to a calendar somebody explicitly told it not to."""
+    with Session() as s:
+        host = repo.login_with_google(s, "host@x.com", SECRET)
+        repo.set_account_sync_setting(
+            s, repo.get_primary_calendar_account(s, host), "one_way",
+        )
+        plan, round_ = _confirmed_plan(s, host)
+
+        monkeypatch.setattr(
+            booking, "provider_for_account",
+            lambda *a, **k: pytest.fail("must not write to a read-only calendar"),
+        )
+        out = booking.book_round_event(s, plan, round_, host, ["host@x.com"])
+
+        assert out["booked"] is True        # the group's decision still stands
+        assert out["sync_skipped"] is True
+        assert round_.event_link is None
+
+
+def test_a_read_only_calendar_receives_no_in_app_event(Session, monkeypatch):
+    with Session() as s:
+        creator = repo.login_with_google(s, "c@x.com", SECRET)
+        repo.set_account_sync_setting(
+            s, repo.get_primary_calendar_account(s, creator), "one_way",
+        )
+        group, event = _group_event(s, creator)
+
+        monkeypatch.setattr(
+            event_routes, "provider_for_account",
+            lambda *a, **k: pytest.fail("must not write to a read-only calendar"),
+        )
+        out = event_routes._sync_to_google(s, event, creator, [], group.id)
+        assert out["ok"] is False
+        assert event.synced is False
 
 
 # ------------------------------------------------------------------- booking

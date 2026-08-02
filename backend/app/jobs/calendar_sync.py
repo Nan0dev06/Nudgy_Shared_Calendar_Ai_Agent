@@ -1,9 +1,10 @@
 """Inbound calendar sync: pull external events INTO Nudgy on a clock.
 
-Runs only for calendars set to TWO-WAY (`repo.account_syncs_in`). One-way means
-"take Nudgy's events, send nothing back", and off means off; mirroring either
-into our database would be doing the thing the setting asked us not to. Free/busy
-availability is unaffected by all of this — see the note above account_syncs_out.
+Runs for any calendar not switched OFF (`repo.account_syncs_in`). One-way is the
+read-only tier — mirror this calendar, never write to it — which is the setting
+for somebody who wants Nudgy to understand their week without touching it.
+Free/busy availability is unaffected by any of this; see the note above
+account_syncs_out.
 
 Outbound sync has always existed — book a plan, the event lands on everyone's
 Google Calendar. Inbound is the other direction, and until now the only thing
@@ -122,7 +123,7 @@ def run_sync(
         accounts = [a for a in accounts if a.id == account_id]
 
     for account in accounts:
-        # Only a two-way calendar sends anything back (repo.account_syncs_in).
+        # A calendar switched off sends nothing back (repo.account_syncs_in).
         # `force` does NOT override this: "Sync now" is impatience with the
         # timer, not permission to ignore the setting.
         if not repo.account_syncs_in(account):

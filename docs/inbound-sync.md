@@ -143,42 +143,57 @@ towards deleting text somebody withdrew consent for.
 
 Until inbound existed, `one_way` and `two_way` were **behaviourally identical**
 (`account_syncs_out` was just `!= "none"`), because there was only ever one
-direction to have an opinion about. Now there are two, and the setting means
-what its name says:
+direction to have an opinion about. Now there are two, and the three settings
+are a **trust ladder**:
 
-| | writes out | mirrors in | free/busy |
+| | reads in | writes out | free/busy |
 |---|---|---|---|
-| `none` | — | — | ✅ |
-| `one_way` | ✅ | — | ✅ |
+| `none` — "Off" | — | — | ✅ |
+| `one_way` — "Read only" | ✅ | — | ✅ |
 | `two_way` (default) | ✅ | ✅ | ✅ |
 
-Two predicates, both in `db/repo.py`: `account_syncs_out` (unchanged, `!=
-"none"`) and `account_syncs_in` (new, `== "two_way"`).
+Two predicates, both in `db/repo.py`: `account_syncs_in` (`!= "none"`) and
+`account_syncs_out` (`== "two_way"` — **changed**; it used to be `!= "none"`).
 
-**Why out-only and not in-only.** "One-way" doesn't say which way on its own, but
-`models.py` defines the field as *"how in-app events flow **to** this calendar"*
-— an outbound framing. So one-way is Nudgy → calendar.
+**Why one-way is the READING tier.** The name doesn't say which direction, and
+the field's original comment ("how in-app events flow *to* this calendar")
+suggested out-only — but that comment predates inbound existing, so it described
+the only direction there was rather than a decision. The decision is about
+trust: plenty of people will let an app analyse their calendar long before they
+let it write to one, so the cautious tier has to be the one that still gets the
+useful feature. Out-only would have meant granting **write** access to get your
+own event titles back, which is backwards.
+
+The UI labels it **"Read only"**, never "One-way" — `one_way` stays as the
+stored value, but a label that makes users guess the direction defeats the point
+of the tier.
 
 **Free/busy is not sync.** None of the three touch it. Availability reads every
 connected calendar's busy ranges regardless, because that is how the app
 functions at all and it is opaque by construction. Disconnecting is how you stop
 it; this switch isn't.
 
-**Titles sit on top.** `read_titles` is a further opt-in *within* two-way:
-two-way alone mirrors times and says nothing about reading what is in them. The
-Settings UI disables the Titles switch on a non-two-way calendar and says why,
-rather than offering a control that silently does nothing.
+**Titles sit on top.** `read_titles` is a further opt-in *within* reading:
+mirroring gets times, and says nothing about reading what is in them. Available
+on read-only and two-way alike — it is a read concern, so tying it to write
+permission would recreate the backwards thing above. Only "Off" disables the
+switch, and the Settings row says so rather than offering a dead control.
 
-**Leaving two-way asks.** It stops inbound, so it raises the same keep-or-bin
+**Switching Off asks.** It stops inbound, so it raises the same keep-or-bin
 question as switching titles off — same prompt, same default (delete), and the
 sync tokens are cleared either way so re-enabling starts from a full read
 instead of resuming a bookmark that is missing everything that changed while
-inbound was off.
+inbound was off. **Two-way → Read only asks nothing**: it withdraws write
+permission and reading continues, so the mirror is not in question.
 
 > This resolution deleted 127 rows on the dev machine that had been mirrored
 > from a Google account explicitly set to `none` — which is exactly the bug it
 > exists to fix. No migration ships for it: the feature has never been deployed,
 > so no other database can contain rows collected under the old rule.
+>
+> The narrowing of `account_syncs_out` needs no migration either, for the same
+> reason plus one more: the default is `two_way`, so only an account explicitly
+> moved to `one_way` changes behaviour, and none existed.
 
 ## Known limits
 

@@ -91,10 +91,15 @@ Read these before doing anything else this session:
   Turning titles off / disconnecting / leaving two-way all PROMPT for what to do
   with what was already pulled in; "keep" survives via a nullable
   `ExternalEvent.account_id`.
-  **`sync_setting` is finally three real behaviours** (resolved 2026-08-02):
-  `none` = neither direction, `one_way` = writes out only, `two_way` = both.
-  `repo.account_syncs_out` (`!= "none"`) and `repo.account_syncs_in`
-  (`== "two_way"`). Free/busy is unaffected by all three — it is not sync.
+  **`sync_setting` is finally three real behaviours** (resolved 2026-08-02) — a
+  TRUST LADDER: `none` = neither direction, `one_way` = **READ only** (mirrors
+  in, never writes out), `two_way` = both. `repo.account_syncs_in` (`!= "none"`)
+  and `repo.account_syncs_out` (`== "two_way"` — narrowed from `!= "none"`, so
+  one-way no longer receives bookings). One-way is the reading tier because
+  people trust an app to analyse their calendar long before writing to it; the
+  other way round you'd grant WRITE access to get your own titles back. The UI
+  labels it "Read only" — `one_way` is only the stored value. Free/busy is
+  unaffected by all three: it is not sync.
   515 tests green. Verified against the REAL Google + Microsoft accounts on the
   dev machine, not just fakes — see the doc's last section.
 

@@ -55,14 +55,21 @@ def get_primary_calendar_account(session: Session, user: User) -> CalendarAccoun
 
 # sync_setting, resolved 2026-08-02 now that inbound sync exists (see
 # docs/inbound-sync.md). Until then "one_way" and "two_way" were indistinguishable
-# because there was only ever one direction to have an opinion about:
+# because there was only ever one direction to have an opinion about. The three
+# settings are a TRUST LADDER, and they read in that order:
 #
-#   none     -> Nudgy neither writes to this calendar nor mirrors from it.
-#   one_way  -> Nudgy writes to it. Nothing comes back.
+#   none     -> Nudgy neither reads this calendar's events nor writes to it.
+#   one_way  -> Nudgy READS it (mirrors events in) but never writes to it.
 #   two_way  -> both.
 #
-# The names read as outbound ("how in-app events flow TO this calendar"), which
-# is what settles "one-way" as meaning out-only rather than in-only.
+# Why one-way is the READING one. The name alone doesn't say which direction,
+# and the field's original comment ("how in-app events flow TO this calendar")
+# suggested out-only — but that comment predates inbound existing, so it
+# described the only direction there was rather than a decision. The decision is
+# about trust: plenty of people will happily let an app analyse their calendar
+# long before they let it write to it. Making one-way the read-only tier means
+# the CAUTIOUS choice still gets the useful feature. The other way round, you had
+# to grant write access to get your own event titles back, which is backwards.
 #
 # FREE/BUSY IS NOT SYNC and none of the three touch it. Availability reads every
 # connected calendar's busy ranges whatever this says, because that is how the
@@ -72,23 +79,23 @@ def get_primary_calendar_account(session: Session, user: User) -> CalendarAccoun
 def account_syncs_out(account: CalendarAccount) -> bool:
     """Whether Nudgy should WRITE in-app events / bookings to this calendar.
 
-    Consulted by the write paths — event_routes._sync_to_google,
-    event_routes._push_edit_to_calendar and tools.booking — before creating or
-    updating a calendar event."""
-    return account.sync_setting != "none"
+    ONLY "two_way". Writing is the thing people are cautious about, so it is the
+    thing behind the highest setting. Consulted by every write path —
+    event_routes._sync_to_google, event_routes._push_edit_to_calendar and
+    tools.booking — before creating or updating a calendar event."""
+    return account.sync_setting == "two_way"
 
 
 def account_syncs_in(account: CalendarAccount) -> bool:
     """Whether inbound sync should MIRROR this calendar's events into Nudgy.
 
-    Only "two_way" does. A calendar set to "one_way" is being told to accept
-    Nudgy's events and send nothing back, and "none" is being told to stay out
-    of it entirely — mirroring either into our database would be doing the exact
-    thing the setting asked us not to.
+    Both "one_way" and "two_way" read; only "none" opts out. A calendar set to
+    none is being told to stay out of it entirely, and mirroring it anyway would
+    be doing the exact thing the setting asked us not to.
 
-    Titles are a further opt-in ON TOP of this (`read_titles`): two_way alone
-    mirrors times, and says nothing about reading what is in them."""
-    return account.sync_setting == "two_way"
+    Titles are a further opt-in ON TOP of this (`read_titles`): reading mirrors
+    times, and says nothing about reading what is in them."""
+    return account.sync_setting != "none"
 
 
 def upsert_calendar_account(
@@ -150,11 +157,12 @@ def set_account_sync_setting(
 ) -> None:
     """Set the sync direction (none|one_way|two_way) — see account_syncs_in.
 
-    Dropping OUT of two_way stops inbound, which raises the same question that
+    Switching to "none" stops inbound, which raises the same question that
     switching titles off or disconnecting does: what happens to what was already
     mirrored? Same answer — the caller is expected to have ASKED, and
     `keep_events` carries the reply. Kept rows stay visible to their owner and
-    simply stop updating.
+    simply stop updating. Going two_way -> one_way is NOT this case: reading
+    continues, so there is nothing to decide.
 
     Either way the sync tokens go, so re-enabling two_way starts from a full
     read rather than resuming a bookmark that is now missing everything that

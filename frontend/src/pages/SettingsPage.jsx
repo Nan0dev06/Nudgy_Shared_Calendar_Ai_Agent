@@ -347,10 +347,14 @@ export default function SettingsPage() {
 
 // ---- connected calendars ---------------------------------------------------
 const SWATCHES = [SAGE, SLATE, TERRACOTTA, ROSE, MUSTARD, LILAC, AMBER];
+// A trust ladder, shown in that order. "One-way" is the stored value but never
+// the label: it doesn't say WHICH way, and the whole reason the tier exists is
+// that people want Nudgy to understand their calendar before they let it write
+// to one. "Read only" says that; "One-way" makes them guess.
 const SYNC_MODES = [
-  { key: "two_way", label: "Two-way" },
-  { key: "one_way", label: "One-way" },
-  { key: "none", label: "Off" },
+  { key: "two_way", label: "Two-way", hint: "Read this calendar and write to it" },
+  { key: "one_way", label: "Read only", hint: "Read this calendar, never write to it" },
+  { key: "none", label: "Off", hint: "Neither — free/busy only" },
 ];
 const PROVIDER_LABEL = { google: "Google Calendar", microsoft: "Outlook / Microsoft" };
 
@@ -424,11 +428,11 @@ function CalendarsSection() {
     patch(id, { read_titles: false, keep_titles: keep });
   };
 
-  // Only two-way pulls events back in. Leaving it therefore stops inbound sync
-  // and raises the same keep-or-bin question — but only when there is actually
-  // a mirror to decide about, otherwise this is just a mode change.
+  // Everything except Off reads the calendar, so only Off stops inbound — and
+  // only that raises the keep-or-bin question. Two-way -> Read only withdraws
+  // WRITE permission and nothing else, so it applies straight away.
   const setSyncMode = (c, mode) => {
-    if (c.syncs_in && mode !== "two_way" && c.synced_events > 0)
+    if (c.syncs_in && mode === "none" && c.synced_events > 0)
       setAsk({ id: c.id, kind: "syncMode", mode, count: c.synced_events });
     else patch(c.id, { sync_setting: mode });
   };
@@ -469,11 +473,12 @@ function CalendarsSection() {
         never double-books you; new events and bookings are written to your{" "}
         <b>primary</b> one. Colors tell them apart on your calendar.
         <br />
-        <b>Sync</b> sets the direction: <b>Two-way</b> writes your events out and
-        reads that calendar's back in, <b>One-way</b> only writes out, <b>Off</b>{" "}
-        does neither. Free/busy is read either way — that's how Nudgy avoids
-        double-booking you, and it never carries any detail. On a two-way
-        calendar, switch <b>Titles</b> on and your own busy blocks say what they
+        <b>Sync</b> sets how far Nudgy goes: <b>Two-way</b> reads that calendar
+        and writes to it, <b>Read only</b> reads it and never writes — pick this
+        if you want Nudgy to understand your week without touching your calendar
+        — and <b>Off</b> does neither. Free/busy is read whatever you pick; it's
+        how Nudgy avoids double-booking you and it carries no detail. On anything
+        but Off, switch <b>Titles</b> on and your own busy blocks say what they
         are — <b>only to you</b>; everyone else keeps seeing plain busy time.
       </div>
 
@@ -522,6 +527,7 @@ function CalendarsSection() {
                 return (
                   <span
                     key={m.key}
+                    title={m.hint}
                     onClick={() => !on && setSyncMode(c, m.key)}
                     style={{
                       ...gpill(true),
@@ -556,7 +562,7 @@ function CalendarsSection() {
             />
             <span style={{ fontSize: 11.5, color: "#a09889", flex: 1, minWidth: 180, lineHeight: 1.45 }}>
               {!c.syncs_in
-                ? "Nothing is read from this calendar — set Sync to Two-way first."
+                ? "Sync is off, so nothing is read from this calendar."
                 : c.read_titles
                   ? "Your busy blocks show what they are — to you only. Groupmates still see plain busy time."
                   : "Off: this calendar's events show as unlabelled busy blocks, even to you."}
@@ -587,17 +593,11 @@ function CalendarsSection() {
           )}
           {ask?.id === c.id && ask.kind === "syncMode" && (
             <ChoicePrompt
-              question={
-                ask.mode === "none"
-                  ? "Turn sync off for this calendar?"
-                  : "Switch to one-way sync?"
-              }
+              question="Turn sync off for this calendar?"
               detail={
-                (ask.mode === "none"
-                  ? "Nudgy stops writing to this calendar and stops reading from it. "
-                  : "Nudgy keeps writing your events to this calendar, but stops reading anything back. ") +
+                "Nudgy stops reading this calendar and stops writing to it. " +
                 `The ${ask.count} event${ask.count === 1 ? "" : "s"} already synced can stay as a frozen copy. ` +
-                "Either way it still counts as busy time so nobody double-books you."
+                "Either way it still counts as busy time, so nobody double-books you."
               }
               options={[
                 { label: "Delete them", tone: "danger", onPick: () => applySyncMode(c.id, ask.mode, false) },

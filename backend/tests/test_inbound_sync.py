@@ -655,8 +655,10 @@ def test_one_broken_calendar_does_not_stop_the_others(Session, monkeypatch):
 
 # ============================== sync_setting governs the direction (2026-08-02)
 # Until inbound existed, "one_way" and "two_way" were indistinguishable — there
-# was only one direction to have an opinion about. Now: none = neither,
-# one_way = out only, two_way = both. See repo.account_syncs_in.
+# was only one direction to have an opinion about. Now they are a trust ladder:
+# none = neither, one_way = READ only, two_way = read and write. One-way is the
+# reading tier on purpose: people trust an app to analyse their calendar long
+# before they trust it to write to one. See repo.account_syncs_in.
 
 class _Recorder:
     """A provider that records whether it was asked to sync at all."""
@@ -676,10 +678,10 @@ class _Recorder:
 
 @pytest.mark.parametrize("setting,should_sync", [
     ("two_way", True),
-    ("one_way", False),
+    ("one_way", True),    # the read-only tier: mirrors in, never writes out
     ("none", False),
 ])
-def test_only_a_two_way_calendar_is_mirrored(Session, monkeypatch, setting, should_sync):
+def test_every_calendar_except_off_is_mirrored(Session, monkeypatch, setting, should_sync):
     with Session() as s:
         user, account = _account(s)
         account.sync_setting = setting
@@ -698,7 +700,7 @@ def test_sync_now_does_not_override_the_setting(Session, monkeypatch):
     the calendar was set to."""
     with Session() as s:
         user, account = _account(s)
-        account.sync_setting = "one_way"
+        account.sync_setting = "none"
         s.commit()
         rec = _Recorder()
         monkeypatch.setattr(calendar_sync, "provider_for_account", lambda *a: rec)
@@ -707,7 +709,7 @@ def test_sync_now_does_not_override_the_setting(Session, monkeypatch):
         assert counts["skipped"] == 1
 
 
-def test_leaving_two_way_stops_inbound_and_asks_about_the_mirror(Session):
+def test_switching_off_stops_inbound_and_asks_about_the_mirror(Session):
     with Session() as s:
         user, account = _account(s)
         state = _state(s, account)
@@ -718,7 +720,7 @@ def test_leaving_two_way_stops_inbound_and_asks_about_the_mirror(Session):
         )
         assert repo.count_external_events(s, account) == 1
 
-        repo.set_account_sync_setting(s, account, "one_way")
+        repo.set_account_sync_setting(s, account, "none")
 
         assert repo.account_syncs_in(account) is False
         assert repo.get_external_events(s, user.id, WINDOW[0], WINDOW[1]) == []
@@ -727,7 +729,7 @@ def test_leaving_two_way_stops_inbound_and_asks_about_the_mirror(Session):
         assert s.get(CalendarSyncState, state.id).sync_token is None
 
 
-def test_leaving_two_way_can_keep_the_mirror(Session):
+def test_switching_off_can_keep_the_mirror(Session):
     with Session() as s:
         user, account = _account(s)
         state = _state(s, account)
@@ -740,33 +742,39 @@ def test_leaving_two_way_can_keep_the_mirror(Session):
         assert len(repo.get_external_events(s, user.id, WINDOW[0], WINDOW[1])) == 1
 
 
-def test_moving_between_two_non_inbound_settings_touches_nothing(Session):
-    """one_way -> none was never syncing inbound, so there is nothing to ask
-    about and nothing to delete."""
+def test_dropping_to_read_only_keeps_syncing_and_asks_nothing(Session):
+    """two_way -> one_way only withdraws WRITE permission. Reading continues, so
+    the mirror is not in question and must not be touched."""
     with Session() as s:
         user, account = _account(s)
-        account.sync_setting = "one_way"
-        s.commit()
         state = _state(s, account)
-        # a mirror left over from when it WAS two-way and the user kept it
         repo.save_sync_round(
             s, state, changed=[_data("a", 9)], deleted_ids=[], next_token="T",
             full=True, window_start=WINDOW[0], window_end=WINDOW[1], now=NOW,
             store_titles=False,
         )
-        repo.set_account_sync_setting(s, account, "none")
+        repo.set_account_sync_setting(s, account, "one_way")
+
+        assert repo.account_syncs_in(account) is True
+        assert repo.account_syncs_out(account) is False
         assert len(repo.get_external_events(s, user.id, WINDOW[0], WINDOW[1])) == 1
+        # the bookmark survives too — nothing stopped, so nothing to re-read
+        assert s.get(CalendarSyncState, state.id).sync_token == "T"
 
 
-def test_outbound_is_unchanged_by_all_of_this(Session):
-    """The write paths still only care about "off". Regression guard: it would
-    be easy to collapse the two predicates into one and silently stop one-way
-    calendars receiving bookings."""
+def test_the_two_directions_are_independent_predicates(Session):
+    """The trust ladder in one assertion. Regression guard: collapsing these
+    into one predicate is exactly how one-way stops meaning anything again."""
     with Session() as s:
         user, account = _account(s)
-        for setting, out in [("two_way", True), ("one_way", True), ("none", False)]:
+        for setting, reads, writes in [
+            ("two_way", True, True),
+            ("one_way", True, False),   # analyse my calendar, don't touch it
+            ("none", False, False),
+        ]:
             account.sync_setting = setting
-            assert repo.account_syncs_out(account) is out
+            assert repo.account_syncs_in(account) is reads, setting
+            assert repo.account_syncs_out(account) is writes, setting
 
 
 def test_a_failure_keeps_the_existing_bookmark(Session, monkeypatch):
