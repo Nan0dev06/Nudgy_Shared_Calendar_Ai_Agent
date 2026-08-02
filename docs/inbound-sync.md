@@ -139,6 +139,23 @@ towards deleting text somebody withdrew consent for.
 > every NOT NULL column added to `CalendarAccount` must be named in it. Missing
 > that made a fresh database fail to boot.
 
+## Open question: `sync_setting` vs inbound
+
+Inbound sync is gated on `read_titles`, **not** on `sync_setting`. A calendar set
+to `one_way` — or even `none` — still has its events mirrored (untitled, unless
+titles are on).
+
+That follows the position already written into `repo.account_syncs_out`: *"the
+inbound half is the freebusy availability read, which is independent of this and
+always happens."* Under that reading `sync_setting` governs only what Nudgy
+WRITES, and mirroring is just a better-informed read of what it was already
+allowed to see.
+
+But the names invite the other reading — `one_way` sounding like "Nudgy →
+calendar only". Worth settling before beta. Note `one_way` and `two_way` are
+still behaviourally identical today (`!= "none"`), so whatever is decided should
+probably resolve both at once.
+
 ## Known limits
 
 - **Microsoft mirrors one calendar.** Graph v1.0 documents delta only for the
