@@ -15,6 +15,45 @@
 > else in this document still stands. Original text kept below as the record of
 > what was found.
 
+> **UPDATE 2026-08-03 — status of every open item, re-verified in the source
+> rather than read off this document.** The audit text below is unchanged and
+> remains the record of what 2026-08-01 looked like; this block is the current
+> truth. Suite now at **531 passed**.
+>
+> **§2 — resolved:**
+> - *"Two-way sync"* — inbound sync shipped (`feat/inbound-calendar-sync`,
+>   merged 2026-08-03). `provider.update_event` is wired by §3's edit path and
+>   the deliberate 409 is gone. `sync_setting` is now three real behaviours:
+>   `none` / `one_way` (READ only) / `two_way`. See `docs/inbound-sync.md`.
+> - *"Poll modes / parallel voting"* and *"members can propose alternative
+>   times"* — the UI shipped with the poll UI rewrite; both are real end to end.
+> - *"delete dead `polls`/`votes` tables + stray `orbi.db`"* — **verified done
+>   2026-08-03.** No such tables in `models.py`, no `orbi.db` on disk.
+>
+> **§2 — still true, and deferred past beta by decision, not drift:**
+> notification preferences, chat persistence, the model router + fallback, and
+> the windowed events fetch. All four are `[LOCKED]` in `v1-decisions.md` and
+> none of them breaks a tester's session.
+>
+> **§3 — all six resolved.** 1–4 went with the poll UI rewrite; **5** (`api.md`
+> stale on polls) was rewritten 2026-08-03 against the routes — the section now
+> documents the three modes, three vote states, the minimum, spotlight/lock-in,
+> and the endpoints that replaced the queue; **6** (`.claude/startup.md` stale)
+> has been current since 2026-08-01.
+>
+> **§4 — hosting is DECIDED (2026-08-03):** Render free + Neon free, Frankfurt
+> for both, Sentry EU, and **no keep-alive pinger** — the pinger would exhaust
+> Neon's 100 CU-hour monthly quota around day 17, because it keeps the process
+> alive and the process ticks the DB every 60s. `docs/deploy.md` §6 carries the
+> arithmetic. The "deadlines and reminders stop firing while asleep" cost is
+> reduced but not eliminated: both job loops now tick once immediately on
+> startup instead of sleeping first, so a wake costs boot time rather than boot
+> time plus a full interval. Reminders whose window elapsed during sleep are
+> still missed — that is the trigger for moving to an always-on host.
+>
+> **What is actually left before beta:** the mobile-responsive pass (§6.6), then
+> the security review (§6.9), last, after the code stops moving.
+
 ## 0. The headline
 
 The **backend is in good shape and further along than the docs say.** The poll

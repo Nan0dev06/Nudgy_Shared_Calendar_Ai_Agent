@@ -231,31 +231,48 @@ Notes for the UI:
 
 ---
 
-## Plans & voting
+## Plans & voting (polls)
 
-A **plan** is one place, one day, and an ordered queue of candidate times. Plans
-are created by Nudgy (via chat) **or directly via REST** (`POST
-/groups/{group_id}/plans`, same shape as the agent's create_plan tool); members
-answer through the two endpoints below.
+> Rewritten 2026-08-03 against the code. The engine was redesigned on 2026-08-01
+> (`docs/poll-edit-redesign.md` §1) and this section described the *previous*
+> one — a queue of times with a single "active" round, an interest→time cascade,
+> and host moves that only worked through chat. None of that exists any more.
 
-**The cascade — two different questions.** Every member is first asked about the
-plan *itself* (place + day, no time). A **no** there puts them out of the whole
-plan and they are never asked a time. A **yes** immediately opens the time
-question *for that member* — they do not wait for anyone else to answer. Only
-**one** candidate time is ever on the table at a time. A **no** to a time means
-"not at 5pm", not "not coming": they stay in the plan and get asked again if the
-host moves to the next time.
+A **plan** (the UI calls it a poll) is one place, one day, and a **set of
+candidate times that are all votable at once**. There is no active round and no
+queue: a member answers whichever times they like, in any order, whenever.
 
-**Nothing here decides anything.** No majority, no unanimity, no threshold, no
-auto-booking, and a single no does not kill a time. Voting only advances that
-one member through their own cascade. The **host** (the member who suggested it)
-reads the tally and tells Nudgy to either lock the time in — which books *only*
-the people who said that time works — or move to the next time. Both of those
-happen through chat, not REST.
+**Three modes**, derived rather than stored (`plan_rules.mode_of`) — a stored
+mode could contradict the plan it describes:
+
+| mode | when | what members answer |
+|---|---|---|
+| `quick` | 0–1 candidate times, `asks_interest=false` | one yes/no |
+| `pick_a_time` | 2+ candidate times | every time, independently |
+| `float` | `asks_interest=true` | interest first; times as they arrive |
+
+Interest exists **only** in Float. Everywhere else a yes on any time *is* the
+interest signal, so asking separately would be a redundant tap.
+
+**Three vote states**, not two: `yes`, `no`, `if_needed`. "If needed" is
+Doodle's if-need-be — *I can make this work, I would rather not* — and it counts
+toward the minimum only when `yes` alone cannot reach it.
+
+**The minimum** is how many members must be able to make a time before it books
+**without a human**. Omitted at creation it is the *rule* "every account-holding
+member", and `requires_all_members` is `true`; a guest can never substitute for
+a member under that rule. Type a number and it becomes a count that guests do
+count toward. Either way the minimum never constrains the host — a lock-in books
+whatever time the host names, for whoever said yes or if-needed.
+
+**Two host moves**, both REST, neither routed through the model: `spotlight`
+(lean toward a time — resets nothing, reversible) and `lock-in` (commit and
+book). The old `POST /plans/{id}/next-time` is **gone**: it made every prior
+vote irrelevant, so hosts avoided using it.
 
 ### `GET /groups/{group_id}/plans`
-Newest first, max 10. Every plan carries **the current user's own ballot**;
-`host_box` is present **only if the current user is the host**.
+Newest first, max 10. Every plan carries the caller's own ballot and their own
+answer per time; `host_box` and `share_url` appear **only for the host**.
 
 Response `200`:
 ```json
@@ -268,76 +285,175 @@ Response `200`:
     "status": "open",
     "host": "nan0.al.shami2006@gmail.com",
     "is_host": false,
+    "mode": "pick_a_time",
+    "asks_interest": false,
+    "minimum": 4,
+    "requires_all_members": true,
+    "guest_count": 1,
+    "spotlight_round_id": 6,
+    "deadline_iso": "2026-07-19T18:00:00+00:00",
+    "voting_open": true,
     "times": [
-      {"round_id": 5, "ordinal": 0, "label": "Mon 20 Jul 17:00-18:00",
-       "status": "active", "booked": false, "event_link": null},
-      {"round_id": 6, "ordinal": 1, "label": "Mon 20 Jul 19:00-20:00",
-       "status": "queued", "booked": false, "event_link": null}
+      {
+        "round_id": 5, "ordinal": 0, "label": "Mon 20 Jul 17:00-18:00",
+        "start_iso": "2026-07-20T14:00:00+00:00",
+        "end_iso": "2026-07-20T15:00:00+00:00",
+        "booked": false, "event_link": null, "spotlit": false,
+        "yes": 2, "if_needed": 1, "no": 1, "waiting": 0, "guest_yes": 1,
+        "qualifies": false,
+        "suggested_by": "bea@x.com", "can_remove": false,
+        "my_answer": "yes"
+      }
     ],
-    "ballot": {
-      "stage": "time",
-      "note": "Does this time work for you?",
-      "round_id": 5,
-      "time_label": "Mon 20 Jul 17:00-18:00"
-    }
+    "ballot": {"stage": "time", "note": "2 times still need your answer.", "unanswered": 2}
   }
 ]
 ```
 
-`status`: `open` | `scheduled` | `dead` (every candidate time was used up).
-`times[].status`: `queued` (held back) | `active` (being asked now) | `skipped`
-(host moved on) | `confirmed` (host locked it in). `day` and every `label` are
-already in the current user's timezone.
+`status` is `open` | `booked` | `expired`. (`scheduled` and `dead` are gone.)
+`day` and every `label` are already in the caller's timezone; `start_iso` /
+`end_iso` are the raw UTC instants, for placing a booked time on a calendar and
+for spotting duplicate proposals.
 
-`ballot.stage` tells the UI exactly what to render for this member:
+Per time: `yes` counts members only, `guest_yes` folds guest yes + if-needed
+together, and `qualifies` is whether that time currently meets the minimum.
+`my_answer` is `"yes"` | `"no"` | `"if_needed"` | `null` — what *this* caller
+said, so their own choice stays visible. `can_remove` is true only when the
+caller suggested that time, it is not booked, and the poll is still open.
+
+`ballot.stage` tells the UI what to render:
 
 | stage | render |
 |---|---|
-| `interest` | the plan question + in/out buttons |
-| `time` | the `time_label` question + yes/no buttons; POST with `round_id` |
-| `waiting` | just `note` — they've answered everything on the table |
-| `out` | just `note` — they said no to the plan |
-| `closed` | just `note` — the plan is scheduled or dead |
-
-`round_id`/`time_label` are non-null only when `stage` is `time`.
+| `interest` | Float only — the plan question + in/out |
+| `time` | the time grid; `unanswered` is how many they still owe |
+| `waiting` | just `note` — they have answered everything on the table |
+| `out` | just `note` — they said no to the plan (Float only) |
+| `closed` | just `note` — booked or expired |
 
 For the host only:
 ```json
+"share_url": "https://nudgy.example/?share=abc123",
 "host_box": {
-  "interested": ["bea@x.com", "dia@x.com"],
+  "interested": ["bea@x.com"],
   "not_interested": ["cal@x.com"],
   "no_answer": ["eve@x.com"],
-  "time_yes": ["bea@x.com"],
-  "time_no": ["dia@x.com"],
-  "time_waiting": [],
-  "note": "For Mon 20 Jul 17:00-18:00: 1 of 2 interested can make it. IN: bea@x.com. OUT for this time (still in for the plan): dia@x.com. ... Your call: lock in ... or move to the next time ..."
+  "note": "Fri 7pm works for 4 of 5. Your call: lock it in, or lean toward it."
 }
 ```
-The time columns only ever cover the interested cohort — someone who said no to
-the plan is never counted as silent on a time they were never asked. Render
-`note` as-is and let the host tell Nudgy what to do.
+Those three lists are about **interest**, so they are only populated in Float.
+Per-time standing lives on `times[]` — the whole grid renders from one GET.
 
-### `POST /plans/{plan_id}/interest`
-Stage 1. Answering again replaces your previous answer.
+### `POST /groups/{group_id}/plans`
+Create a poll. Same shape the agent's `create_plan` tool uses.
 
 Request:
+```json
+{
+  "title": "Coffee catch-up",
+  "location": "Kalei Coffee",
+  "slots": [{"start_iso": "2026-07-20T14:00:00Z", "end_iso": "2026-07-20T15:00:00Z"}],
+  "expected_count": null,
+  "deadline_iso": "2026-07-19T18:00:00Z"
+}
+```
+`slots` is capped at 6 and may be empty — that is how a Float poll starts.
+`expected_count` omitted or `null` means the default rule (every member).
+Response `200`: the plan object above.
+
+### `PATCH /plans/{plan_id}`
+Host-only. Move or clear the vote deadline, change the minimum.
+
+```json
+{"deadline_iso": "2026-07-21T18:00:00Z", "minimum": 3}
+```
+Omit a field to leave it alone; send `"deadline_iso": null` to clear it.
+**Works on an `expired` poll, deliberately** — a fresh deadline reopens voting,
+which is how a host says "a couple of you never answered, take another day"
+instead of rebuilding the poll. Lowering the minimum can retroactively make a
+complete poll bookable, so convergence is re-checked on every call.
+Response `400`: the plan is already booked.
+
+### `POST /plans/{plan_id}/rounds`
+**Any member** adds candidate times to an open poll — members propose, the host
+decides. New times are votable immediately and disturb no existing vote.
+
+```json
+{"slots": [{"start_iso": "...", "end_iso": "..."}]}
+```
+1–6 slots. Response `200`: the plan object.
+
+### `DELETE /plans/{plan_id}/rounds/{round_id}`
+Take back a time **you** suggested, before it is booked.
+Response `403` if you did not suggest it — removing someone else's would let one
+member quietly delete the option the group was converging on, and its votes.
+Response `400` if it is booked. Response `200`: the plan object.
+
+### `POST /plans/{plan_id}/spotlight`
+Host-only. Lean toward one time, or clear the spotlight with `null`.
+
+```json
+{"round_id": 6}
+```
+Nothing is skipped, nothing is reset, and it can be moved back.
+Response `200`: `{"action": ..., "note": ..., "plan": {...}}`
+
+### `POST /plans/{plan_id}/lock-in`
+Host-only. Book the time the host **names** — not the spotlit one, because
+"what we are leaning toward" and "what we are committing to" are different
+statements, and coupling them would make locking in a different time a two-step
+dance. Books for everyone who said `yes` or `if_needed`.
+
+```json
+{"round_id": 6}
+```
+Response `200`:
+```json
+{"action": "booked", "round_id": 6, "time": "Fri 25 Jul 19:00-20:00",
+ "attendees": ["bea@x.com"], "event_link": "https://calendar.google.com/...",
+ "plan": {...}}
+```
+Response `502`: the calendar write failed — retryable, and the round is put back.
+Response `400`: the plan is already booked, or the round is not valid.
+
+**Not gated by the minimum.** That bar governs what books *without* a human;
+this is a deliberate, deterministic path to the calendar.
+
+### `POST /plans/{plan_id}/interest`
+**Float polls only.** Response `400` on any other mode: *"This poll asks about
+times directly — just answer the times."*
+
 ```json
 {"yes": true}
 ```
-Response `200`: the updated plan object. **A `yes` comes straight back with
-`ballot.stage == "time"`** — that is the cascade; render the time question
-immediately without re-fetching.
-Response `400`: `{"detail": "This plan is scheduled; voting is closed."}`
+Response `200`: the plan object.
 
 ### `POST /plans/{plan_id}/time-vote`
-Stage 2. Only the interested cohort may answer, and only the active time.
-`round_id` is **required** so a vote cast while the host was switching times
-can't silently land on the wrong one.
+Answer one candidate time.
 
-Request:
 ```json
-{"yes": true, "round_id": 5}
+{"round_id": 5, "answer": "if_needed"}
 ```
-Response `200`: the updated plan object.
-Response `403`: `{"detail": "Say you're in for the plan first — times are only asked of people who are."}`
-Response `409`: `{"detail": "The host moved on — the question is now Mon 20 Jul 19:00-20:00."}` — re-fetch and show the new question.
+`answer` is `yes` | `no` | `if_needed`; anything else is a `400`.
+Response `403`: Float poll and you have not said you are in yet.
+Response `404`: that round is not one of this poll's candidates.
+Response `200`: the plan object.
+
+**There is no `409` any more.** Every time is answerable independently, so there
+is no active round to race against — the old "the host moved on" conflict was an
+artifact of the queue.
+
+**The vote that completes a poll is the one that books it.** When a vote is the
+last outstanding answer and some time meets the minimum, `plan_service.converge`
+books it there and then; nothing is left for anyone to decide.
+
+### `POST /plans/{plan_id}/share` · `DELETE /plans/{plan_id}/share`
+Host-only. `POST` mints the public vote link (`?regenerate=true` mints a fresh
+token, killing every copy of the old one at once); `DELETE` turns it off. Votes
+already cast survive both — the people who cast them were invited in good faith.
+Response `200`: `{"share_url": ..., "share_token": ...}` / `{"share_url": null}`
+
+### `DELETE /plans/{plan_id}`
+Host-only, any status. Deletes candidate times and votes with it; a calendar
+event a booked round created is left in place.
+Response `200`: `{"deleted": true, "plan_id": 3}`
