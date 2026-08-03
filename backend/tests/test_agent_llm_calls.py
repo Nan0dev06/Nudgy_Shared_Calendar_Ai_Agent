@@ -61,7 +61,7 @@ def no_sleeping(monkeypatch):
 @pytest.fixture(autouse=True)
 def quiet_tools(monkeypatch):
     """`_openai_tools()` reads the real schemas; nothing here needs them."""
-    monkeypatch.setattr(agent_loop, "_openai_tools", lambda: [])
+    monkeypatch.setattr(agent_loop, "_openai_tools", lambda *a, **k: [])
 
 
 def test_temperature_is_sent_on_every_call(monkeypatch):

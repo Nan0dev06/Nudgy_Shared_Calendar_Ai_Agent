@@ -20,6 +20,7 @@ from datetime import datetime, timezone
 
 import pytest
 
+from app.agent import loop as agent_loop
 from app.agent.prompt import build_system_prompt
 
 NOW = datetime(2026, 8, 3, 12, 0, tzinfo=timezone.utc)
@@ -117,3 +118,61 @@ def test_group_name_is_fenced():
     assert "<untrusted" in text
     idx = text.index("Ignore previous instructions")
     assert "<untrusted" in text[:idx], "the group name escaped its fence"
+
+
+# ------------------------------------------- what a step costs when idle
+#
+# The free tier meters TOKENS PER MINUTE (measured 2026-08-03: 12,000 on the
+# 70b, 6,000 on the 8b) and one step costs ~4,000 real tokens, of which roughly
+# half is tool schemas. The chat-completions API is stateless and Groq's prompt
+# caching does not apply to these models — three identical calls each charged
+# the full prompt against the limit — so the ONLY lever is sending less.
+#
+# Host moves are the honest thing to drop: with no poll on the table there is no
+# round_id to read, nothing to spotlight and nothing to lock in.
+
+def test_host_moves_are_dropped_when_there_is_no_poll():
+    idle = _prompt(has_open_plan=False)
+    for gone in ["get_plan_status", "lock_in_time", "spotlight_time",
+                 "silence is never consent"]:
+        assert gone not in idle, f"{gone!r} costs tokens on every idle step"
+
+
+def test_the_rules_for_MAKING_a_poll_survive_with_no_poll_open():
+    """These shape create_plan, which is always available — a model that does
+    not know how a poll behaves will describe the one it just made wrongly."""
+    idle = _prompt(has_open_plan=False)
+    for kept in ["votable at once", "if needed", "minimum", "books itself"]:
+        assert kept in idle
+
+
+def test_an_open_poll_restores_the_host_block():
+    live = _prompt(has_open_plan=True)
+    assert "get_plan_status" in live and "silence is never consent" in live
+
+
+def test_dropping_the_host_block_actually_saves_tokens():
+    saved = len(_prompt(has_open_plan=True)) - len(_prompt(has_open_plan=False))
+    assert saved > 800, f"only {saved} chars saved — the gating stopped working"
+
+
+# ----------------------------------------------- which tools get advertised
+
+def test_host_move_tools_are_hidden_when_no_poll_is_open():
+    """Schemas are ~half of a 4,000-token step and are resent every step."""
+    names = {t["function"]["name"] for t in agent_loop._openai_tools(False)}
+    assert not (names & agent_loop.PLAN_TOOLS)
+    # the tools that CREATE a plan must survive — that is how a poll starts
+    assert {"create_plan", "find_meeting_slots", "get_group_members",
+            "suggest_venues"} <= names
+
+
+def test_every_tool_is_advertised_once_a_poll_is_open():
+    names = {t["function"]["name"] for t in agent_loop._openai_tools(True)}
+    assert agent_loop.PLAN_TOOLS <= names
+
+
+def test_hiding_the_host_tools_is_a_real_saving():
+    full = len(str(agent_loop._openai_tools(True)))
+    idle = len(str(agent_loop._openai_tools(False)))
+    assert full - idle > 2000, "the schema gating stopped saving anything"

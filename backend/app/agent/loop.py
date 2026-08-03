@@ -36,7 +36,13 @@ from app.core.config import (
 
 log = logging.getLogger("nudgy.agent")
 
-MAX_STEPS = 8  # safety bound on tool-call iterations per user message
+# Safety bound on tool-call iterations per user message. Lowered 8 -> 5 on
+# 2026-08-03: the free tier meters TOKENS PER MINUTE (12,000 on the 70b, 6,000
+# on the 8b) and a step costs ~4,000, so a turn that ran to 8 steps could not
+# physically finish inside one minute — it spent the last three sleeping on a
+# 429. Five is above every turn the tools can actually need: members ->
+# freebusy -> venues -> create, with one spare.
+MAX_STEPS = 5
 
 
 def _estimate_tokens(messages: list[dict], tools: list[dict]) -> int:
@@ -96,8 +102,24 @@ class AgentResult:
     trace: list[TraceStep] = field(default_factory=list)
 
 
-def _openai_tools() -> list[dict]:
-    """Our tool schemas in OpenAI function-calling format."""
+# Host moves against an EXISTING poll. Advertising them when the group has no
+# open poll costs tokens on every step and buys nothing: there is no round_id to
+# read, nothing to spotlight, nothing to lock in. Worse than useless, in fact —
+# a model offered lock_in_time with no poll has been seen to invent an id.
+PLAN_TOOLS = frozenset({"get_plan_status", "spotlight_time", "lock_in_time"})
+
+
+def _openai_tools(has_open_plan: bool = True) -> list[dict]:
+    """Our tool schemas in OpenAI function-calling format.
+
+    Schemas are the single largest fixed cost in the request — measured at
+    roughly half of a 4,056-token call — and they are resent on EVERY step,
+    because the chat-completions API is stateless and Groq's prompt caching does
+    not apply to these models (verified 2026-08-03: three identical calls each
+    charged the full prompt against the per-minute limit). The free tier meters
+    TOKENS PER MINUTE, so what a steady-state step costs decides whether a
+    multi-step turn finishes or 429s halfway through.
+    """
     return [
         {
             "type": "function",
@@ -108,6 +130,7 @@ def _openai_tools() -> list[dict]:
             },
         }
         for t in TOOL_SCHEMAS
+        if has_open_plan or t["name"] not in PLAN_TOOLS
     ]
 
 
@@ -128,7 +151,8 @@ def _log_usage(resp, model: str) -> None:
              getattr(usage, "total_tokens", "?"))
 
 
-def _create_with_retry(client: OpenAI, messages: list[dict], attempts: int = 5):
+def _create_with_retry(client: OpenAI, messages: list[dict], attempts: int = 5,
+                       tools: list[dict] | None = None):
     """One chat-completion call, retried on Groq's two stochastic failures:
 
       tool_use_failed — Llama occasionally emits malformed function-call syntax
@@ -144,11 +168,15 @@ def _create_with_retry(client: OpenAI, messages: list[dict], attempts: int = 5):
     Anything else propagates; the caller turns it into a friendly reply."""
     from openai import BadRequestError, RateLimitError
 
+    # Built once by the caller so the advertised set matches the one the token
+    # estimate was computed against; the default keeps direct callers working.
+    call_tools = _openai_tools() if tools is None else tools
+
     def _call(model: str):
         resp = client.chat.completions.create(
             model=model,
             messages=messages,
-            tools=_openai_tools(),
+            tools=call_tools,
             max_tokens=1024,
             temperature=LLM_TEMPERATURE,
         )
@@ -235,10 +263,29 @@ def _memory_notes(ctx: ToolContext) -> str | None:
     return "\n".join(lines[:50]) or None
 
 
+def _has_open_plan(ctx: ToolContext) -> bool:
+    """Does this group have a poll the host could actually act on?
+
+    Decides both which tools are advertised and whether the host-moves block is
+    in the prompt. Fails OPEN — if the lookup breaks we advertise everything,
+    because a missing tool is a broken turn while an extra one is only tokens.
+    """
+    if ctx.group is None or ctx.session is None:
+        return False
+    try:
+        from app.db import repo
+
+        return bool(repo.get_group_plans(ctx.session, ctx.group.id, only_open=True))
+    except Exception:
+        log.exception("[loop] open-plan lookup failed — advertising every tool")
+        return True
+
+
 def run_agent(ctx: ToolContext, history: list[dict], user_message: str) -> AgentResult:
     """Run one turn of Nudgy. `history` is prior [{"role","content"}] messages
     (plain strings; not mutated — the caller decides what to persist)."""
     now = ctx.now_utc or datetime.now(timezone.utc)
+    has_open_plan = _has_open_plan(ctx)
     system = build_system_prompt(
         user_email=ctx.user.email,
         tz_name=ctx.tz_name,
@@ -247,6 +294,7 @@ def run_agent(ctx: ToolContext, history: list[dict], user_message: str) -> Agent
         group_id=ctx.group.id if ctx.group else None,
         taste_notes=_taste_notes(ctx),
         memory_notes=_memory_notes(ctx),
+        has_open_plan=has_open_plan,
     )
 
     if not LLM_API_KEY:
@@ -262,7 +310,7 @@ def run_agent(ctx: ToolContext, history: list[dict], user_message: str) -> Agent
         + [{"role": "user", "content": user_message}]
     )
     trace: list[TraceStep] = []
-    tools = _openai_tools()
+    tools = _openai_tools(has_open_plan)
 
     for step in range(MAX_STEPS):
         # Big-intake guard: notice an over-large request BEFORE the model
@@ -280,7 +328,7 @@ def run_agent(ctx: ToolContext, history: list[dict], user_message: str) -> Agent
                     trace=trace,
                 )
 
-        resp = _create_with_retry(client, messages)
+        resp = _create_with_retry(client, messages, tools=tools)
         msg = resp.choices[0].message
 
         if not msg.tool_calls:
