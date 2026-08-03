@@ -20,7 +20,9 @@ from __future__ import annotations
 
 import logging
 import math
+import os
 import time
+import unicodedata
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING
 
@@ -41,10 +43,47 @@ OVERPASS_URL = "https://overpass-api.de/api/interpreter"
 # Switzerland only — it answers 200 with zero results for Beirut, which is
 # worse than an error because it looks like a real "no venues here").
 OVERPASS_ATTEMPTS = 3
-# Nominatim usage policy requires an identifying User-Agent.
-HTTP_HEADERS = {"User-Agent": "nudgy-hackathon-demo/1.0"}
+# Nominatim's usage policy requires a User-Agent that identifies the app AND
+# gives a way to contact whoever runs it; generic ones get blocked. A repo URL
+# counts. Overridable so a fork does not impersonate this deployment.
+HTTP_HEADERS = {"User-Agent": os.getenv(
+    "NUDGY_USER_AGENT",
+    "Nudgy/1.0 (+https://github.com/Nan0dev06/Nudgy_Shared_Calendar_Ai_Agent)",
+)}
 
-VENUE_KINDS = {"cafe", "restaurant", "bar", "fast_food"}
+# What "kind of place" means as an OpenStreetMap tag.
+#
+# The value is a (tag key, tag value) pair rather than a bare string because OSM
+# does not file everything under `amenity`: a park is `leisure`, and assuming
+# otherwise is why parks silently returned nothing. Keys here are also the enum
+# the agent chooses from — agent/tools.py derives it from this dict so the two
+# cannot drift apart.
+VENUE_KINDS: dict[str, tuple[str, str]] = {
+    "cafe": ("amenity", "cafe"),
+    "restaurant": ("amenity", "restaurant"),
+    "bar": ("amenity", "bar"),
+    "pub": ("amenity", "pub"),
+    "fast_food": ("amenity", "fast_food"),
+    "ice_cream": ("amenity", "ice_cream"),
+    "cinema": ("amenity", "cinema"),
+    "park": ("leisure", "park"),
+    "bowling_alley": ("leisure", "bowling_alley"),
+}
+DEFAULT_VENUE_KIND = "cafe"
+
+# Two different jobs, so two sets — see `_dedupe_key`.
+#
+# Articles and particles are NEVER distinctive; "The Coffee House" and "Coffee
+# House" are one place, so these are dropped outright.
+_ARTICLES = {"the", "de", "du", "la", "le", "el", "al", "and", "of"}
+# Category words name what a place IS, not which one it is. Dropped when
+# deciding what is distinctive, but kept as a last-resort key: a venue called
+# nothing but category words ("The Coffee Shop") must not collapse into every
+# other one ("The Coffee House").
+_CATEGORY_WORDS = {
+    "cafe", "coffee", "restaurant", "bar", "pub", "bistro", "lounge", "shop",
+    "house",
+}
 
 
 def get_adjacent_event_locations(
@@ -118,8 +157,69 @@ def distance_m(a: tuple[float, float], b: tuple[float, float]) -> int:
     return int(2 * 6_371_000 * math.asin(math.sqrt(h)))
 
 
+def _display_name(tags: dict) -> str | None:
+    """The name to show a user, English first.
+
+    OSM's `name` is the LOCAL-language name, so a Beirut search came back as
+    'ستاربكس' and 'كافي دو براغ' — correct data, unreadable in an English UI, and
+    the model has to reason over it too. `name:en` is tagged on roughly 4 in 5
+    Beirut cafes; where it is missing the local name is still better than
+    dropping a real venue.
+    """
+    tags = tags or {}
+    for key in ("name:en", "int_name", "name"):
+        value = (tags.get(key) or "").strip()
+        if value:
+            return value
+    return None
+
+
+def _dedupe_key(name: str) -> frozenset[str] | str:
+    """A key that collapses the same place spelled two ways.
+
+    OSM lets one shop exist as two nodes, and Hamra returns exactly that:
+    'Caribou Coffee' and 'Café Caribou' are one Caribou; 'Café Younès' and
+    'Café Younes' differ by an accent. Casefolding alone catches neither.
+
+    So: strip accents, drop articles outright, drop the words that name the
+    CATEGORY rather than the place, and compare what is left as a SET — word
+    order stops mattering and 'caribou' meets 'caribou'.
+
+    When nothing distinctive survives ('The Coffee House') the remaining words
+    become the key instead, so it still matches 'Coffee House' but not 'The
+    Coffee Shop'. Cross-SCRIPT duplicates only collapse when OSM tagged
+    `name:en` on both; no amount of normalising matches two alphabets.
+    """
+    stripped = "".join(
+        ch for ch in unicodedata.normalize("NFKD", name)
+        if not unicodedata.combining(ch)
+    ).casefold()
+    words = {w for w in "".join(
+        ch if ch.isalnum() else " " for ch in stripped
+    ).split() if w} - _ARTICLES
+    distinctive = words - _CATEGORY_WORDS
+    return frozenset(distinctive) if distinctive else " ".join(sorted(words))
+
+
+# Two venues sharing a distinctive name this close together are one venue mapped
+# twice, not neighbours. Wide enough for a shop tagged once at the door and once
+# at the building centroid; tight enough that two branches of a chain on
+# different streets both survive.
+#
+# MEASURED 2026-08-03, and deliberately left just outside: Hamra returns
+# 'Caribou Coffee' (33.89570, 35.48119) and 'Café Caribou' (33.89530, 35.48435)
+# **295 m apart**, so both survive. They may well be one shop mapped twice by
+# two people — the two different Arabic spellings suggest it — but they may also
+# be two real branches on a dense street, and nothing in the data settles it.
+# Raising this to ~400 would collapse that pair at the cost of merging genuine
+# neighbouring branches elsewhere. Showing a duplicate wastes a slot; hiding a
+# real venue loses an option. The second is worse, so this stays conservative.
+DUPLICATE_RADIUS_M = 250
+
+
 def search_venues_near(
-    lat: float, lon: float, kind: str = "cafe", radius_m: int = 1500, limit: int = 5
+    lat: float, lon: float, kind: str = DEFAULT_VENUE_KIND,
+    radius_m: int = 1500, limit: int = 5,
 ) -> list[dict] | None:
     """REAL venues near a point from OpenStreetMap (Overpass).
 
@@ -128,12 +228,17 @@ def search_venues_near(
     Those two are very different and must never be conflated: reporting a
     timeout as "no cafes here" tells the user something false about a real
     place. Only named places are returned, and nothing is ever invented.
+
+    Queries `nwr`, not `node`: plenty of venues are mapped as a building outline
+    rather than a point, and parks and cinemas nearly always are. `out center`
+    hands back a representative coordinate for those, so one parser covers all
+    three element types.
     """
-    kind = kind if kind in VENUE_KINDS else "cafe"
+    tag_key, tag_value = VENUE_KINDS.get(kind) or VENUE_KINDS[DEFAULT_VENUE_KIND]
     query = (
         f'[out:json][timeout:15];'
-        f'node(around:{radius_m},{lat},{lon})["amenity"="{kind}"]["name"];'
-        f'out body {max(limit * 4, 20)};'
+        f'nwr(around:{radius_m},{lat},{lon})["{tag_key}"="{tag_value}"]["name"];'
+        f'out center {max(limit * 4, 20)};'
     )
     elements = None
     for attempt in range(OVERPASS_ATTEMPTS):
@@ -153,18 +258,45 @@ def search_venues_near(
 
     venues = []
     for el in elements:
-        name = el.get("tags", {}).get("name")
+        name = _display_name(el.get("tags"))
         if not name:
             continue
-        v_lat, v_lon = el["lat"], el["lon"]
+        # nodes carry lat/lon directly; ways and relations get it from `center`
+        center = el.get("center") or el
+        v_lat, v_lon = center.get("lat"), center.get("lon")
+        if v_lat is None or v_lon is None:
+            continue
         venues.append({
             "name": name,
             "kind": kind,
             "distance_m": distance_m((lat, lon), (v_lat, v_lon)),
             "map_url": f"https://www.openstreetmap.org/?mlat={v_lat}&mlon={v_lon}#map=18/{v_lat}/{v_lon}",
+            "_lat": v_lat,
+            "_lon": v_lon,
         })
     venues.sort(key=lambda v: v["distance_m"])
-    return venues[:limit]
+
+    # Collapse the same place mapped twice. Nearest wins, so the survivor is the
+    # one whose coordinate is closest to the anchor — and because the list is
+    # already sorted, the first of any duplicate pair is that one.
+    kept: list[dict] = []
+    for v in venues:
+        key = _dedupe_key(v["name"])
+        twin = next(
+            (k for k in kept
+             if _dedupe_key(k["name"]) == key
+             and distance_m((k["_lat"], k["_lon"]), (v["_lat"], v["_lon"]))
+             <= DUPLICATE_RADIUS_M),
+            None,
+        )
+        if twin is None:
+            kept.append(v)
+        if len(kept) >= limit:
+            break
+    for v in kept:
+        v.pop("_lat", None)
+        v.pop("_lon", None)
+    return kept
 
 
 def _search_failed(where: str) -> dict:
