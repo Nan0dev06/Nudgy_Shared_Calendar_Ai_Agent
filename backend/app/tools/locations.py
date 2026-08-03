@@ -21,6 +21,7 @@ from __future__ import annotations
 import logging
 import math
 import os
+import threading
 import time
 import unicodedata
 from datetime import datetime, timedelta, timezone
@@ -157,6 +158,40 @@ def distance_m(a: tuple[float, float], b: tuple[float, float]) -> int:
     return int(2 * 6_371_000 * math.asin(math.sqrt(h)))
 
 
+# --------------------------------------------------------------- venue cache
+#
+# Overpass is free, public, keyless and shared with the whole internet — it 429s
+# and 504s under load, and it did so 3 times out of 3 during the verification
+# run that produced these fixes. The retry helps; not asking at all helps more.
+#
+# A group planning an evening searches the SAME area repeatedly: once per agent
+# step that calls suggest_venues, again when they ask for a different kind, again
+# when someone re-opens the plan. Cafes near a point do not change in an hour, so
+# a short TTL turns that burst into one request.
+#
+# Deliberately NOT the freebusy cache: that one is about a person's private
+# availability with a 90s TTL and a booking-time invalidation rule. This is
+# public map data with no correctness deadline. Same shape, different lifetime.
+VENUE_CACHE_TTL_SECONDS = float(os.getenv("VENUE_CACHE_TTL_SECONDS", "900"))
+# ~11 m at Beirut's latitude. Anchors are computed centroids, so two searches for
+# "the same place" differ in the 5th decimal; rounding makes them one key.
+_CACHE_COORD_DP = 4
+
+_venue_cache: dict[tuple, tuple[float, list[dict] | None]] = {}
+_venue_cache_lock = threading.Lock()
+
+
+def _cache_key(lat: float, lon: float, kind: str, radius_m: int, limit: int) -> tuple:
+    return (round(lat, _CACHE_COORD_DP), round(lon, _CACHE_COORD_DP),
+            kind, radius_m, limit)
+
+
+def clear_venue_cache() -> None:
+    """Drop everything. For tests, and for a manual 'try that again'."""
+    with _venue_cache_lock:
+        _venue_cache.clear()
+
+
 def _display_name(tags: dict) -> str | None:
     """The name to show a user, English first.
 
@@ -234,7 +269,14 @@ def search_venues_near(
     hands back a representative coordinate for those, so one parser covers all
     three element types.
     """
-    tag_key, tag_value = VENUE_KINDS.get(kind) or VENUE_KINDS[DEFAULT_VENUE_KIND]
+    kind = kind if kind in VENUE_KINDS else DEFAULT_VENUE_KIND
+    cache_key = _cache_key(lat, lon, kind, radius_m, limit)
+    with _venue_cache_lock:
+        hit = _venue_cache.get(cache_key)
+        if hit is not None and time.monotonic() - hit[0] < VENUE_CACHE_TTL_SECONDS:
+            return hit[1]
+
+    tag_key, tag_value = VENUE_KINDS[kind]
     query = (
         f'[out:json][timeout:15];'
         f'nwr(around:{radius_m},{lat},{lon})["{tag_key}"="{tag_value}"]["name"];'
@@ -281,10 +323,13 @@ def search_venues_near(
     # already sorted, the first of any duplicate pair is that one.
     kept: list[dict] = []
     for v in venues:
-        key = _dedupe_key(v["name"])
+        # NOT `key` — that name belongs to the cache key above, and shadowing it
+        # here silently stored every result under a frozenset no lookup could
+        # match. The cache never hit and grew an entry per call.
+        name_key = _dedupe_key(v["name"])
         twin = next(
             (k for k in kept
-             if _dedupe_key(k["name"]) == key
+             if _dedupe_key(k["name"]) == name_key
              and distance_m((k["_lat"], k["_lon"]), (v["_lat"], v["_lon"]))
              <= DUPLICATE_RADIUS_M),
             None,
@@ -296,6 +341,12 @@ def search_venues_near(
     for v in kept:
         v.pop("_lat", None)
         v.pop("_lon", None)
+
+    # Only successes are cached. A transient 504 stored for 15 minutes would
+    # turn one bad moment into a quarter-hour of "the venue lookup is down" for
+    # an area that is actually fine — the opposite of what this cache is for.
+    with _venue_cache_lock:
+        _venue_cache[cache_key] = (time.monotonic(), kept)
     return kept
 
 
