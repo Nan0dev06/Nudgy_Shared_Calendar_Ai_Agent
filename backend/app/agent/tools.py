@@ -23,6 +23,9 @@ from sqlalchemy.orm import Session
 from app.agent.availability import compute_availability
 from app.db.models import Group, User
 from app.db import repo
+# VENUE_KINDS only — the heavy half of locations.py stays lazily imported inside
+# run_tool. The `kind` enum the model sees is generated from it below.
+from app.tools.locations import VENUE_KINDS
 from app.realtime import events_changed, plans_changed
 from app.tools.plan_service import day_label, time_label
 
@@ -68,7 +71,10 @@ TOOL_SCHEMAS = [
             "properties": {
                 "start_iso": {"type": "string", "description": "Candidate slot start, ISO 8601 with offset (from find_meeting_slots)."},
                 "end_iso": {"type": "string", "description": "Candidate slot end, ISO 8601 with offset."},
-                "kind": {"type": "string", "enum": ["cafe", "restaurant", "bar", "fast_food"],
+                # Derived from tools/locations.VENUE_KINDS, never retyped: a
+                # hardcoded enum here would quietly stop matching the day a kind
+                # is added, and the model would keep offering the old set.
+                "kind": {"type": "string", "enum": sorted(VENUE_KINDS),
                          "description": "What kind of place (default cafe)."},
                 "near": {
                     "type": "string",
