@@ -3,9 +3,11 @@ import { useApp } from "../ctx.js";
 import { heavy, gpill, dpill, fieldStyle, fieldLabel } from "../theme.js";
 import { OrbLogo } from "../components/OrbLogo.jsx";
 
-// After sign-in: create a group, join one by invite code, or continue straight
-// to the dashboard. Users can belong to any number of groups.
-export default function GroupGate({ onDone }) {
+// Shown ONLY to someone with no groups at all — there is nowhere for them to
+// plan yet, so there is nothing else to show. Creating or joining refreshes the
+// group list, which is what moves them on; this screen doesn't need to say so.
+// Adding more groups later happens from the shell, not from a door screen.
+export default function GroupGate() {
   const { groups, createGroup, joinGroup } = useApp();
   const [mode, setMode] = useState(null); // null | 'create' | 'join'
   const [val, setVal] = useState("");
@@ -19,7 +21,8 @@ export default function GroupGate({ onDone }) {
     try {
       if (mode === "create") await createGroup(val.trim());
       else await joinGroup(val);
-      onDone();
+      // No onDone: both calls reload the group list, and a non-empty list is
+      // what renders the shell.
     } catch (e) {
       setErr(e.message || "That didn't work — try again.");
     } finally {
@@ -99,14 +102,6 @@ export default function GroupGate({ onDone }) {
           </div>
         )}
 
-        {groups.length > 0 && (
-          <div
-            style={{ textAlign: "center", fontSize: 13, fontWeight: 600, color: "#2B5B84", cursor: "pointer" }}
-            onClick={onDone}
-          >
-            Continue to dashboard
-          </div>
-        )}
       </div>
     </div>
   );

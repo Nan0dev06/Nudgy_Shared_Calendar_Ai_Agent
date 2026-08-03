@@ -63,9 +63,6 @@ export default function App() {
   const [activeGroupId, setActiveGroupId] = useStored("nudgy.activeGroup", null);
   const [members, setMembers] = useState([]);
   const [plans, setPlans] = useState([]);
-  const [gateDone, setGateDone] = useState(
-    () => sessionStorage.getItem("nudgy.gateDone") === "1"
-  );
 
   // ui
   const [page, setPage] = useState("home");
@@ -644,14 +641,8 @@ export default function App() {
     try {
       await api.logout();
     } finally {
-      sessionStorage.removeItem("nudgy.gateDone");
       window.location.reload();
     }
-  }, []);
-
-  const finishGate = useCallback(() => {
-    sessionStorage.setItem("nudgy.gateDone", "1");
-    setGateDone(true);
   }, []);
 
   // ---- chat (real agent) ---------------------------------------------------
@@ -935,13 +926,18 @@ export default function App() {
       </div>
     );
 
+  // The gate is for people who have NOWHERE to plan yet — nothing else. It used
+  // to also require `gateDone`, a sessionStorage flag, so anyone who closed the
+  // tab was asked to create or join a group again on their next visit, every
+  // visit, forever. Adding a group is a thing you do rarely and there is a
+  // button for it in the shell; being asked at the door is not a welcome, it is
+  // a toll.
   let screen;
   if (!me) screen = <SignIn />;
-  else if (!gateDone || groups.length === 0)
-    screen = <GroupGate onDone={finishGate} />;
+  else if (groups.length === 0) screen = <GroupGate />;
   else screen = <Shell />;
 
-  const blobPage = !me ? "signin" : !gateDone || groups.length === 0 ? "connect" : page;
+  const blobPage = !me ? "signin" : groups.length === 0 ? "connect" : page;
 
   return (
     <AppCtx.Provider value={ctx}>
