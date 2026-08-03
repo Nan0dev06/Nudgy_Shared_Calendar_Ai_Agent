@@ -29,6 +29,11 @@ services:
         sync: false
       # Groq free tier (no card). 8b-instant = 500K tokens/day, never rate-limits
       # in a demo; 70b-versatile is smarter but only 100K/day.
+      # The daily budget is per MODEL and shared by every tester on this one key,
+      # so LLM_FALLBACK_MODEL (default llama-3.1-8b-instant) catches a rate limit
+      # on the main model rather than making someone mid-plan wait for an error.
+      # It is a no-op while NUDGY_MODEL is already the 8b — switch to 70b and the
+      # fallback starts earning its keep.
       - key: LLM_PROVIDER
         value: groq
       - key: NUDGY_MODEL

@@ -125,6 +125,22 @@ GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
 _cfg = _OPENAI_COMPAT.get(LLM_PROVIDER, _OPENAI_COMPAT["groq"])
 LLM_MODEL = os.getenv("NUDGY_MODEL", _cfg["model"])
 LLM_BASE_URL = os.getenv("LLM_BASE_URL", _cfg["base_url"])
+
+# One smaller model to fall back to when the main one is rate-limited. NOT a
+# router — a router picks per request, this only ever runs after the retries on
+# the real model are exhausted. The free tiers have separate daily budgets per
+# model, so a 70b that has run dry says nothing about the 8b's remaining quota;
+# a slightly weaker answer beats "try again later" in the middle of planning.
+# Set to "" to disable. Ignored when it equals the main model.
+LLM_FALLBACK_MODEL = os.getenv("LLM_FALLBACK_MODEL", "llama-3.1-8b-instant"
+                               if LLM_PROVIDER == "groq" else "")
+
+# Sampling temperature. The default across these APIs is 1.0, which is tuned for
+# open-ended writing; this is a TOOL-CALLING agent working against a fixed set
+# of rules, where variety is not a feature. Low temperature is what reduces both
+# malformed function calls (the `tool_use_failed` retry below exists for those)
+# and re-asking for something the user already said.
+LLM_TEMPERATURE = float(os.getenv("LLM_TEMPERATURE", "0.2"))
 # ollama ignores the key; groq/openai need a real one. An explicit LLM_API_KEY
 # overrides, else fall back to the provider-specific key.
 LLM_API_KEY = os.getenv("LLM_API_KEY") or GROQ_API_KEY or "ollama"

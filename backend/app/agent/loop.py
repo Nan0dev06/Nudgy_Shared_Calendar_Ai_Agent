@@ -27,9 +27,11 @@ from app.agent.tools import TOOL_SCHEMAS, ToolContext, run_tool
 from app.core.config import (
     LLM_API_KEY,
     LLM_BASE_URL,
+    LLM_FALLBACK_MODEL,
     LLM_MAX_INPUT_TOKENS,
     LLM_MODEL,
     LLM_PROVIDER,
+    LLM_TEMPERATURE,
 )
 
 log = logging.getLogger("nudgy.agent")
@@ -109,6 +111,23 @@ def _openai_tools() -> list[dict]:
     ]
 
 
+def _log_usage(resp, model: str) -> None:
+    """Record what the call actually cost.
+
+    The free tiers meter a DAILY token budget shared by every beta tester on one
+    API key, and nothing here knew how much a turn spent — the ceiling was only
+    ever hit, never seen coming. `usage` is on every OpenAI-compatible response;
+    a missing one is not worth a line of noise, so it is ignored silently.
+    """
+    usage = getattr(resp, "usage", None)
+    if usage is None:
+        return
+    log.info("[loop] usage model=%s prompt=%s completion=%s total=%s",
+             model, getattr(usage, "prompt_tokens", "?"),
+             getattr(usage, "completion_tokens", "?"),
+             getattr(usage, "total_tokens", "?"))
+
+
 def _create_with_retry(client: OpenAI, messages: list[dict], attempts: int = 5):
     """One chat-completion call, retried on Groq's two stochastic failures:
 
@@ -116,18 +135,31 @@ def _create_with_retry(client: OpenAI, messages: list[dict], attempts: int = 5):
         and Groq 400s. The next sample is independent, so retry immediately.
       429 rate limit — free-tier bursts. Needs a wait, not a fresh sample.
 
+    Then, if the rate limit never cleared, ONE attempt on LLM_FALLBACK_MODEL.
+    The daily budgets are per-model, so a main model that has run dry says
+    nothing about the smaller one — and a weaker answer beats making someone
+    who is mid-plan wait a minute for an error. Not a router: this only runs
+    after the real model has genuinely failed.
+
     Anything else propagates; the caller turns it into a friendly reply."""
     from openai import BadRequestError, RateLimitError
 
+    def _call(model: str):
+        resp = client.chat.completions.create(
+            model=model,
+            messages=messages,
+            tools=_openai_tools(),
+            max_tokens=1024,
+            temperature=LLM_TEMPERATURE,
+        )
+        _log_usage(resp, model)
+        return resp
+
     last_exc: Exception = RuntimeError("no attempts made")
+    rate_limited = False
     for attempt in range(attempts):
         try:
-            return client.chat.completions.create(
-                model=LLM_MODEL,
-                messages=messages,
-                tools=_openai_tools(),
-                max_tokens=1024,
-            )
+            return _call(LLM_MODEL)
         except BadRequestError as exc:
             if "tool_use_failed" not in str(exc):
                 raise
@@ -136,6 +168,7 @@ def _create_with_retry(client: OpenAI, messages: list[dict], attempts: int = 5):
                         attempt + 1, attempts)
         except RateLimitError as exc:
             last_exc = exc
+            rate_limited = True
             if attempt + 1 < attempts:
                 # Free-tier limits reset on a per-minute window, so a real wait
                 # (not a token-shaving 1-2s) is what actually clears them.
@@ -143,6 +176,17 @@ def _create_with_retry(client: OpenAI, messages: list[dict], attempts: int = 5):
                 log.warning("[loop] rate-limited (attempt %d/%d) — waiting %ds",
                             attempt + 1, attempts, delay)
                 time.sleep(delay)
+
+    # Only for rate limits. A model that kept emitting malformed tool calls is
+    # not a quota problem, and a smaller model would do it more, not less.
+    if rate_limited and LLM_FALLBACK_MODEL and LLM_FALLBACK_MODEL != LLM_MODEL:
+        log.warning("[loop] %s still rate-limited — falling back to %s",
+                    LLM_MODEL, LLM_FALLBACK_MODEL)
+        try:
+            return _call(LLM_FALLBACK_MODEL)
+        except Exception as exc:
+            log.warning("[loop] fallback model %s failed too: %s",
+                        LLM_FALLBACK_MODEL, exc)
     raise last_exc
 
 
