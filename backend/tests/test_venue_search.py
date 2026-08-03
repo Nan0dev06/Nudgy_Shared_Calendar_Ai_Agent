@@ -25,6 +25,19 @@ from app.tools.locations import (
 HAMRA = (33.8967449, 35.4829649)
 
 
+@pytest.fixture(autouse=True)
+def fresh_cache():
+    """Venue results are cached process-wide for 15 minutes.
+
+    Without this, tests that search the same coordinates read each other's
+    results — which is how it first showed up: two unrelated cases started
+    failing the moment caching landed, both of them on HAMRA.
+    """
+    locations.clear_venue_cache()
+    yield
+    locations.clear_venue_cache()
+
+
 class _FakeResponse:
     def __init__(self, payload):
         self._payload = payload
@@ -216,3 +229,51 @@ def test_the_user_agent_identifies_the_app():
     ua = locations.HTTP_HEADERS["User-Agent"]
     assert "hackathon" not in ua.lower()
     assert "http" in ua, "the policy wants a way to contact whoever runs this"
+
+
+# --------------------------------------------------------------------- cache
+
+def test_a_repeat_search_does_not_hit_overpass_again(monkeypatch):
+    """The whole point: Overpass 429s under load, so stop asking it twice."""
+    calls = []
+    _overpass(monkeypatch, [_node("Urbanista", 33.8969, 35.4831)], capture=calls)
+
+    first = search_venues_near(*HAMRA, kind="cafe", limit=5)
+    second = search_venues_near(*HAMRA, kind="cafe", limit=5)
+
+    assert first == second
+    assert len(calls) == 1, "the second search must be served from cache"
+
+
+def test_a_different_kind_is_a_different_search(monkeypatch):
+    calls = []
+    _overpass(monkeypatch, [], capture=calls)
+    search_venues_near(*HAMRA, kind="cafe")
+    search_venues_near(*HAMRA, kind="cinema")
+    assert len(calls) == 2
+
+
+def test_a_failure_is_never_cached(monkeypatch):
+    """A transient 504 held for 15 minutes would turn one bad moment into a
+    quarter-hour of 'the venue lookup is down' for an area that is fine."""
+    monkeypatch.setattr(locations.time, "sleep", lambda _s: None)
+
+    def boom(*a, **kw):
+        raise RuntimeError("overpass 504")
+    monkeypatch.setattr(locations.httpx, "post", boom)
+    assert search_venues_near(*HAMRA, kind="cafe") is None
+
+    calls = []
+    _overpass(monkeypatch, [_node("Back Up", 33.8969, 35.4831)], capture=calls)
+    assert [v["name"] for v in search_venues_near(*HAMRA, kind="cafe")] == ["Back Up"]
+    assert len(calls) == 1, "the retry after a failure must actually go out"
+
+
+def test_nearly_identical_anchors_share_one_entry(monkeypatch):
+    """Anchors are computed centroids, so 'the same place' differs in the 5th
+    decimal. Rounding to ~11 m makes those one cache key rather than two."""
+    calls = []
+    _overpass(monkeypatch, [_node("Urbanista", 33.8969, 35.4831)], capture=calls)
+    search_venues_near(33.8967449, 35.4829649, kind="cafe")
+    search_venues_near(33.8967451, 35.4829652, kind="cafe")
+    assert len(calls) == 1
