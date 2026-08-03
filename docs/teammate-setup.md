@@ -12,30 +12,42 @@ development happens locally.
 | `.gitignore`, `.env.example`, `render.yaml` | **In the repo** | Come with the clone; nobody creates their own |
 | `.env` | **Each dev makes their own** | Gitignored, so it was never in the repo to begin with |
 | Groq API key | **Each dev makes their own** (free) | Groq's free limits are per *organization*, so a shared key means a shared 100K/day budget |
-| Google OAuth client (`GOOGLE_CLIENT_ID` / `_SECRET`) | **Either** — reuse the owner's, or make a second Google Cloud project | Reusing is simpler; see step 4 |
-| Google test accounts | **Shared** — same accounts, or the teammate adds their own | Each account must be listed as a test user on whichever Google Cloud project is in use |
+| Google OAuth client (`GOOGLE_CLIENT_ID` / `_SECRET`) | **Each dev makes their own** | Keeps secrets from changing hands at all; see step 4 |
+| Google test accounts | **Each dev's own** | Each account must be listed as a test user on that dev's own Google Cloud project |
 | Render account | **Not needed** | Only the person who owns the live deploy needs one |
 
 ## Steps for the teammate
 
-### 1. Get the repo
+### 1. Fork the repo
 
-The owner: GitHub → repo → **Settings** → **Collaborators** → **Add people** →
-the teammate's GitHub username. The teammate accepts the emailed invite, then:
+The repo is public, so no access has to be granted — the teammate forks it
+themselves: GitHub → the repo → **Fork**. Then:
 
 ```bash
-git clone https://github.com/<owner>/Nudgy_Shared_Calendar_Ai_Agent.git
+git clone https://github.com/<their-username>/Nudgy_Shared_Calendar_Ai_Agent.git
 cd Nudgy_Shared_Calendar_Ai_Agent
+git remote add upstream https://github.com/<owner>/Nudgy_Shared_Calendar_Ai_Agent.git
 ```
 
-Work on a branch, not `main`:
+Work on a branch, never on `main`:
 
 ```bash
 git checkout -b <name>/<what-youre-doing>
 ```
 
-`main` is what Render auto-deploys, so pushing straight to it redeploys the
-live app.
+Push to the fork (`origin`) and open a pull request against the owner's `main`.
+Ticking **Allow edits by maintainers** on the PR lets the owner push fixes onto
+the branch, which saves a lot of round-tripping.
+
+Sync with upstream before starting anything new, so the fork doesn't drift:
+
+```bash
+git fetch upstream
+git checkout main && git merge upstream/main
+git push origin main
+```
+
+The owner's `main` is what Render auto-deploys, so a merged PR goes live.
 
 ### 2. Python environment
 
@@ -57,29 +69,35 @@ mid-demo.
 
 ### 4. Google OAuth credentials
 
-Two options.
+Each dev creates their own OAuth client, so no secret ever changes hands.
+It's free and takes about ten minutes.
 
-**Option A — reuse the owner's OAuth client (recommended).** The client ID and
-secret work from any machine; the redirect URI
-`http://localhost:8000/auth/google/callback` is already registered on it. The
-owner sends the teammate `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET` over
-something private (not a commit, not a public channel), and adds the teammate's
-Google account as a test user: [Google Cloud Console](https://console.cloud.google.com)
-→ **APIs & Services** → **OAuth consent screen / Audience** → **Test users**
-→ **Add users**.
+In the [Google Cloud Console](https://console.cloud.google.com):
 
-**Option B — the teammate makes their own Google Cloud project.** Needed only
-if they want their own calendar test accounts and their own consent screen:
-new project → enable the **Google Calendar API** → **Credentials** → **Create
-credentials** → **OAuth client ID** → *Web application* → add both redirect
-URIs:
+1. Create a new project.
+2. **APIs & Services** → **Library** → enable the **Google Calendar API**.
+3. **APIs & Services** → **Credentials** → **Create credentials** → **OAuth
+   client ID** → *Web application*.
+4. Under **Authorized redirect URIs**, add both:
 
-```
-http://localhost:8765/
-http://localhost:8000/auth/google/callback
-```
+   ```
+   http://localhost:8765/
+   http://localhost:8000/auth/google/callback
+   ```
 
-Then add every test Google account under **Test users**.
+5. **OAuth consent screen / Audience** → **Test users** → add every Google
+   account that will be used for testing. While the app is in Testing mode,
+   only listed accounts can log in.
+6. Copy the client ID and client secret for step 5.
+
+Test calendar accounts are per-project, so the teammate needs a couple of
+Google accounts of their own to test a group with — Nudgy needs at least two
+connected calendars to intersect anything.
+
+(Sharing one client between two devs also works — the localhost redirect URI is
+already registered, so it needs no changes — but it means sending a client
+secret over chat and keeping one consent screen's test-user list in sync. Not
+worth it.)
 
 ### 5. `.env`
 
@@ -134,15 +152,19 @@ npm run dev      # Vite on :5173, proxies API calls to :8000
 npm run build    # writes into backend/app/static/
 ```
 
-and commit the build output along with the source. Two people editing the
-frontend will conflict in `backend/app/static/` regularly; the fix is to rerun
-`npm run build` after resolving the source-file conflicts and commit the
-regenerated bundle rather than hand-merging it.
+and commit the build output along with the source.
+
+Two people editing the frontend will conflict in `backend/app/static/`
+regularly, and working from a fork makes it worse — branches live longer, so
+the bundle drifts further before it merges. The fix is always the same: resolve
+the conflicts in the **source** files, then rerun `npm run build` and commit
+the regenerated bundle. Never hand-merge the built JS. Syncing from `upstream`
+often keeps these small.
 
 ## Deployment
 
-The teammate does **not** need Render to develop. When their branch is merged
-into `main`, the owner's Render service auto-deploys it.
+The teammate does **not** need Render to develop. When their pull request is
+merged into the owner's `main`, the owner's Render service auto-deploys it.
 
 If they want their own live URL, they create their own free Render account and
 run the blueprint from the same repo — **New** → **Blueprint** → connect the
