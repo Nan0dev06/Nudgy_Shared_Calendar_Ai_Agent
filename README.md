@@ -8,6 +8,14 @@ Nudgy is a conversational AI agent that finds when a group can *actually* meet �
 
 Nudgy cross-references everyone's live availability, proposes a time and venue with its reasoning, puts the plan to the group as a two-stage cascade (are you in? → does this time work?), and books it on a shared calendar once the host decides. All through chat with a floating orb in the app.
 
+|  |  |
+|---|---|
+| ![Home](screenshots/01_home.png) Dashboard — next event, tasks, and open polls at a glance | ![Calendar](screenshots/02_calendar.png) Week view of the group's merged availability |
+| ![Polls](screenshots/03_polls.png) The two-stage cascade — interest votes, then the host's lock-in decision | ![Places](screenshots/04_places.png) Venue picks with friends' reviews baked in |
+
+![Chat](screenshots/05_chat.png)
+*The Nudgy orb opens into the agent chat, where plans actually get made.*
+
 ---
 
 > ## Status — July 2026
